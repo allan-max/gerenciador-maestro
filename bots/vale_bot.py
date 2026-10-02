@@ -1955,11 +1955,11 @@ Vale Bot
                             continue
                             
                         matcher = difflib.SequenceMatcher(None, t_maior, t_menor)
-                        if matcher.real_quick_ratio() < 0.90: continue
-                        if matcher.quick_ratio() < 0.90: continue
+                        if matcher.real_quick_ratio() < 0.85: continue
+                        if matcher.quick_ratio() < 0.85: continue
                         
                         ratio = matcher.ratio()
-                        if ratio >= 0.90:
+                        if ratio >= 0.85:
                             logger.info(f"   ? Vendedor encontrado! [Similaridade alta em {nome_etapa} ({ratio*100:.1f}%)] -> {row['vendedor']}")
                             return f"Ultimo Vendedor: {row['vendedor']} ({row['data']}) - Motivo: Similaridade em {nome_etapa} ({ratio*100:.1f}%)"
             return None

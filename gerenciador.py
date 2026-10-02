@@ -69,12 +69,12 @@ def enviar_email_python(email_destino, token, tipo="ativacao"):
     if tipo == "ativacao":
         assunto = 'MAESTRO - Confirme o seu E-mail'
         link = f"https://maestro.ventura.inf.br/index.html?action=verify&token={token}"
-        mensagem = "Voc� solicitou acesso ao sistema Maestro. Clique no link para ativar a sua conta:"
+        mensagem = "Voc solicitou acesso ao sistema Maestro. Clique no link para ativar a sua conta:"
         botao = "ATIVAR A MINHA CONTA"
     else:
-        assunto = 'MAESTRO - Recupera��o de Senha'
+        assunto = 'MAESTRO - Recuperao de Senha'
         link = f"https://maestro.ventura.inf.br/index.html?action=reset&token={token}"
-        mensagem = "Voc� solicitou a recupera��o da sua senha. Clique no link para criar uma nova senha:"
+        mensagem = "Voc solicitou a recuperao da sua senha. Clique no link para criar uma nova senha:"
         botao = "REDEFINIR MINHA SENHA"
 
     corpo = f"""
@@ -115,16 +115,16 @@ def enviar_email_aviso_limpeza(vendedor, eventos_apagados):
     destinatarios = [e.strip() for e in emails_destino_raw.split(',') if e.strip()]
     if not destinatarios: return
 
-    assunto = "Maestro - Limpeza de Cota��es para Re-Extra��o"
-    corpo = f"""Ol�,
+    assunto = "Maestro - Limpeza de Cotações para Re-Extrao"
+    corpo = f"""Ol,
 
-Foi solicitada a atribui��o do vendedor "{vendedor}" pelo painel do Maestro.
-No entanto, as seguintes cota��es n�o estavam presentes na planilha:
+Foi solicitada a atribuio do vendedor "{vendedor}" pelo painel do Maestro.
+No entanto, as seguintes cotaes no estavam presentes na planilha:
 
 {', '.join(eventos_apagados)}
 
-Para corrigir isso, elas foram apagadas da mem�ria do rob�. 
-Na pr�xima rodada autom�tica, o rob� ir� extra�-las novamente do portal e as salvar� na planilha corretamente.
+Para corrigir isso, elas foram apagadas da memria do rob. 
+Na prxima rodada automtica, o rob ir extra-las novamente do portal e as salvar na planilha corretamente.
 
 Atenciosamente,
 Sistema Maestro
@@ -154,7 +154,7 @@ URL_DO_SERVIDOR = os.getenv("URL_SERVIDOR", "https://maestro.ventura.inf.br")
 ROBO_SECRET = os.getenv("ROBO_SECRET", "VEMKAUAN")
 sio = socketio.Client()
 
-# MONKEY-PATCH: Prote��o Global contra quedas de Socket
+# MONKEY-PATCH: Proteo Global contra quedas de Socket
 _original_emit = sio.emit
 def _safe_emit(*args, **kwargs):
     try:
@@ -179,7 +179,7 @@ coordenadas_clique = {'x': 0, 'y': 0}
 
 # No topo do arquivo gerenciador.py
 
-# 1. FUN��O PARA SALVAR NO MESMO FORMATO
+# 1. FUNO PARA SALVAR NO MESMO FORMATO
 def salvar_usuarios(usuarios):
     with open('banco_usuarios.json', 'w', encoding='utf-8') as f:
         json.dump(usuarios, f, indent=4, ensure_ascii=False)
@@ -191,9 +191,9 @@ def registrar_usuario(dados):
     ip_real = dados.get('ip_real', 'Desconhecida')
     client_id = dados.get('clientId')
 
-    # ?? REGRA: Apenas dom�nio espec�fico
+    # ?? REGRA: Apenas domnio especfico
     if not email.endswith('@venturainformatica.com.br'):
-        logger.warning(f"? Dom�nio inv�lido: {email}")
+        logger.warning(f"? Domnio invlido: {email}")
         sio.emit('resposta_cadastro', {
             'sucesso': False, 
             'erro': 'Utilize o seu e-mail @venturainformatica.com.br',
@@ -203,13 +203,13 @@ def registrar_usuario(dados):
 
     usuarios = carregar_usuarios()
     if email in usuarios:
-        sio.emit('resposta_cadastro', {'sucesso': False, 'erro': 'E-mail j� cadastrado.', 'clientId': client_id})
+        sio.emit('resposta_cadastro', {'sucesso': False, 'erro': 'E-mail j cadastrado.', 'clientId': client_id})
         return
 
     token = str(uuid.uuid4())
     usuarios[email] = {
         "senha": senha,
-        "verificado": False, # ??? Fica False at� clicar no link
+        "verificado": False, # ??? Fica False at clicar no link
         "token_verificacao": token,
         "token_recuperacao": None,
         "ultima_localizacao": f"IP: {ip_real}",
@@ -217,16 +217,16 @@ def registrar_usuario(dados):
         "admin": False
     }
 
-    # ... (c�digo acima continua igual, com a trava do dom�nio e a cria��o do json) ...
+    # ... (cdigo acima continua igual, com a trava do domnio e a criao do json) ...
 
     salvar_usuarios(usuarios)
-    logger.info(f"? Conta pr�-criada: {email}. Acionando o Carteiro Python!")
+    logger.info(f"? Conta pr-criada: {email}. Acionando o Carteiro Python!")
 
-    # ?? AGORA O PR�PRIO PYTHON ENVIA O E-MAIL ??
+    # ?? AGORA O PRPRIO PYTHON ENVIA O E-MAIL ??
     sucesso_email = enviar_email_python(email, token)
 
     if sucesso_email:
-        logger.info("? E-mail enviado com sucesso pelo rob�!")
+        logger.info("? E-mail enviado com sucesso pelo rob!")
         # Avisa a Nuvem que tudo correu bem, para ela avisar o site
         sio.emit('resposta_cadastro', {'sucesso': True, 'clientId': client_id})
     else:
@@ -235,7 +235,7 @@ def registrar_usuario(dados):
         salvar_usuarios(usuarios)
         sio.emit('resposta_cadastro', {
             'sucesso': False, 
-            'erro': 'Erro ao enviar o e-mail pelo Rob� Local.', 
+            'erro': 'Erro ao enviar o e-mail pelo Rob Local.', 
             'clientId': client_id
         })
 # ====================================================
@@ -249,7 +249,7 @@ def cifra_python(texto, chave):
         for i in range(len(text_bytes)):
             cifrado[i] = text_bytes[i] ^ key_bytes[i % len(key_bytes)]
 
-        # Converte para Base64 para poder enviar pela rede com seguran�a
+        # Converte para Base64 para poder enviar pela rede com segurana
         return base64.b64encode(cifrado).decode('utf-8')
     except Exception as e:
         logger.error(f"Erro ao cifrar: {e}")
@@ -281,18 +281,18 @@ def monitorar_log_me():
                     # 1. Envia a linha para o mini-terminal do site
                     sio.emit('relatar_progresso_me', {'mensagem': linha_limpa})
 
-                    # 2. Verifica se � a mensagem de finaliza��o
-                    if "=== APLICA��O FINALIZADA ===" in linha_limpa or "=== SESS�O FINALIZADA ===" in linha_limpa:
-                        logger.info("O rob� do ME finalizou a rotina naturalmente.")
+                    # 2. Verifica se  a mensagem de finalizao
+                    if "=== APLICAO FINALIZADA ===" in linha_limpa or "=== SESSO FINALIZADA ===" in linha_limpa:
+                        logger.info("O rob do ME finalizou a rotina naturalmente.")
 
                         rodando_monitor_me = False
                         processo_me = None
 
-                        # 3. Avisa o frontend (me.html) para voltar o bot�o para INICIAR
+                        # 3. Avisa o frontend (me.html) para voltar o boto para INICIAR
                         sio.emit('sincronizar_estado_me', {'status': 'ocioso'})
 
-                        # 4. Avisa o Servidor Global (server.js) para liberar o rob� para outras tarefas
-                        sio.emit('tarefa_concluida', {'evento': 'Extra��o Mercado Eletr�nico', 'sucesso': True})
+                        # 4. Avisa o Servidor Global (server.js) para liberar o rob para outras tarefas
+                        sio.emit('tarefa_concluida', {'evento': 'Extrao Mercado Eletrnico', 'sucesso': True})
 
                         break # Sai do loop de monitoramento
 
@@ -311,7 +311,7 @@ def monitorar_log_findes():
     if not rodando_monitor_findes:
         return
 
-    # ?? A "MOCHILA" QUE VAI GUARDAR OS TEXTOS PARA O BOT�O COPIAR ??
+    # ?? A "MOCHILA" QUE VAI GUARDAR OS TEXTOS PARA O BOTO COPIAR ??
     textos_acumulados = ""
 
     try:
@@ -326,28 +326,28 @@ def monitorar_log_findes():
                     sio.emit('relatar_progresso_findes', {'mensagem': linha_limpa})
 
                     # ========================================================
-                    # 2. A M�GICA DO COLECIONADOR: Filtra e junta os dados!
+                    # 2. A MGICA DO COLECIONADOR: Filtra e junta os dados!
                     # ========================================================
                     if linha_limpa.startswith("CDE:"):
-                        # Se j� tiver alguma coisa na mochila (ou seja, � o 2� evento), d� 2 enters para separar
+                        # Se j tiver alguma coisa na mochila (ou seja,  o 2 evento), d 2 enters para separar
                         if textos_acumulados: 
                             textos_acumulados += "\n\n"
                         textos_acumulados += linha_limpa + "\n"
 
-                    elif linha_limpa.startswith("MATERIAL:") or linha_limpa.startswith("T�RMINO") or linha_limpa.startswith("TERMINO"):
+                    elif linha_limpa.startswith("MATERIAL:") or linha_limpa.startswith("TRMINO") or linha_limpa.startswith("TERMINO"):
                         textos_acumulados += linha_limpa + "\n"
 
                     # ========================================================
-                    # 3. FINALIZA��O: Entrega a mochila ao site!
+                    # 3. FINALIZAO: Entrega a mochila ao site!
                     # ========================================================
-                    if "=== SESS�O FINALIZADA ===" in linha_limpa:
+                    if "=== SESSO FINALIZADA ===" in linha_limpa:
 
-                        # ... dentro do IF do === SESS�O FINALIZADA === ...
+                        # ... dentro do IF do === SESSO FINALIZADA === ...
                         if textos_acumulados.strip():
                             logger.info("Enviando textos gerados para o site...")
                             io.emit('findes_textos_gerados', {'texto': textos_acumulados.strip()})
 
-                        sio.emit('relatar_progresso_findes', {'mensagem': '?? Sinal de Fim recebido! Fechando o rob� automaticamente...'})
+                        sio.emit('relatar_progresso_findes', {'mensagem': '?? Sinal de Fim recebido! Fechando o rob automaticamente...'})
 
                         if bot_findes:
                             os.system(f"taskkill /F /T /PID {bot_findes.pid}")
@@ -365,7 +365,7 @@ def monitorar_log_ariba():
     global rodando_monitor_ariba
     caminho_log = r"\\SERVIDOR2\Publico\ALLAN\Logs\aribasourcing.txt"
 
-    # ?? Aumentamos para 10 segundos porque o 'dotnet run' � demorado!
+    # ?? Aumentamos para 10 segundos porque o 'dotnet run'  demorado!
     time.sleep(10) 
 
     try:
@@ -384,12 +384,12 @@ def monitorar_log_coupa():
     global rodando_monitor_coupa
     caminho_log = r"\\SERVIDOR2\Publico\ALLAN\Logs\log-coupa.txt"
 
-    # D� 2 segundos para o rob� do Coupa iniciar e criar o arquivo
+    # D 2 segundos para o rob do Coupa iniciar e criar o arquivo
     time.sleep(2) 
 
     try:
         with open(caminho_log, 'r', encoding='utf-8', errors='ignore') as f:
-            # Pula direto para o final para n�o ler logs velhos do dia anterior
+            # Pula direto para o final para no ler logs velhos do dia anterior
             f.seek(0, os.SEEK_END) 
             while rodando_monitor_coupa:
                 linha = f.readline()
@@ -419,7 +419,7 @@ def monitorar_log_vale():
 
                 if not linha:
                     time.sleep(0.5)
-                    # ?? A CHAVE M�GICA: Obriga o Windows a verificar se h� texto novo! ??
+                    # ?? A CHAVE MGICA: Obriga o Windows a verificar se h texto novo! ??
                     f.seek(f.tell()) 
                 elif linha.strip():
                     # Envia a linha direto para o terminal do site
@@ -429,11 +429,11 @@ def monitorar_log_vale():
         logger.error(f"Erro no monitor da Vale: {e}")
 
 def monitorar_pastas_impressao():
-    """Vigia as pastas de todos os portais e conta os arquivos prontos para impress�o"""
+    """Vigia as pastas de todos os portais e conta os arquivos prontos para impressão"""
     pasta_me = CONFIG_GLOBAL.get("pasta_me", r"\\SERVIDOR2\Publico\ALLAN\MERCADO-ELETRONICO")
     pasta_coupa_vale = CONFIG_GLOBAL.get("pasta_coupa_vale", r"\\SERVIDOR2\Publico\ALLAN\eventos do coupa")
     pasta_ariba_aegea = CONFIG_GLOBAL.get("pasta_ariba_aegea", r"\\SERVIDOR2\Publico\ALLAN\AribaSourcing\AEGEA")
-    pasta_ariba_estacio = CONFIG_GLOBAL.get("pasta_ariba_estacio", r"\\SERVIDOR2\Publico\ALLAN\AribaSourcing\EST�CIO")
+    pasta_ariba_estacio = CONFIG_GLOBAL.get("pasta_ariba_estacio", r"\\SERVIDOR2\Publico\ALLAN\AribaSourcing\ESTÁCIO")
 
     while True:
         try:
@@ -443,12 +443,12 @@ def monitorar_pastas_impressao():
                     qtd_me = len(glob.glob(os.path.join(pasta_me, '*.pdf')))
                     sio.emit('contagem_me', {'quantidade': qtd_me})
 
-                # 2. Contagem Coupa/Vale (DOCX - ignorando arquivos tempor�rios do Word que come�am com ~)
+                # 2. Contagem Coupa/Vale (DOCX - ignorando arquivos temporrios do Word que comeam com ~)
                 if os.path.exists(pasta_coupa_vale):
                     arquivos_cv = [f for f in glob.glob(os.path.join(pasta_coupa_vale, '*.docx')) if not os.path.basename(f).startswith("~")]
                     sio.emit('contagem_coupa_vale', {'quantidade': len(arquivos_cv)})
 
-                # 3. Contagem Ariba (DOC/DOCX - ignorando tempor�rios)
+                # 3. Contagem Ariba (DOC/DOCX - ignorando temporrios)
                 qtd_ariba = 0
                 for pasta in [pasta_ariba_aegea, pasta_ariba_estacio]:
                     if os.path.exists(pasta):
@@ -462,7 +462,7 @@ def monitorar_pastas_impressao():
         time.sleep(3) # Atualiza a contagem no site a cada 3 segundos
 
 def monitorar_pasta_me():
-    """Vigia a pasta do Mercado Eletr�nico e conta os PDFs em tempo real"""
+    """Vigia a pasta do Mercado Eletrnico e conta os PDFs em tempo real"""
     pasta_me = CONFIG_GLOBAL.get("pasta_me", r"\\SERVIDOR2\Publico\ALLAN\MERCADO-ELETRONICO")
     while True:
         try:
@@ -470,11 +470,11 @@ def monitorar_pasta_me():
                 # Conta apenas os arquivos .pdf
                 qtd = len(glob.glob(os.path.join(pasta_me, '*.pdf')))
 
-                # ?? S� ENVIA SE O ROB� ESTIVER CONECTADO AO SERVIDOR ??
+                # ?? S ENVIA SE O ROB ESTIVER CONECTADO AO SERVIDOR ??
                 if sio.connected:
                     sio.emit('contagem_me', {'quantidade': qtd})
             else:
-                # Se a pasta n�o for encontrada pela rede, tenta novamente no pr�ximo ciclo
+                # Se a pasta no for encontrada pela rede, tenta novamente no prximo ciclo
                 pass
         except Exception as e:
             logger.error(f"Erro no monitor de pasta do ME: {e}")
@@ -493,9 +493,9 @@ def validar_login(dados):
 
     if email in usuarios and str(usuarios[email]['senha']) == str(senha):
 
-        # ?? TRAVA DE E-MAIL N�O VERIFICADO
+        # ?? TRAVA DE E-MAIL NO VERIFICADO
         if not usuarios[email].get('verificado', False):
-            sio.emit('resultado_login', {'sucesso': False, 'erro': 'Voc� precisa ativar sua conta! Verifique o link enviado para o seu e-mail.', 'clientId': cid})
+            sio.emit('resultado_login', {'sucesso': False, 'erro': 'Voc precisa ativar sua conta! Verifique o link enviado para o seu e-mail.', 'clientId': cid})
             return
 
         if usuarios[email].get('bloqueado'): 
@@ -521,10 +521,10 @@ def pedir_dados_dev_seguro(dados):
         sio.emit('resposta_painel_dev_cifrado', {'payload': False, 'clientId': client_id})
         return
 
-    # 2. A senha estava certa! Prepara a lista de usu�rios
+    # 2. A senha estava certa! Prepara a lista de usurios
     usuarios = carregar_usuarios()
 
-    # Atualiza quem est� online no momento
+    # Atualiza quem est online no momento
     for email in usuarios:
         usuarios[email]['online'] = (email in online_users)
 
@@ -551,7 +551,7 @@ def verificar_token_python(dados):
 
     for email, info in usuarios.items():
         if info.get('token_verificacao') == token:
-            # Encontrou o token! Ativa a conta e destr�i o token
+            # Encontrou o token! Ativa a conta e destri o token
             info['verificado'] = True
             info['token_verificacao'] = None 
             sucesso = True
@@ -563,7 +563,7 @@ def verificar_token_python(dados):
         logger.info(f"?? E-mail validado com sucesso: {email_validado}")
         sio.emit('resultado_verificacao_token', {'sucesso': True, 'clientId': client_id})
     else:
-        sio.emit('resultado_verificacao_token', {'sucesso': False, 'erro': 'Link inv�lido ou j� utilizado.', 'clientId': client_id})
+        sio.emit('resultado_verificacao_token', {'sucesso': False, 'erro': 'Link invlido ou j utilizado.', 'clientId': client_id})
 
 @sio.on('gerar_token_recuperacao')
 def gerar_token_recuperacao(dados):
@@ -580,9 +580,9 @@ def gerar_token_recuperacao(dados):
         if sucesso:
             sio.emit('resposta_recuperacao_solicitada', {'sucesso': True, 'clientId': client_id})
         else:
-            sio.emit('resposta_recuperacao_solicitada', {'sucesso': False, 'erro': 'Erro ao enviar e-mail de recupera��o.', 'clientId': client_id})
+            sio.emit('resposta_recuperacao_solicitada', {'sucesso': False, 'erro': 'Erro ao enviar e-mail de recuperao.', 'clientId': client_id})
     else:
-        # Por seguran�a, n�o confirmamos se o e-mail existe ou n�o, mas enviamos 'sucesso' para a interface
+        # Por segurana, no confirmamos se o e-mail existe ou no, mas enviamos 'sucesso' para a interface
         sio.emit('resposta_recuperacao_solicitada', {'sucesso': True, 'clientId': client_id})
 
 @sio.on('processar_nova_senha')
@@ -604,7 +604,7 @@ def processar_nova_senha(dados):
         salvar_usuarios(usuarios)
         sio.emit('resultado_nova_senha', {'sucesso': True, 'clientId': client_id})
     else:
-        sio.emit('resultado_nova_senha', {'sucesso': False, 'erro': 'Link inv�lido ou expirado.', 'clientId': client_id})
+        sio.emit('resultado_nova_senha', {'sucesso': False, 'erro': 'Link invlido ou expirado.', 'clientId': client_id})
 
 @sio.on('comando_para_robo')
 def comando_para_robo(dados):
@@ -663,14 +663,14 @@ def comando_para_robo(dados):
 
                     prioridades_escapado = prioridades_str.replace("{", "{{").replace("}", "}}")
 
-                    # ?? Fantasma R�pido: Sem travas de seguran�a que bloqueiam a digita��o!
+                    # ?? Fantasma Rpido: Sem travas de segurana que bloqueiam a digitao!
                     vbs_code = f"""
 Set WshShell = WScript.CreateObject("WScript.Shell")
 
-' D� uma pausa de 4 segundos para o .NET carregar a tela de digita��o
+' D uma pausa de 4 segundos para o .NET carregar a tela de digitao
 WScript.Sleep 4000
 
-' Tenta "puxar" a janela pelo PID e T�tulo s� por garantia, mas N�O ABORTA se o Windows esconder
+' Tenta "puxar" a janela pelo PID e Ttulo s por garantia, mas NO ABORTA se o Windows esconder
 On Error Resume Next
 WshShell.AppActivate({bot_ariba.pid})
 WshShell.AppActivate("ROBO_ARIBA")
@@ -679,7 +679,7 @@ On Error GoTo 0
 
 WScript.Sleep 500
 
-' Digita os dados assumindo que a janela rec�m-criada � a que est� na frente (Comportamento Original R�pido)
+' Digita os dados assumindo que a janela recm-criada  a que est na frente (Comportamento Original Rpido)
 WshShell.SendKeys "{prioridades_escapado}"
 WScript.Sleep 500
 WshShell.SendKeys "~"
@@ -701,7 +701,7 @@ WshShell.SendKeys "~"
                     sio.emit('sincronizar_estado_ariba', {'status': 'ocioso'})
                     bot_ariba.wait()
                 except Exception as e:
-                    logger.error(f"Erro na execu��o do Ariba: {e}")
+                    logger.error(f"Erro na execuo do Ariba: {e}")
                     sio.emit('relatar_progresso_ariba', {'mensagem': f'Erro ao iniciar: {e}'})
                 finally:
                     rodando_monitor_ariba = False
@@ -712,7 +712,7 @@ WshShell.SendKeys "~"
 
         elif modo == 'desligar_robo':
             rodando_monitor_ariba = False
-            sio.emit('relatar_progresso_ariba', {'mensagem': '?? Encerrando o m�dulo SAP Ariba...'})
+            sio.emit('relatar_progresso_ariba', {'mensagem': '?? Encerrando o mdulo SAP Ariba...'})
             if bot_ariba: 
                 os.system(f"taskkill /F /T /PID {bot_ariba.pid}")
                 bot_ariba = None
@@ -762,19 +762,19 @@ WshShell.SendKeys "~"
                 bot_alvo.thread_atual = th
                 th.start()
             else:
-                sio.emit('relatar_progresso', {'mensagem': "? Erro: O rob� n�o est� ligado no Servidor!"})
+                sio.emit('relatar_progresso', {'mensagem': "? Erro: O rob no est ligado no Servidor!"})
 
-        # ?? O FREIO DE M�O AGORA EST� ISOLADO E RECEBE QUALQUER VARIA��O DO COMANDO ??
+        # ?? O FREIO DE MO AGORA EST ISOLADO E RECEBE QUALQUER VARIAO DO COMANDO ??
         elif modo in ['solicitar_parada', 'parar_extracao']:
             bot_alvo = bot_coupa if portal == 'coupa' else bot_vale
             if bot_alvo:
                 bot_alvo.solicitacao_parada = True 
 
-                logger.warning(f"?? ATEN��O: Comando de PARADA recebido do portal {portal.upper()}!")
+                logger.warning(f"?? ATENO: Comando de PARADA recebido do portal {portal.upper()}!")
                 canal = f'relatar_progresso_{portal}' if portal else 'relatar_progresso'
-                sio.emit(canal, {'mensagem': "?? Freio acionado! Concluindo o evento atual com seguran�a antes de parar..."})
+                sio.emit(canal, {'mensagem': "?? Freio acionado! Concluindo o evento atual com segurana antes de parar..."})
             else:
-                logger.warning("?? Comando de parada recebido, mas nenhum rob� estava extraindo no momento.")
+                logger.warning("?? Comando de parada recebido, mas nenhum rob estava extraindo no momento.")
 
     # ========================================================
     # ?? ROTA .NET DO FINDES (INICIA COMO O ARIBA) ??
@@ -782,7 +782,7 @@ WshShell.SendKeys "~"
     elif portal == 'findes':
         if modo == 'ligar_robo':
             eventos_str = dados.get('evento', '')
-            sio.emit('relatar_progresso_findes', {'mensagem': f"?? Iniciando M�dulo .NET Findes para os eventos: {eventos_str}"})
+            sio.emit('relatar_progresso_findes', {'mensagem': f"?? Iniciando Mdulo .NET Findes para os eventos: {eventos_str}"})
 
             def run_findes():
                 global bot_findes, rodando_monitor_findes
@@ -798,7 +798,7 @@ WshShell.SendKeys "~"
                     # 2. O Digitador Fantasma agora faz TODO o trabalho
                     sio.emit('relatar_progresso_findes', {'mensagem': '?? Fantasma assumiu o teclado! Preparando ambiente...'})
 
-                    # ?? USANDO O S�MBOLO '~' QUE � O 'ENTER' INFAL�VEL DO VBSCRIPT ??
+                    # ?? USANDO O SMBOLO '~' QUE  O 'ENTER' INFALVEL DO VBSCRIPT ??
                     caminho_findes_local = CONFIG_GLOBAL.get("caminho_findes", r"C:\Users\Administrator\Desktop\FINDES")
                     vbs_code = f"""
 Set WshShell = WScript.CreateObject("WScript.Shell")
@@ -824,12 +824,12 @@ WScript.Sleep 500
 WshShell.SendKeys "~"
 WScript.Sleep 1500
 
-' --- PASSO 3: INICIAR O ROB� ---
+' --- PASSO 3: INICIAR O ROB ---
 WshShell.SendKeys "dotnet run"
 WScript.Sleep 500
 WshShell.SendKeys "~"
 
-' D� 10 segundos para o .NET carregar antes de come�ar a mandar os eventos
+' D 10 segundos para o .NET carregar antes de comear a mandar os eventos
 WScript.Sleep 10000
 """
                     # --- PASSO 4: DIGITAR OS EVENTOS E SAIR ---
@@ -854,18 +854,18 @@ WshShell.SendKeys "~"
                         f.write(vbs_code)
                     subprocess.Popen(["wscript.exe", vbs_path])
 
-                    # O Python fica � espera que a janela feche
+                    # O Python fica  espera que a janela feche
                     bot_findes.wait()
 
                 except Exception as e:
-                    logger.error(f"Erro na execu��o do Findes: {e}")
-                    sio.emit('relatar_progresso_findes', {'mensagem': f'? Erro Cr�tico ao iniciar: {e}'})
+                    logger.error(f"Erro na execuo do Findes: {e}")
+                    sio.emit('relatar_progresso_findes', {'mensagem': f'? Erro Crtico ao iniciar: {e}'})
                 finally:
                     if bot_findes:
                         bot_findes = None
-                        sio.emit('relatar_progresso_findes', {'mensagem': "? M�dulo Findes conclu�do/fechado.", 'comando_interno': 'desligar_botoes'})
+                        sio.emit('relatar_progresso_findes', {'mensagem': "? Mdulo Findes concludo/fechado.", 'comando_interno': 'desligar_botoes'})
 
-            # Roda o Findes em paralelo para n�o travar o gerenciador
+            # Roda o Findes em paralelo para no travar o gerenciador
             threading.Thread(target=run_findes, daemon=True).start()
 
         elif modo == 'desligar_robo':
@@ -874,11 +874,11 @@ WshShell.SendKeys "~"
                 os.system(f"taskkill /F /T /PID {bot_findes.pid}")
                 bot_findes = None
             else:
-                sio.emit('relatar_progresso_findes', {'mensagem': "?? O rob� j� estava desligado."})
+                sio.emit('relatar_progresso_findes', {'mensagem': "?? O rob j estava desligado."})
             sio.emit('relatar_progresso_findes', {'comando_interno': 'desligar_botoes'})
 
         elif modo == 'mover_anexos_findes':
-            sio.emit('relatar_progresso_findes', {'mensagem': "?? Fun��o de mover anexos precisa ser acoplada � l�gica do .NET."})
+            sio.emit('relatar_progresso_findes', {'mensagem': "?? Funo de mover anexos precisa ser acoplada  lgica do .NET."})
 
 @sio.on('executar_clique')
 def receber_clique(dados):
@@ -910,11 +910,11 @@ def connect():
 def comando_imprimir(dados):
     portal = dados.get('portal')
     impressora = dados.get('impressora')
-    sio.emit('relatar_progresso', {'mensagem': f"??? A preparar impress�o no portal {portal.upper()}..."})
+    sio.emit('relatar_progresso', {'mensagem': f"??? A preparar impressão no portal {portal.upper()}..."})
 
     def job_imprimir():
         try:
-            # 1. Define a impressora padr�o do Windows
+            # 1. Define a impressora padro do Windows
             subprocess.run(f'RUNDLL32 PRINTUI.DLL,PrintUIEntry /y /n "{impressora}"', shell=True)
             time.sleep(2)
 
@@ -923,24 +923,24 @@ def comando_imprimir(dados):
             # 2. Mapeia as pastas corretas dependendo do portal
             if portal == 'me':
                 pasta_origem = r"\\SERVIDOR2\Publico\ALLAN\MERCADO-ELETRONICO"
-                pasta_destino = os.path.join(pasta_origem, "J� imprimiu")
+                pasta_destino = os.path.join(pasta_origem, "J imprimiu")
                 os.makedirs(pasta_destino, exist_ok=True)
                 for f in glob.glob(os.path.join(pasta_origem, "*.pdf")):
                     arquivos_encontrados.append((f, pasta_destino))
 
             elif portal in ['coupa', 'vale']:
                 pasta_origem = r"\\SERVIDOR2\Publico\ALLAN\eventos do coupa"
-                pasta_destino = r"\\SERVIDOR2\Publico\RFQ�S VALE PARA IMPRIMIR"
+                pasta_destino = r"\\SERVIDOR2\Publico\RFQS VALE PARA IMPRIMIR"
                 os.makedirs(pasta_destino, exist_ok=True)
                 for f in glob.glob(os.path.join(pasta_origem, "*.docx")):
                     if not os.path.basename(f).startswith("~"):
                         arquivos_encontrados.append((f, pasta_destino))
 
             elif portal == 'ariba':
-                # ?? AGORA O C�DIGO APONTA PARA AS SUBPASTAS EXISTENTES ??
+                # ?? AGORA O CDIGO APONTA PARA AS SUBPASTAS EXISTENTES ??
                 fontes = [
-                    (r"\\SERVIDOR2\Publico\ALLAN\AribaSourcing\AEGEA", r"\\SERVIDOR2\Publico\ALLAN\AribaSourcing\AEGEA\J� imprimiu"),
-                    (r"\\SERVIDOR2\Publico\ALLAN\AribaSourcing\EST�CIO", r"\\SERVIDOR2\Publico\ALLAN\AribaSourcing\EST�CIO\j� imprimiu")
+                    (r"\\SERVIDOR2\Publico\ALLAN\AribaSourcing\AEGEA", r"\\SERVIDOR2\Publico\ALLAN\AribaSourcing\AEGEA\J imprimiu"),
+                    (r"\\SERVIDOR2\Publico\ALLAN\AribaSourcing\ESTÁCIO", r"\\SERVIDOR2\Publico\ALLAN\AribaSourcing\ESTÁCIO\j imprimiu")
                 ]
                 for orig, dest in fontes:
                     # Verifica se a pasta principal existe antes de procurar arquivos
@@ -948,21 +948,21 @@ def comando_imprimir(dados):
                         # Garante que a subpasta de destino seja reconhecida
                         os.makedirs(dest, exist_ok=True)
                         for f in glob.glob(os.path.join(orig, "*.doc*")):
-                            # Ignora arquivos tempor�rios (aqueles que come�am com ~)
+                            # Ignora arquivos temporrios (aqueles que comeam com ~)
                             if not os.path.basename(f).startswith("~"):
                                 arquivos_encontrados.append((f, dest))
 
-            # 3. Executa a impress�o e move
+            # 3. Executa a impressão e move
             if not arquivos_encontrados:
-                sio.emit('relatar_progresso', {'mensagem': f"?? Nenhuma cota��o encontrada nas pastas do {portal.upper()}."})
-                sio.emit('tarefa_concluida', {'evento': 'Impress�o Lote', 'sucesso': True})
+                sio.emit('relatar_progresso', {'mensagem': f"?? Nenhuma cotação encontrada nas pastas do {portal.upper()}."})
+                sio.emit('tarefa_concluida', {'evento': 'Impresso Lote', 'sucesso': True})
                 return
 
             for arq, dest in arquivos_encontrados:
                 nome = os.path.basename(arq)
                 try:
                     os.startfile(arq, "print")
-                    time.sleep(12) # Tempo para o Word/Acrobat processar a p�gina
+                    time.sleep(12) # Tempo para o Word/Acrobat processar a pgina
                     destino_final = os.path.join(dest, nome)
                     if os.path.exists(destino_final): destino_final = os.path.join(dest, f"{int(time.time())}_{nome}")
                     shutil.move(arq, destino_final)
@@ -1000,11 +1000,11 @@ def comando_imprimir(dados):
                 except Exception as e:
                     logger.error(f"Erro ao enviar email de impressao: {e}")
 
-            sio.emit('tarefa_concluida', {'evento': 'Impress�o Lote', 'sucesso': True, 'portal': portal})
+            sio.emit('tarefa_concluida', {'evento': 'Impresso Lote', 'sucesso': True, 'portal': portal})
 
         except Exception as e:
-            logger.error(f"Erro Geral na Impress�o: {e}")
-            sio.emit('tarefa_concluida', {'evento': 'Impress�o Lote', 'sucesso': False, 'erro': str(e), 'portal': portal})
+            logger.error(f"Erro Geral na Impresso: {e}")
+            sio.emit('tarefa_concluida', {'evento': 'Impresso Lote', 'sucesso': False, 'erro': str(e), 'portal': portal})
 
     threading.Thread(target=job_imprimir, daemon=True).start() 
 
@@ -1039,7 +1039,7 @@ def comando_carregar_planilha_json(dados):
             # Filtrar
             cotacoes = [c for c in cotacoes if str(c.get('COTAÇÃO', '')).strip() in chaves_validas]
 
-        # Enviar os �ltimos 500 registros invertidos
+        # Enviar os ltimos 500 registros invertidos
         sio.emit('retorno_planilha_json', {
             'sucesso': True,
             'cotacoes': cotacoes[::-1], 
@@ -1108,8 +1108,8 @@ def comando_ler_excel_dashboard(dados):
             if situacao == "NONE": situacao = ""
 
             totais["total"] += 1
-            is_respondida = ("RESPONDIDA" in situacao or "RESPONDIDO" in situacao) and not ("N�O" in situacao or "NAO" in situacao or "NO" in situacao)
-            is_nao_respondida = ("N�O RESPONDID" in situacao or "NAO RESPONDID" in situacao or "NO RESPONDID" in situacao)
+            is_respondida = ("RESPONDIDA" in situacao or "RESPONDIDO" in situacao) and not ("NO" in situacao or "NAO" in situacao or "NO" in situacao)
+            is_nao_respondida = ("NO RESPONDID" in situacao or "NAO RESPONDID" in situacao or "NO RESPONDID" in situacao)
 
             esta_vencida = False
             if data_venc:
@@ -1138,7 +1138,7 @@ def comando_ler_excel_dashboard(dados):
                 elif is_nao_respondida: dic_marcas[marca]['nao_respondidas'] += 1
                 elif not esta_vencida: dic_marcas[marca]['pendentes'] += 1
 
-            ignorar_vendedores = ["informa�oes insuficientes para or�ar", "pouco tempo h�bil", "vencida", "provavel vencida", "w"]
+            ignorar_vendedores = ["informaoes insuficientes para orar", "pouco tempo hbil", "vencida", "provavel vencida", "w"]
             if vendedor.lower() not in ignorar_vendedores:
                 if vendedor not in dic_vendedores:
                     dic_vendedores[vendedor] = {'nome': vendedor, 'total': 0, 'respostas': 0, 'pendentes': 0, 'nao_respondidas': 0}
@@ -1167,15 +1167,15 @@ def comando_registrar_vendedor_cotacao(dados):
     cotacoes_raw = dados.get('cotacoes', '')
 
     if not vendedor or not cotacoes_raw:
-        sio.emit('retorno_registro_vendedor_cotacao', {'sucesso': False, 'erro': 'Vendedor ou cota��es vazias', 'clientId': client_id})
+        sio.emit('retorno_registro_vendedor_cotacao', {'sucesso': False, 'erro': 'Vendedor ou cotaes vazias', 'clientId': client_id})
         return
 
     import re
-    # Separa as cota��es por v�rgula ou espa�o
+    # Separa as cotaes por vrgula ou espao
     lista_cotacoes = [c.strip() for c in re.split(r'[,\s]+', cotacoes_raw) if c.strip()]
 
     if not lista_cotacoes:
-        sio.emit('retorno_registro_vendedor_cotacao', {'sucesso': False, 'erro': 'Nenhuma cota��o v�lida encontrada', 'clientId': client_id})
+        sio.emit('retorno_registro_vendedor_cotacao', {'sucesso': False, 'erro': 'Nenhuma cotação vlida encontrada', 'clientId': client_id})
         return
 
     caminho_excel = CONFIG_GLOBAL.get("caminho_excel", r"\\SERVIDOR2\Publico\PLANILHA DE CONTROLE VALE - ESTAGIARIOS (copia 1).xlsx")
@@ -1261,11 +1261,11 @@ def comando_registrar_vendedor_cotacao(dados):
                         pass
 
             if encontradas_set:
-                msg = f"Vendedor {vendedor} registrado em {len(encontradas_set)} cota��o(�es) com sucesso!"
+                msg = f"Vendedor {vendedor} registrado em {len(encontradas_set)} cotação(es) com sucesso!"
                 if eventos_banco:
-                    msg += f"<br><br><span style='color: #eab308;'><i class='fa-solid fa-broom'></i> <b>ATEN��O:</b> As cota��es <b>{', '.join(eventos_banco)}</b> n�o est�o na planilha. Elas foram apagadas da mem�ria do rob� para serem extra�das novamente na pr�xima rodada autom�tica.</span>"
+                    msg += f"<br><br><span style='color: #eab308;'><i class='fa-solid fa-broom'></i> <b>ATENO:</b> As cotaes <b>{', '.join(eventos_banco)}</b> no esto na planilha. Elas foram apagadas da memria do rob para serem extradas novamente na prxima rodada automtica.</span>"
                 if eventos_invalidos:
-                    msg += f"<br><br><span style='color: #f87171;'><i class='fa-solid fa-triangle-exclamation'></i> <b>ERRO:</b> As cota��es <b>{', '.join(eventos_invalidos)}</b> n�o constam nem na planilha nem na mem�ria do rob�.</span>"
+                    msg += f"<br><br><span style='color: #f87171;'><i class='fa-solid fa-triangle-exclamation'></i> <b>ERRO:</b> As cotaes <b>{', '.join(eventos_invalidos)}</b> no constam nem na planilha nem na memria do rob.</span>"
 
                 sio.emit('retorno_registro_vendedor_cotacao', {
                     'sucesso': True, 
@@ -1273,11 +1273,11 @@ def comando_registrar_vendedor_cotacao(dados):
                     'clientId': client_id
                 })
             else:
-                msg = f"Nenhuma das cota��es informadas foi encontrada na planilha.<br><br>Cota��es procuradas: {', '.join(lista_cotacoes)}"
+                msg = f"Nenhuma das cotaes informadas foi encontrada na planilha.<br><br>Cotações procuradas: {', '.join(lista_cotacoes)}"
                 if eventos_banco:
-                    msg += f"<br><br><span style='color: #3b82f6;'><i class='fa-solid fa-broom'></i> <b>LIMPEZA:</b> As cota��es <b>{', '.join(eventos_banco)}</b> foram apagadas da mem�ria para serem re-extra�das na pr�xima rodada.</span>"
+                    msg += f"<br><br><span style='color: #3b82f6;'><i class='fa-solid fa-broom'></i> <b>LIMPEZA:</b> As cotaes <b>{', '.join(eventos_banco)}</b> foram apagadas da memria para serem re-extradas na prxima rodada.</span>"
                 if eventos_invalidos:
-                    msg += f"<br><br><span style='color: #f87171;'><i class='fa-solid fa-triangle-exclamation'></i> <b>ERRO:</b> As cota��es <b>{', '.join(eventos_invalidos)}</b> n�o constam nem na planilha nem na mem�ria do rob�.</span>"
+                    msg += f"<br><br><span style='color: #f87171;'><i class='fa-solid fa-triangle-exclamation'></i> <b>ERRO:</b> As cotaes <b>{', '.join(eventos_invalidos)}</b> no constam nem na planilha nem na memria do rob.</span>"
 
                 sio.emit('retorno_registro_vendedor_cotacao', {
                     'sucesso': True,
@@ -1293,7 +1293,7 @@ def comando_registrar_cotacao_manual(dados):
     cotacoes = dados.get('cotacoes', [])
 
     if not cotacoes:
-        sio.emit('retorno_registro_cotacao_manual', {'sucesso': False, 'erro': 'Nenhuma cota��o recebida', 'clientId': client_id})
+        sio.emit('retorno_registro_cotacao_manual', {'sucesso': False, 'erro': 'Nenhuma cotação recebida', 'clientId': client_id})
         return
 
     caminho_excel = CONFIG_GLOBAL.get("caminho_excel", r"\\SERVIDOR2\Publico\PLANILHA DE CONTROLE VALE - ESTAGIARIOS (copia 1).xlsx")
@@ -1316,7 +1316,7 @@ def comando_registrar_cotacao_manual(dados):
         planilha_manager.adicionar_linhas("COTAÇÃO", linhas)
         sucesso_save = True
 
-        sio.emit('retorno_registro_cotacao_manual', {'sucesso': True, 'mensagem': f'{len(cotacoes)} cota��es registradas com sucesso!', 'clientId': client_id})
+        sio.emit('retorno_registro_cotacao_manual', {'sucesso': True, 'mensagem': f'{len(cotacoes)} cotaes registradas com sucesso!', 'clientId': client_id})
 
     except Exception as e:
         sio.emit('retorno_registro_cotacao_manual', {'sucesso': False, 'erro': str(e), 'clientId': client_id})
@@ -1332,7 +1332,7 @@ def comando_registrar_pedido_manual(dados):
 
     try:
         from planilha_manager import planilha_manager
-        # Iniciar no gerenciador pode ser bom, embora teoricamente j� deva estar
+        # Iniciar no gerenciador pode ser bom, embora teoricamente j deva estar
         caminho_excel = CONFIG_GLOBAL.get("caminho_excel", r"\SERVIDOR2\Publico\PLANILHA DE CONTROLE VALE - ESTAGIARIOS (copia 1).xlsx")
         planilha_manager.iniciar(caminho_excel)
 
@@ -1340,7 +1340,7 @@ def comando_registrar_pedido_manual(dados):
         if sucesso:
             sio.emit('resposta_registro_pedido_manual', {'sucesso': True, 'mensagem': f'{len(pedidos)} pedidos registrados com sucesso!', 'clientId': client_id})
         else:
-            sio.emit('resposta_registro_pedido_manual', {'sucesso': False, 'erro': 'Aba de Pedidos n�o encontrada ou erro ao gravar.', 'clientId': client_id})
+            sio.emit('resposta_registro_pedido_manual', {'sucesso': False, 'erro': 'Aba de Pedidos no encontrada ou erro ao gravar.', 'clientId': client_id})
     except Exception as e:
         logger.error(f"Erro ao registrar pedido manual: {e}")
         sio.emit('resposta_registro_pedido_manual', {'sucesso': False, 'erro': str(e), 'clientId': client_id})
@@ -1388,7 +1388,7 @@ def processar_fila_extracao(fila, client_id):
     def garantir_robo_online(portal_nome):
         bot = globals().get(f'bot_{portal_nome}')
         if not bot or not getattr(bot, 'is_ready', False):
-            emit_progresso(f'Ligando rob� do {portal_nome.title()}...')
+            emit_progresso(f'Ligando rob do {portal_nome.title()}...')
             comando_para_robo({'modo': 'ligar_robo', 'portal': portal_nome})
             espera = 0
             while not (globals().get(f'bot_{portal_nome}') and getattr(globals().get(f'bot_{portal_nome}'), 'is_ready', False)):
@@ -1412,7 +1412,7 @@ def processar_fila_extracao(fila, client_id):
             if garantir_robo_online('vale'):
                 executar_fluxo('vale')
 
-        # Ler a planilha e marcar como extra�do
+        # Ler a planilha e marcar como extrado
         from planilha_manager import planilha_manager
         planilha_manager.iniciar()
         with planilha_manager.lock:
@@ -1427,7 +1427,7 @@ def processar_fila_extracao(fila, client_id):
             if salvou:
                 planilha_manager.salvar()
 
-        emit_progresso('Processamento da fila conclu�do com sucesso!', cor="#22c55e")
+        emit_progresso('Processamento da fila concludo com sucesso!', cor="#22c55e")
     except Exception as e:
         logger.error(f"Erro conexao: {e}")
         emit_progresso(f'Erro no processamento da fila: {e}', cor="#ef4444")
@@ -1508,7 +1508,7 @@ def rotina_backup():
 
         # Backup COTACOES
         if os.path.exists(planilha_manager.caminho_cotacoes):
-            shutil.copy2(planilha_manager.caminho_cotacoes, os.path.join(caminho_backup_dir, f"COTA��ES {hoje_str}.json"))
+            shutil.copy2(planilha_manager.caminho_cotacoes, os.path.join(caminho_backup_dir, f"COTAES {hoje_str}.json"))
 
         # Backup PEDIDOS
         if os.path.exists(planilha_manager.caminho_pedidos):
@@ -1523,19 +1523,19 @@ schedule.every().day.at("07:00").do(rotina_backup)
 
 def rotina_impressao_segura():
     def _impressao_thread():
-        logger.info("? Hor�rio de impress�o atingido! Verificando se os rob�s est�o ocupados...")
-        sio.emit('relatar_progresso_coupa', {'mensagem': '? Hor�rio de impress�o (11h/15h). Verificando disponibilidade...'})
+        logger.info("? Horrio de impressão atingido! Verificando se os robs esto ocupados...")
+        sio.emit('relatar_progresso_coupa', {'mensagem': '? Horrio de impressão (11h/15h). Verificando disponibilidade...'})
         while True:
             coupa_ocupado = globals().get('bot_coupa') and getattr(globals().get('bot_coupa'), 'thread_atual', None) and globals().get('bot_coupa').thread_atual.is_alive()
             vale_ocupado = globals().get('bot_vale') and getattr(globals().get('bot_vale'), 'thread_atual', None) and globals().get('bot_vale').thread_atual.is_alive()
             if coupa_ocupado or vale_ocupado:
-                logger.info("? Rob�s est�o trabalhando. Aguardando 30 segundos para imprimir...")
+                logger.info("? Robs esto trabalhando. Aguardando 30 segundos para imprimir...")
                 time.sleep(30)
             else:
                 break
         
-        logger.info("??? Rob�s livres! Iniciando impress�o agendada...")
-        sio.emit('relatar_progresso_coupa', {'mensagem': '??? Rob�s livres! Enviando cota��es para a impressora HP...'})
+        logger.info("??? Robs livres! Iniciando impressão agendada...")
+        sio.emit('relatar_progresso_coupa', {'mensagem': '??? Robs livres! Enviando cotaes para a impressora HP...'})
         comando_imprimir({'portal': 'coupa', 'impressora': 'HP LaserJet P205X series PCL6 Class Driver', 'avisar_email': True})
 
     threading.Thread(target=_impressao_thread, daemon=True).start()
@@ -1549,14 +1549,14 @@ def enviar_email_erro(detalhes_erro):
         if not user or not pwd: return
 
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = "?? ALERTA CR�TICO - Rob� Maestro ??"
+        msg["Subject"] = "?? ALERTA CRTICO - Rob Maestro ??"
         msg["From"] = user
         msg["To"] = to
 
         corpo = f"""
         <div style="font-family: Arial; padding: 20px; background: #0f1115; color: #fff; border-radius: 8px;">
-            <h2 style="color: #e5534b;">?? Erro na Automa��o</h2>
-            <p>O rob� encontrou um problema cr�tico durante a execu��o do ciclo autom�tico (Auto-Pilot).</p>
+            <h2 style="color: #e5534b;">?? Erro na Automao</h2>
+            <p>O rob encontrou um problema crtico durante a execuo do ciclo automtico (Auto-Pilot).</p>
             <pre style="background: #1c2128; padding: 15px; color: #ff7b72; border-radius: 5px; overflow-x: auto;">{detalhes_erro}</pre>
         </div>
         """
@@ -1568,16 +1568,16 @@ def enviar_email_erro(detalhes_erro):
         server.send_message(msg)
         server.quit()
     except Exception as e:
-        logger.error(f"Erro ao enviar email de erro cr�tico: {e}")
+        logger.error(f"Erro ao enviar email de erro crtico: {e}")
 
 def loop_automacao():
-    logger.info("?? Iniciando Auto-Pilot (Coupa -> Verifica��o -> 1.5h -> Vale -> 1.5h)...")
+    logger.info("?? Iniciando Auto-Pilot (Coupa -> Verificao -> 1.5h -> Vale -> 1.5h)...")
     time.sleep(10)
 
     while True:
         # === COUPA ===
         try:
-            sio.emit('relatar_progresso_coupa', {'mensagem': '?? Auto-Pilot: Iniciando ciclo de Extra��o do COUPA...'})
+            sio.emit('relatar_progresso_coupa', {'mensagem': '?? Auto-Pilot: Iniciando ciclo de Extrao do COUPA...'})
 
             sio.emit('comando_direto', {'modo': 'ligar_robo', 'portal': 'coupa'})
 
@@ -1585,7 +1585,7 @@ def loop_automacao():
             while not (globals().get('bot_coupa') and getattr(globals().get('bot_coupa'), 'is_ready', False)):
                 time.sleep(2)
                 espera += 2
-                if espera > 120: raise Exception("Timeout ao ligar o rob� Coupa. Poss�vel Captcha ou bloqueio.")
+                if espera > 120: raise Exception("Timeout ao ligar o rob Coupa. Possvel Captcha ou bloqueio.")
 
             sio.emit('comando_direto', {'modo': 'extrair', 'portal': 'coupa'})
 
@@ -1595,7 +1595,7 @@ def loop_automacao():
 
             
 
-            sio.emit('relatar_progresso_coupa', {'mensagem': '?? Auto-Pilot: Extra��o do Coupa finalizada. Iniciando Verifica��o (Pente Fino)...'})
+            sio.emit('relatar_progresso_coupa', {'mensagem': '?? Auto-Pilot: Extrao do Coupa finalizada. Iniciando Verificao (Pente Fino)...'})
 
             sio.emit('comando_direto', {'modo': 'verificar', 'portal': 'coupa'})
 
@@ -1611,7 +1611,7 @@ def loop_automacao():
             sio.emit('relatar_progresso_coupa', {'mensagem': f'? Erro ou Captcha no Coupa. Cancelando ciclo: {e_coupa}'})
         finally:
             sio.emit('planilha_atualizada')
-            sio.emit('relatar_progresso_coupa', {'mensagem': '?? Auto-Pilot: Desligando rob� Coupa e entrando em Pausa...'})
+            sio.emit('relatar_progresso_coupa', {'mensagem': '?? Auto-Pilot: Desligando rob Coupa e entrando em Pausa...'})
 
             sio.emit('comando_direto', {'modo': 'desligar_robo', 'portal': 'coupa'})
 
@@ -1629,7 +1629,7 @@ def loop_automacao():
             while not (globals().get('bot_vale') and getattr(globals().get('bot_vale'), 'is_ready', False)):
                 time.sleep(2)
                 espera += 2
-                if espera > 120: raise Exception("Timeout ao ligar o rob� Vale.")
+                if espera > 120: raise Exception("Timeout ao ligar o rob Vale.")
 
             sio.emit('comando_direto', {'modo': 'extrair', 'portal': 'vale'})
 
@@ -1645,7 +1645,7 @@ def loop_automacao():
             sio.emit('relatar_progresso_vale', {'mensagem': f'? Erro ou Captcha na Vale. Cancelando ciclo: {e_vale}'})
         finally:
             sio.emit('planilha_atualizada')
-            sio.emit('relatar_progresso_vale', {'mensagem': '?? Auto-Pilot: Desligando rob� Vale e entrando em Pausa...'})
+            sio.emit('relatar_progresso_vale', {'mensagem': '?? Auto-Pilot: Desligando rob Vale e entrando em Pausa...'})
 
             sio.emit('comando_direto', {'modo': 'desligar_robo', 'portal': 'vale'})
 
@@ -1654,6 +1654,7 @@ def loop_automacao():
             time.sleep(90 * 60) # 1.5 horas
 
 threading.Thread(target=loop_automacao, daemon=True).start()
+threading.Thread(target=monitorar_pastas_impressao, daemon=True).start()
 
 def loop_agendamento():
     while True:
