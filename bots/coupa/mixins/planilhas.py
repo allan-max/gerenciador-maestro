@@ -70,10 +70,10 @@ class PlanilhasMixin:
         if getattr(self, 'relatorio_email_stats', None) is None:
             return
 
-        remetente = self.config.get("SMTP_USER", os.environ.get("SMTP_USER", "suporte@venturainformatica.com.br"))
-        senha = self.config.get("SMTP_PASSWORD", os.environ.get("SMTP_PASSWORD", "Vent@!@!2024*"))
+        remetente = self.config.get("SMTP_USER", os.environ.get("SMTP_USER", ""))
+        senha = self.config.get("SMTP_PASSWORD", os.environ.get("SMTP_PASSWORD", ""))
         
-        emails_destino_raw = self.config.get("emails_relatorio", os.environ.get("EMAILS_RELATORIO", "Vendas7@venturainformatica.com.br"))
+        emails_destino_raw = self.config.get("emails_relatorio", os.environ.get("EMAILS_RELATORIO", ""))
         destinatarios = [e.strip() for e in emails_destino_raw.split(',') if e.strip()]
         
         if not destinatarios:
