@@ -63,7 +63,7 @@ class PlanilhaManager:
                 try:
                     if os.path.exists(self.caminho_cotacoes):
                         with open(self.caminho_cotacoes, 'r', encoding='utf-8') as f:
-                            self.cotacoes = json.load(f)
+                            self.cotacoes = json.loads(f.read())
                         self.ultima_mod_c = os.path.getmtime(self.caminho_cotacoes)
                 except Exception as e:
                     logger.error(f"Erro ao carregar COTAÇÕES.json: {e}")
