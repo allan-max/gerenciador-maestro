@@ -6,7 +6,7 @@ echo.
 
 
 echo 1. Iniciando o Servidor Node.js (Site)...
-cd servidor-coupa-cloud
+cd Users\USER\Desktop\maestro\site-maestro
 start "Servidor Node" cmd /k "node server.js"
 
 echo Aguardando o servidor Node.js iniciar...
