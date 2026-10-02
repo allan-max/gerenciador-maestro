@@ -1019,7 +1019,7 @@ def comando_carregar_planilha_json(dados):
         from planilha_manager import planilha_manager
         planilha_manager.iniciar()
 
-        cotacoes = planilha_manager.cotacoes.get("COTA��O", [])
+        cotacoes = planilha_manager.cotacoes.get("COTAÇÃO", [])
         pedidos = planilha_manager.pedidos.get("PEDIDOS", [])
 
         if origem in ['coupa', 'vale']:
@@ -1037,7 +1037,7 @@ def comando_carregar_planilha_json(dados):
                             except: pass
 
             # Filtrar
-            cotacoes = [c for c in cotacoes if str(c.get('COTA��O', '')).strip() in chaves_validas]
+            cotacoes = [c for c in cotacoes if str(c.get('COTAÇÃO', '')).strip() in chaves_validas]
 
         # Enviar os �ltimos 500 registros invertidos
         sio.emit('retorno_planilha_json', {
@@ -1076,10 +1076,10 @@ def comando_ler_excel_dashboard(dados):
         dic_marcas = {}
         dic_vendedores = {}
 
-        linhas = planilha_manager.cotacoes.get("COTA��O", [])
+        linhas = planilha_manager.cotacoes.get("COTAÇÃO", [])
 
         for row in linhas:
-            if not row.get("COTA��O"): continue 
+            if not row.get("COTAÇÃO"): continue 
 
             vencimento = row.get("VENCIMENTO", "")
 
@@ -1188,9 +1188,9 @@ def comando_registrar_vendedor_cotacao(dados):
         planilha_manager.iniciar()
         with planilha_manager.lock:
             encontradas_set = set()
-            cotacoes_lista = planilha_manager.cotacoes.get("COTA��O", [])
+            cotacoes_lista = planilha_manager.cotacoes.get("COTAÇÃO", [])
             for cota in cotacoes_lista:
-                val_str = str(cota.get("COTA��O", "")).strip()
+                val_str = str(cota.get("COTAÇÃO", "")).strip()
                 if val_str in lista_cotacoes:
                     cota["VENDEDOR"] = vendedor
                     encontradas_set.add(val_str)
@@ -1313,7 +1313,7 @@ def comando_registrar_cotacao_manual(dados):
                 cota.get('marcas', ''),
                 ''
             ])
-        planilha_manager.adicionar_linhas("COTA��O", linhas)
+        planilha_manager.adicionar_linhas("COTAÇÃO", linhas)
         sucesso_save = True
 
         sio.emit('retorno_registro_cotacao_manual', {'sucesso': True, 'mensagem': f'{len(cotacoes)} cota��es registradas com sucesso!', 'clientId': client_id})
@@ -1416,10 +1416,10 @@ def processar_fila_extracao(fila, client_id):
         from planilha_manager import planilha_manager
         planilha_manager.iniciar()
         with planilha_manager.lock:
-            cotacoes_lista = planilha_manager.cotacoes.get("COTA��O", [])
+            cotacoes_lista = planilha_manager.cotacoes.get("COTAÇÃO", [])
             salvou = False
             for cota in cotacoes_lista:
-                val_str = str(cota.get("COTA��O", "")).strip()
+                val_str = str(cota.get("COTAÇÃO", "")).strip()
                 if val_str in pend:
                     cota["VENDEDOR"] = mapa_vendedores.get(val_str, '')
                     salvou = True
@@ -1443,8 +1443,8 @@ def comando_apagar_linha(dados):
         planilha_manager.iniciar()
 
         with planilha_manager.lock:
-            lista = planilha_manager.cotacoes["COTA��O"] if tipo == 'cotacoes' else planilha_manager.pedidos["PEDIDOS"]
-            chave_busca = "COTA��O" if tipo == 'cotacoes' else "PEDIDO"
+            lista = planilha_manager.cotacoes["COTAÇÃO"] if tipo == 'cotacoes' else planilha_manager.pedidos["PEDIDOS"]
+            chave_busca = "COTAÇÃO" if tipo == 'cotacoes' else "PEDIDO"
 
             # Find and remove
             for i, item in enumerate(lista):
@@ -1471,8 +1471,8 @@ def comando_editar_linha(dados):
         planilha_manager.iniciar()
 
         with planilha_manager.lock:
-            lista = planilha_manager.cotacoes["COTA��O"] if tipo == 'cotacoes' else planilha_manager.pedidos["PEDIDOS"]
-            chave_busca = "COTA��O" if tipo == 'cotacoes' else "PEDIDO"
+            lista = planilha_manager.cotacoes["COTAÇÃO"] if tipo == 'cotacoes' else planilha_manager.pedidos["PEDIDOS"]
+            chave_busca = "COTAÇÃO" if tipo == 'cotacoes' else "PEDIDO"
 
             # Find and update
             for i, item in enumerate(lista):
