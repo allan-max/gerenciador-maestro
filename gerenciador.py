@@ -1540,8 +1540,6 @@ def rotina_impressao_segura():
 
     threading.Thread(target=_impressao_thread, daemon=True).start()
 
-schedule.every().day.at("11:00").do(rotina_impressao_segura)
-schedule.every().day.at("15:00").do(rotina_impressao_segura)
 
 def enviar_email_erro(detalhes_erro):
     try:
