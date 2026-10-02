@@ -68,12 +68,12 @@ SMTP_PASSWORD = CONFIG_GLOBAL.get("SMTP_PASSWORD", os.environ.get("SMTP_PASSWORD
 def enviar_email_python(email_destino, token, tipo="ativacao"):
     if tipo == "ativacao":
         assunto = 'MAESTRO - Confirme o seu E-mail'
-        link = f"https://portaismaestro-nb5v.onrender.com/index.html?action=verify&token={token}"
+        link = f"https://maestro.ventura.inf.br/index.html?action=verify&token={token}"
         mensagem = "Voc� solicitou acesso ao sistema Maestro. Clique no link para ativar a sua conta:"
         botao = "ATIVAR A MINHA CONTA"
     else:
         assunto = 'MAESTRO - Recupera��o de Senha'
-        link = f"https://portaismaestro-nb5v.onrender.com/index.html?action=reset&token={token}"
+        link = f"https://maestro.ventura.inf.br/index.html?action=reset&token={token}"
         mensagem = "Voc� solicitou a recupera��o da sua senha. Clique no link para criar uma nova senha:"
         botao = "REDEFINIR MINHA SENHA"
 
@@ -150,7 +150,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [MAESTRO] %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger(__name__)
 
-URL_DO_SERVIDOR = os.getenv("URL_SERVIDOR", "https://portaismaestro-nb5v.onrender.com")
+URL_DO_SERVIDOR = os.getenv("URL_SERVIDOR", "https://maestro.ventura.inf.br")
 ROBO_SECRET = os.getenv("ROBO_SECRET", "VEMKAUAN")
 sio = socketio.Client()
 
