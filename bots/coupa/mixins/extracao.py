@@ -185,6 +185,33 @@ class ExtracaoMixin:
             # 2. SE É NEGOCIAÇãO OU NãO TEM RASCUNHO, FAZ O ACEITE
             if not entrou_nos_itens:
                 try:
+                    # ACEITAR TERMOS DE PARTICIPACAO
+                    try:
+                        # 1. Tenta os radios ocultos com valor 'true'
+                        termos = self.driver.find_elements(By.CSS_SELECTOR, "input[type='radio'][value='true'].s-termAccept")
+                        if termos:
+                            logger.info(f"    Aceitando {len(termos)} termo(s) de condição (radio)...")
+                            for termo in termos:
+                                self.driver.execute_script("arguments[0].click();", termo)
+                        
+                        # 2. Busca qualquer label ou botão genérico que esteja escrito "SIM"
+                        js_clicar_sim = """
+                        var elementos = Array.from(document.querySelectorAll('label, button, span'));
+                        var clicados = 0;
+                        elementos.forEach(function(el) {
+                            if(el.innerText && el.innerText.trim().toUpperCase() === 'SIM') {
+                                el.click();
+                                clicados++;
+                            }
+                        });
+                        return clicados;
+                        """
+                        qtd_sim = self.driver.execute_script(js_clicar_sim)
+                        if qtd_sim > 0:
+                            logger.info(f"    Forçou o clique em {qtd_sim} elemento(s) escrito 'SIM'.")
+                    except Exception as e:
+                        logger.warning(f"    Erro ao aceitar termos: {e}")
+
                     dropdowns = self.driver.find_elements(By.ID, "participation")
                     if dropdowns:
                         logger.info("    Aceitando evento (Pretendo -> Enviar)...")
@@ -283,7 +310,34 @@ class ExtracaoMixin:
                     # 3.2 Se não achou itens, FORÇA O FLUXO DO PRETENDO + INSERIR RESPOSTA
                     logger.info("         Ainda 0 itens. Forçando 'Pretendo Participar' -> 'Inserir Resposta'...")
                     try:
-                        dropdowns = self.driver.find_elements(By.ID, "participation")
+                        # ACEITAR TERMOS DE PARTICIPACAO
+                    try:
+                        # 1. Tenta os radios ocultos com valor 'true'
+                        termos = self.driver.find_elements(By.CSS_SELECTOR, "input[type='radio'][value='true'].s-termAccept")
+                        if termos:
+                            logger.info(f"    Aceitando {len(termos)} termo(s) de condição (radio)...")
+                            for termo in termos:
+                                self.driver.execute_script("arguments[0].click();", termo)
+                        
+                        # 2. Busca qualquer label ou botão genérico que esteja escrito "SIM"
+                        js_clicar_sim = """
+                        var elementos = Array.from(document.querySelectorAll('label, button, span'));
+                        var clicados = 0;
+                        elementos.forEach(function(el) {
+                            if(el.innerText && el.innerText.trim().toUpperCase() === 'SIM') {
+                                el.click();
+                                clicados++;
+                            }
+                        });
+                        return clicados;
+                        """
+                        qtd_sim = self.driver.execute_script(js_clicar_sim)
+                        if qtd_sim > 0:
+                            logger.info(f"    Forçou o clique em {qtd_sim} elemento(s) escrito 'SIM'.")
+                    except Exception as e:
+                        logger.warning(f"    Erro ao aceitar termos: {e}")
+
+                    dropdowns = self.driver.find_elements(By.ID, "participation")
                         if dropdowns:
                             logger.info("         ✅ Dropdown 'Pretendo' encontrado! Selecionando...")
                             try:
