@@ -448,6 +448,7 @@ class ValeScraper:
             self.setup_driver()
             if self.fazer_login_hibrido():
                 logger.info("✅ Robo pronto para receber tarefas da nuvem.")
+                self.is_ready = True
                 # Avisa a Nuvem que o login acabou e libera os botÃµes na tela do site!
                 self.sio.emit('tarefa_concluida', {'evento': 'Login do RobÃ´', 'sucesso': True})
         except Exception as e: 
@@ -1861,24 +1862,38 @@ Vale Bot
             return self.historico_vendedores_cache
         
         self.historico_vendedores_cache = []
-        arq = getattr(self, 'ARQUIVO_PLANILHA_CONTROLE', None)
-        if not arq or not os.path.exists(arq):
-            logger.warning(f"   ⚠️ Planilha de controle não encontrada em {arq}")
-            return []
+        json_path = getattr(self, 'PASTA_DATABASE', getattr(self, 'config', {}).get('pasta_database', r'\\SERVIDOR2\Publico\ALLAN\database\Banco-de-dados'))
         
-        try:
-            from openpyxl import load_workbook
-            wb = load_workbook(arq, read_only=True, data_only=True)
-            aba = getattr(self, 'NOME_ABA_ALVO', None)
-            ws = wb[aba] if aba and aba in wb.sheetnames else wb.active
+        if isinstance(json_path, dict) or not isinstance(json_path, str):
+            json_path = r'\\SERVIDOR2\Publico\ALLAN\database\Banco-de-dados'
             
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                data = str(row[0] or "") + " " + str(row[1] or "")
-                desc = str(row[2] or "").strip()
-                vend = str(row[5] or "").strip()
-                mod = str(row[6] or "").strip().upper()
-                marc = str(row[7] or "").strip().upper()
-                resposta = str(row[8] or "").strip().upper() if len(row) > 8 else ""
+        json_file = os.path.join(json_path, 'COTAÇÕES.json')
+        
+        if not os.path.exists(json_file):
+            logger.warning(f"   ⚠️ Arquivo COTAÇÕES.json não encontrado em {json_file}")
+            return []
+            
+        try:
+            import json
+            with open(json_file, 'r', encoding='utf-8') as f:
+                dados_completos = json.load(f)
+                
+            if 'COTAÇÃO' in dados_completos:
+                registros = dados_completos['COTAÇÃO']
+            else:
+                # Caso a estrutura mude ou seja um array direto
+                registros = dados_completos if isinstance(dados_completos, list) else []
+                
+            for row in registros:
+                # O JSON possui as chaves: COTAÇÃO, VENCIMENTO, ITEM, QUANTIDADE, LOCALIDADE, VENDEDOR, MODELOS, MARCAS, RESPOSTA
+                # A chave 'MARCAS ' às vezes tem espaço no final
+                
+                data = str(row.get('COTAÇÃO', '')) + " " + str(row.get('VENCIMENTO', ''))
+                desc = str(row.get('ITEM', '')).strip()
+                vend = str(row.get('VENDEDOR', '')).strip()
+                mod = str(row.get('MODELOS', '')).strip().upper()
+                marc = str(row.get('MARCAS ', row.get('MARCAS', ''))).strip().upper()
+                resposta = str(row.get('RESPOSTA', '')).strip().upper()
                 
                 if vend and desc and vend.lower() not in ["none", "", "nan"] and resposta == "RESPONDIDO":
                     self.historico_vendedores_cache.append({
@@ -1888,15 +1903,12 @@ Vale Bot
                         'modelo': mod,
                         'marca': marc
                     })
-            wb.close()
-            logger.info(f"   📂 Carregados {len(self.historico_vendedores_cache)} registros históricos com vendedor atribuído.")
+            logger.info(f"   ✅ Carregados {len(self.historico_vendedores_cache)} registros históricos do COTAÇÕES.json com vendedor atribuído.")
         except Exception as e:
-            if 'wb' in locals() and wb:
-                try: wb.close()
-                except: pass
-            logger.error(f"   ❌ Erro ao carregar histórico de vendedores: {e}")
+            logger.error(f"   ❌ Erro ao carregar histórico do COTAÇÕES.json: {e}")
         
         return self.historico_vendedores_cache
+
 
     def encontrar_vendedor_similar(self, item_dict, dados_ia):
         historico = self.carregar_historico()
