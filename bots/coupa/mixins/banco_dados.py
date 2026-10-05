@@ -158,6 +158,8 @@ class Banco_dadosMixin:
         if isinstance(json_path, dict) or not isinstance(json_path, str):
             json_path = r'\\SERVIDOR2\Publico\ALLAN\database\Banco-de-dados'
             
+        if not json_path.endswith('Banco-de-dados'):
+            json_path = os.path.join(json_path, 'Banco-de-dados')
         json_file = os.path.join(json_path, 'COTAÇÕES.json')
         
         if not os.path.exists(json_file):
