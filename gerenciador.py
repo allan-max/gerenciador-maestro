@@ -1460,6 +1460,7 @@ def comando_apagar_linha(dados):
         sio.emit('resposta_acao_linha', {'sucesso': False, 'erro': str(e), 'clientId': client_id})
 
 @sio.on('comando_editar_linha')
+@sio.on('comando_marcar_cotacao_respondida')
 def comando_editar_linha(dados):
     client_id = dados.get('clientId')
     tipo = dados.get('tipo')
@@ -1468,6 +1469,13 @@ def comando_editar_linha(dados):
 
     try:
         from planilha_manager import planilha_manager
+        if 'identidade' in dados:
+            if tipo != 'cotacoes' or novos_dados != {'RESPOSTA': 'RESPONDIDO'}:
+                raise ValueError('Alteração de resposta inválida.')
+            from resposta_cotacao import marcar_respondida
+            marcar_respondida(planilha_manager, dados['identidade'])
+            sio.emit('resposta_acao_linha', {'sucesso': True, 'mensagem': 'Resposta salva no JSON.', 'clientId': client_id})
+            return
         planilha_manager.iniciar()
 
         with planilha_manager.lock:
