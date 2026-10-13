@@ -17,6 +17,17 @@ from dotenv import load_dotenv
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from logging.handlers import RotatingFileHandler
+
+PASTA_LOGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+os.makedirs(PASTA_LOGS, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [PID %(process)d] [%(threadName)s] %(name)s %(levelname)s %(message)s',
+    handlers=[logging.StreamHandler(), RotatingFileHandler(
+        os.path.join(PASTA_LOGS, 'gerenciador.log'), maxBytes=5_000_000, backupCount=5, encoding='utf-8')],
+)
+logger = logging.getLogger(__name__)
 
 def carregar_config():
     path = 'CONFIG.json'
@@ -147,8 +158,6 @@ Sistema Maestro
         print(f"[MAESTRO] Erro ao enviar e-mail de aviso de limpeza: {e}")
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [MAESTRO] %(message)s', datefmt='%H:%M:%S')
-logger = logging.getLogger(__name__)
 
 URL_DO_SERVIDOR = os.getenv("URL_SERVIDOR", "https://maestro.ventura.inf.br")
 ROBO_SECRET = os.getenv("ROBO_SECRET", "VEMKAUAN")
@@ -1195,7 +1204,8 @@ def comando_registrar_vendedor_cotacao(dados):
                     cota["VENDEDOR"] = vendedor
                     encontradas_set.add(val_str)
 
-            planilha_manager.salvar()
+            if not planilha_manager.salvar():
+                raise RuntimeError("Falha ao salvar a base; consulte logs/gerenciador.log.")
             sucesso_save = True
 
             nao_encontradas = [c for c in lista_cotacoes if c not in encontradas_set]
@@ -1313,7 +1323,8 @@ def comando_registrar_cotacao_manual(dados):
                 cota.get('marcas', ''),
                 ''
             ])
-        planilha_manager.adicionar_linhas("COTAÇÃO", linhas)
+        if not planilha_manager.adicionar_linhas("COTAÇÃO", linhas):
+            raise RuntimeError("Falha ao salvar cotacoes; consulte logs/gerenciador.log.")
         sucesso_save = True
 
         sio.emit('retorno_registro_cotacao_manual', {'sucesso': True, 'mensagem': f'{len(cotacoes)} cotaes registradas com sucesso!', 'clientId': client_id})
@@ -1425,7 +1436,8 @@ def processar_fila_extracao(fila, client_id):
                     salvou = True
 
             if salvou:
-                planilha_manager.salvar()
+                if not planilha_manager.salvar():
+                    raise RuntimeError("Falha ao salvar a base; consulte logs/gerenciador.log.")
 
         emit_progresso('Processamento da fila concludo com sucesso!', cor="#22c55e")
     except Exception as e:
@@ -1453,7 +1465,8 @@ def comando_apagar_linha(dados):
                     del lista[i]
                     break
 
-            planilha_manager.salvar()
+            if not planilha_manager.salvar():
+                raise RuntimeError("Falha ao salvar a base; consulte logs/gerenciador.log.")
 
         sio.emit('resposta_acao_linha', {'sucesso': True, 'mensagem': 'Linha apagada com sucesso!', 'clientId': client_id})
     except Exception as e:
@@ -1491,7 +1504,8 @@ def comando_editar_linha(dados):
                         lista[i][k] = v
                     break
 
-            planilha_manager.salvar()
+            if not planilha_manager.salvar():
+                raise RuntimeError("Falha ao salvar a base; consulte logs/gerenciador.log.")
 
         sio.emit('resposta_acao_linha', {'sucesso': True, 'mensagem': 'Linha atualizada com sucesso!', 'clientId': client_id})
     except Exception as e:

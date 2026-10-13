@@ -2,6 +2,7 @@ import os
 import threading
 import json
 import logging
+import tempfile
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -52,38 +53,69 @@ class PlanilhaManager:
             except: pass
         self.caminho_cotacoes = os.path.join(dir_db, "COTAÇÕES.json")
         self.caminho_pedidos = os.path.join(dir_db, "PEDIDOS.json")
+        self.iniciado = False
 
     def iniciar(self, caminho_arquivo=None):
         with self.lock:
-            import os
-            mod_c = os.path.getmtime(self.caminho_cotacoes) if os.path.exists(self.caminho_cotacoes) else 0
-            mod_p = os.path.getmtime(self.caminho_pedidos) if os.path.exists(self.caminho_pedidos) else 0
-            
-            if not self.iniciado or mod_c > getattr(self, 'ultima_mod_c', 0):
-                try:
-                    if os.path.exists(self.caminho_cotacoes):
-                        with open(self.caminho_cotacoes, 'r', encoding='utf-8') as f:
-                            self.cotacoes = json.loads(f.read())
-                        self.ultima_mod_c = os.path.getmtime(self.caminho_cotacoes)
-                except Exception as e:
-                    logger.error(f"Erro ao carregar COTAÇÕES.json: {e}")
-                    
-            if not self.iniciado or mod_p > getattr(self, 'ultima_mod_p', 0):
-                try:
-                    if os.path.exists(self.caminho_pedidos):
-                        with open(self.caminho_pedidos, 'r', encoding='utf-8') as f:
-                            text = f.read()
-                            import re
-                            text = re.sub(r',\s*\}', '}', text)
-                            text = re.sub(r',\s*\]', ']', text)
-                            if not text.strip().startswith('{'):
-                                text = '{' + text + '}'
-                            self.pedidos = json.loads(text)
-                        self.ultima_mod_p = os.path.getmtime(self.caminho_pedidos)
-                except Exception as e:
-                    logger.error(f"Erro ao carregar PEDIDOS.json: {e}")
-                
+            self._originais = getattr(self, '_originais', {})
+            self._assinaturas = getattr(self, '_assinaturas', {})
+            try:
+                for caminho, atributo, chave in (
+                    (self.caminho_cotacoes, 'cotacoes', 'COTAÇÃO'),
+                    (self.caminho_pedidos, 'pedidos', 'PEDIDOS'),
+                ):
+                    stat = os.stat(caminho)
+                    assinatura = (stat.st_mtime_ns, stat.st_size)
+                    if self.iniciado and self._assinaturas.get(caminho) == assinatura:
+                        continue
+                    with open(caminho, 'rb') as f:
+                        original = f.read()
+                    texto = original.decode('utf-8-sig')
+                    if chave == 'PEDIDOS':
+                        import re
+                        texto = re.sub(r',\s*\}', '}', texto)
+                        texto = re.sub(r',\s*\]', ']', texto)
+                        if not texto.strip().startswith('{'):
+                            texto = '{' + texto + '}'
+                    banco = json.loads(texto)
+                    if not isinstance(banco, dict) or not isinstance(banco.get(chave), list):
+                        raise ValueError(f'Estrutura inválida: {caminho}')
+                    if any(r is not None and not isinstance(r, dict) for r in banco[chave]):
+                        raise ValueError(f'Linha inválida: {caminho}')
+                    if (os.stat(caminho).st_mtime_ns, os.stat(caminho).st_size) != assinatura:
+                        raise RuntimeError(f'Arquivo mudou durante a leitura: {caminho}')
+                    setattr(self, atributo, banco)
+                    self._originais[caminho] = original
+                    self._assinaturas[caminho] = assinatura
+            except Exception:
+                self.iniciado = False
+                logger.exception('Leitura da base falhou; gravações bloqueadas. Verifique os JSONs e reinicie.')
+                raise
             self.iniciado = True
+
+    def _salvar_arquivo(self, caminho, banco):
+        if not self.iniciado or caminho not in self._originais:
+            raise RuntimeError('Base não carregada; gravação bloqueada.')
+        original = self._originais[caminho]
+        novo = json.dumps(banco, indent=1, ensure_ascii=False).encode('utf-8')
+        temporario = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=os.path.dirname(caminho), prefix='maestro-', suffix='.tmp', delete=False) as f:
+                temporario = f.name
+                f.write(novo)
+                f.flush()
+                os.fsync(f.fileno())
+            with open(caminho, 'rb') as f:
+                if f.read() != original:
+                    raise RuntimeError('Outro serviço alterou a base; gravação cancelada. Tente novamente.')
+            os.replace(temporario, caminho)
+            self._originais[caminho] = novo
+            stat = os.stat(caminho)
+            self._assinaturas[caminho] = (stat.st_mtime_ns, stat.st_size)
+            logger.info('JSON salvo: %s (%s bytes)', caminho, len(novo))
+        finally:
+            if temporario and os.path.exists(temporario):
+                os.unlink(temporario)
 
     def salvar(self):
         with self.lock:
@@ -92,13 +124,12 @@ class PlanilhaManager:
                     self.cotacoes["COTAÇÃO"] = [x for x in self.cotacoes["COTAÇÃO"] if x is not None]
                 if "PEDIDOS" in self.pedidos:
                     self.pedidos["PEDIDOS"] = [x for x in self.pedidos["PEDIDOS"] if x is not None]
-                with open(self.caminho_cotacoes, 'w', encoding='utf-8') as f:
-                    json.dump(self.cotacoes, f, indent=1, ensure_ascii=False)
-                with open(self.caminho_pedidos, 'w', encoding='utf-8') as f:
-                    json.dump(self.pedidos, f, indent=1, ensure_ascii=False)
+                self._salvar_arquivo(self.caminho_cotacoes, self.cotacoes)
+                self._salvar_arquivo(self.caminho_pedidos, self.pedidos)
                 return True
             except Exception as e:
-                logger.error(f"Erro ao salvar JSONs: {e}")
+                self.iniciado = False
+                logger.exception('Erro ao salvar JSONs; não continuar com dados em memória.')
                 return False
 
     def adicionar_linhas(self, aba_nome_aproximado, lista_linhas, com_estilo=False):
@@ -205,10 +236,13 @@ class PlanilhaManager:
                             salvou = True
             
             if salvou:
-                with open(self.caminho_cotacoes, 'w', encoding='utf-8') as f:
-                    import json
-                    json.dump(self.cotacoes, f, indent=1, ensure_ascii=False)
-                return True
+                try:
+                    self._salvar_arquivo(self.caminho_cotacoes, self.cotacoes)
+                    return True
+                except Exception:
+                    self.iniciado = False
+                    logger.exception('Falha ao salvar respostas; JSON anterior preservado.')
+                    raise
             return False
                 
             for row in lista:
