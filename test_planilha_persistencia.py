@@ -168,6 +168,44 @@ m.salvar()
         novo.iniciar()
         self.assertEqual(len(novo.cotacoes['COTAÇÃO']), 1)
 
+    def test_status_que_ja_esta_igual_nao_regrava_a_base(self):
+        """A verificação do Coupa chama isto por cotação: regravar 5,6 MB a cada
+        2 s sem mudança fazia o portal ler o arquivo no meio de uma troca."""
+        self.assertTrue(self.manager.atualizar_status_respostas('COTAÇÃO', {'123': True}, 1, 9))
+        antes = os.stat(self.cota).st_mtime_ns
+        os.utime(self.cota, ns=(1, 1))
+        self.manager.iniciar()
+        with patch('os.replace', side_effect=AssertionError('não devia gravar')):
+            self.assertFalse(self.manager.atualizar_status_respostas('COTAÇÃO', {'123': True}, 1, 9))
+            self.assertFalse(self.manager.atualizar_coluna_por_chave('COTAÇÃO', {'123': 'Item original'}, 1, 3))
+        self.assertNotEqual(antes, 0)
+
+    def test_salvar_cotacao_nao_regrava_pedidos_alterados_por_outro_servico(self):
+        externo = json.dumps({'PEDIDOS': [{'PEDIDO': '456'}, {'PEDIDO': 'do cadastro'}]}).encode('utf-8')
+        self.pedido.write_bytes(externo)
+        self.manager.cotacoes['COTAÇÃO'][0]['RESPOSTA'] = 'RESPONDIDO'
+        self.assertTrue(self.manager.salvar())
+        self.assertEqual(self.pedido.read_bytes(), externo)
+        self.assertEqual(json.loads(self.cota.read_text(encoding='utf-8'))['COTAÇÃO'][0]['RESPOSTA'], 'RESPONDIDO')
+
+    def test_leitura_tenta_de_novo_se_outro_processo_troca_o_arquivo(self):
+        real = open
+        trocou = []
+
+        def abrir(caminho, *a, **k):
+            f = real(caminho, *a, **k)
+            if str(caminho) == str(self.cota) and not trocou:
+                trocou.append(1)
+                self.cota.write_text(json.dumps({'COTAÇÃO': [{'COTAÇÃO': 'novo'}]}), encoding='utf-8')
+                os.utime(self.cota, ns=(5, 5))
+            return f
+        os.utime(self.cota, ns=(3, 3))
+        namespace['open'] = abrir
+        namespace['time'] = type('T', (), {'sleep': staticmethod(lambda s: None)})
+        self.addCleanup(namespace.pop, 'open')
+        self.manager.iniciar()
+        self.assertEqual(self.manager.cotacoes['COTAÇÃO'], [{'COTAÇÃO': 'novo'}])
+
 
 if __name__ == '__main__':
     unittest.main()
