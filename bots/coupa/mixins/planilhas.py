@@ -450,7 +450,8 @@ Coupa Bot
             
                 cnt += 1
         
-            planilha_manager.adicionar_linhas(self.NOME_ABA_ALVO, linhas_inserir)
+            if not planilha_manager.adicionar_linhas(self.NOME_ABA_ALVO, linhas_inserir):
+                raise RuntimeError("Falha ao salvar cotacoes; consulte logs/gerenciador.log.")
         
             logger.info(f"JSON salvo com sucesso (+{cnt} linhas).")
             return True
