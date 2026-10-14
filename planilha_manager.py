@@ -3,6 +3,7 @@ import threading
 import json
 import logging
 import tempfile
+import time
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -59,17 +60,26 @@ class PlanilhaManager:
         with self.lock:
             self._originais = getattr(self, '_originais', {})
             self._assinaturas = getattr(self, '_assinaturas', {})
+            self._carregado = getattr(self, '_carregado', {})
             try:
                 for caminho, atributo, chave in (
                     (self.caminho_cotacoes, 'cotacoes', 'COTAÇÃO'),
                     (self.caminho_pedidos, 'pedidos', 'PEDIDOS'),
                 ):
-                    stat = os.stat(caminho)
-                    assinatura = (stat.st_mtime_ns, stat.st_size)
+                    for tentativa in range(5):   # outro processo pode trocar o arquivo no meio da leitura
+                        stat = os.stat(caminho)
+                        assinatura = (stat.st_mtime_ns, stat.st_size)
+                        if self.iniciado and self._assinaturas.get(caminho) == assinatura:
+                            break
+                        with open(caminho, 'rb') as f:
+                            original = f.read()
+                        if (os.stat(caminho).st_mtime_ns, os.stat(caminho).st_size) == assinatura:
+                            break
+                        time.sleep(1)
+                    else:
+                        raise RuntimeError(f'Arquivo mudou durante a leitura: {caminho}')
                     if self.iniciado and self._assinaturas.get(caminho) == assinatura:
                         continue
-                    with open(caminho, 'rb') as f:
-                        original = f.read()
                     texto = original.decode('utf-8-sig')
                     if chave == 'PEDIDOS':
                         import re
@@ -82,10 +92,9 @@ class PlanilhaManager:
                         raise ValueError(f'Estrutura inválida: {caminho}')
                     if any(r is not None and not isinstance(r, dict) for r in banco[chave]):
                         raise ValueError(f'Linha inválida: {caminho}')
-                    if (os.stat(caminho).st_mtime_ns, os.stat(caminho).st_size) != assinatura:
-                        raise RuntimeError(f'Arquivo mudou durante a leitura: {caminho}')
                     setattr(self, atributo, banco)
                     self._originais[caminho] = original
+                    self._carregado[caminho] = self._serializar(banco)
                     self._assinaturas[caminho] = assinatura
             except Exception:
                 self.iniciado = False
@@ -97,7 +106,9 @@ class PlanilhaManager:
         if not self.iniciado or caminho not in self._originais:
             raise RuntimeError('Base não carregada; gravação bloqueada.')
         original = self._originais[caminho]
-        novo = json.dumps(banco, indent=1, ensure_ascii=False).encode('utf-8')
+        novo = self._serializar(banco)
+        if novo == self._carregado.get(caminho):
+            return   # nada mudou na memória: não regrava (nem pisa no que outro serviço gravou)
         temporario = None
         try:
             with tempfile.NamedTemporaryFile(dir=os.path.dirname(caminho), prefix='maestro-', suffix='.tmp', delete=False) as f:
@@ -110,12 +121,17 @@ class PlanilhaManager:
                     raise RuntimeError('Outro serviço alterou a base; gravação cancelada. Tente novamente.')
             os.replace(temporario, caminho)
             self._originais[caminho] = novo
+            self._carregado[caminho] = novo
             stat = os.stat(caminho)
             self._assinaturas[caminho] = (stat.st_mtime_ns, stat.st_size)
             logger.info('JSON salvo: %s (%s bytes)', caminho, len(novo))
         finally:
             if temporario and os.path.exists(temporario):
                 os.unlink(temporario)
+
+    @staticmethod
+    def _serializar(banco):
+        return json.dumps(banco, indent=1, ensure_ascii=False).encode('utf-8')
 
     def salvar(self):
         with self.lock:
@@ -172,7 +188,7 @@ class PlanilhaManager:
                 val = row.get(chave_str)
                 if val is not None:
                     val_s = str(val).strip()
-                    if val_s in dict_chaves_valores:
+                    if val_s in dict_chaves_valores and row.get(alvo_str) != dict_chaves_valores[val_s]:
                         row[alvo_str] = dict_chaves_valores[val_s]
                         salvou = True
                         
@@ -230,10 +246,12 @@ class PlanilhaManager:
                         if pode_atualizar:
                             status_booleano = mapa_cotacao_status[val_s]
                             if isinstance(status_booleano, bool):
-                                row[alvo_str] = "RESPONDIDO" if status_booleano else "NÃO RESPONDIDO"
+                                novo_status = "RESPONDIDO" if status_booleano else "NÃO RESPONDIDO"
                             else:
-                                row[alvo_str] = status_booleano
-                            salvou = True
+                                novo_status = status_booleano
+                            if row.get(alvo_str) != novo_status:
+                                row[alvo_str] = novo_status
+                                salvou = True
             
             if salvou:
                 try:
