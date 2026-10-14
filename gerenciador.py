@@ -541,7 +541,9 @@ def validar_login(dados):
                 'isAdmin': usuarios[email].get('admin', False), 
                 'isDev': usuarios[email].get('dev', False), 
                 'hasDashboardAccess': usuarios[email].get('dashboard_access', False),
-                'vendedor': usuarios[email].get('vendedor', ''), # <-- NOVO
+                'hasPlanilhaAccess': usuarios[email].get('planilha_access', False), # <-- NOVO
+                'hasPortaisAccess': usuarios[email].get('portais_access', False),   # <-- NOVO
+                'vendedor': usuarios[email].get('vendedor', ''),
                 'clientId': cid
             })
     else: 
@@ -979,7 +981,10 @@ def salvar_config_admin(dados):
     sio.emit('receber_config_admin', {'config': CONFIG_GLOBAL, 'clientId': client_id, 'sucesso': True})
 
 # ==================== PAINEL ADMIN: CONTAS E PRIVILEGIOS ====================
-CAMPOS_PUBLICOS_USUARIO = ('verificado', 'admin', 'dev', 'dashboard_access', 'bloqueado', 'vendedor')
+CAMPOS_PUBLICOS_USUARIO = (
+    'verificado', 'admin', 'dev', 'dashboard_access', 
+    'planilha_access', 'portais_access', 'bloqueado', 'vendedor'
+)
 
 @sio.on('admin_listar_usuarios')
 def admin_listar_usuarios(dados):
@@ -994,6 +999,30 @@ def admin_listar_usuarios(dados):
     except Exception as e:
         logger.error(f"Erro ao listar usuarios para o admin: {e}")
         sio.emit('admin_resposta_usuarios', {'sucesso': False, 'erro': 'Erro ao ler o banco de usuários.', 'clientId': client_id})
+
+@sio.on('admin_alterar_acesso_dashboard')
+def admin_alterar_acesso_dashboard(dados):
+    client_id = dados.get('clientId')
+    email = (dados.get('email') or '').strip().lower()
+    acesso = bool(dados.get('acesso'))
+    campo = dados.get('campo') or 'dashboard_access' # <-- NOVO: aceita dashboard_access, planilha_access ou portais_access
+
+    if campo not in ('dashboard_access', 'planilha_access', 'portais_access'):
+        sio.emit('admin_resposta_acesso', {'sucesso': False, 'erro': 'Permissão inválida.', 'clientId': client_id})
+        return
+
+    try:
+        usuarios = carregar_usuarios()
+        if email not in usuarios:
+            sio.emit('admin_resposta_acesso', {'sucesso': False, 'erro': 'Usuário não encontrado.', 'clientId': client_id})
+            return
+        usuarios[email][campo] = acesso
+        salvar_usuarios(usuarios)
+        logger.info(f"Admin alterou {campo} de {email} para {acesso}")
+        sio.emit('admin_resposta_acesso', {'sucesso': True, 'email': email, 'campo': campo, 'acesso': acesso, 'clientId': client_id})
+    except Exception as e:
+        logger.error(f"Erro ao alterar acesso de {email}: {e}")
+        sio.emit('admin_resposta_acesso', {'sucesso': False, 'erro': 'Erro ao salvar o banco de usuários.', 'clientId': client_id})
 
 @sio.on('admin_alterar_vendedor_usuario')
 def admin_alterar_vendedor_usuario(dados):
