@@ -6,3 +6,11 @@ logs/
 *.pdf
 database/
 AribaSourcing/
+
+# dados e segredos do servidor: nunca versionar
+CONFIG.json
+banco_usuarios.json
+banco_ips_bloqueados.json
+banco_teste.jsonl
+teste.xlsx
+gerenciador.instancia

@@ -1,4 +1,9 @@
 # -*- coding: utf-8 -*-
+import sys
+if __name__ == '__main__':
+    # Bots fazem "from gerenciador import ...": sem isto o Python roda este arquivo
+    # de novo dentro do mesmo processo e sobe um segundo piloto automático.
+    sys.modules.setdefault('gerenciador', sys.modules['__main__'])
 import socketio
 import threading
 import logging
@@ -64,6 +69,17 @@ if os.environ.get("URL_SERVIDOR") == "http://localhost:8000":
 else:
     CONFIG_GLOBAL["caminho_banco_dados"] = r"\\SERVIDOR2\Publico\ALLAN\database\Banco-de-dados"
     CONFIG_GLOBAL["caminho_backups"] = r"\\SERVIDOR2\Publico\ALLAN\database\backups_excel"
+
+if __name__ == '__main__':
+    # Dois gerenciadores na mesma base brigam pelos JSONs (13-14/10: 790 gravações recusadas)
+    from instancia_unica import JaRodando, instancia_unica
+    try:
+        _TRAVA_INSTANCIA = instancia_unica(CONFIG_GLOBAL["caminho_banco_dados"])
+    except JaRodando as e:
+        logger.error(f"Já existe um gerenciador rodando ({e}). Feche-o antes de abrir outro.")
+        try: input("Pressione Enter para fechar esta janela...")
+        except EOFError: pass
+        sys.exit(3)
 
 from planilha_manager import planilha_manager
 planilha_manager.iniciar(CONFIG_GLOBAL["caminho_excel"])
