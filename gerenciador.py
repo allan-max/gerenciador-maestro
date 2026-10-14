@@ -76,15 +76,21 @@ def salvar_config(novas_config):
 SMTP_USER = CONFIG_GLOBAL.get("SMTP_USER", os.environ.get("SMTP_USER", ""))
 SMTP_PASSWORD = CONFIG_GLOBAL.get("SMTP_PASSWORD", os.environ.get("SMTP_PASSWORD", ""))
 
+def url_base_site():
+    # Links dos e-mails apontam para o mesmo servidor ao qual o gerenciador esta conectado
+    # (localhost no teste local, dominio oficial em producao). Pode ser sobrescrito com URL_SITE.
+    base = os.getenv("URL_SITE") or os.getenv("URL_SERVIDOR") or "https://maestro.ventura.inf.br"
+    return base.rstrip('/')
+
 def enviar_email_python(email_destino, token, tipo="ativacao"):
     if tipo == "ativacao":
         assunto = 'MAESTRO - Confirme o seu E-mail'
-        link = f"https://maestro.ventura.inf.br/index.html?action=verify&token={token}"
+        link = f"{url_base_site()}/index.html?action=verify&token={token}"
         mensagem = "Voc solicitou acesso ao sistema Maestro. Clique no link para ativar a sua conta:"
         botao = "ATIVAR A MINHA CONTA"
     else:
         assunto = 'MAESTRO - Recuperao de Senha'
-        link = f"https://maestro.ventura.inf.br/index.html?action=reset&token={token}"
+        link = f"{url_base_site()}/index.html?action=reset&token={token}"
         mensagem = "Voc solicitou a recuperao da sua senha. Clique no link para criar uma nova senha:"
         botao = "REDEFINIR MINHA SENHA"
 
@@ -106,12 +112,15 @@ def enviar_email_python(email_destino, token, tipo="ativacao"):
         msg.attach(MIMEText(corpo, 'html'))
 
         # A Locaweb geralmente utiliza o servidor 'email-ssl.com.br' na porta 587
-        server = smtplib.SMTP('email-ssl.com.br', 587)
+        server = smtplib.SMTP('email-ssl.com.br', 587, timeout=15)
         server.starttls()
         server.login(SMTP_USER, SMTP_PASSWORD)
         server.send_message(msg)
         server.quit()
 
+        logger.info(f"? E-mail ({tipo}) enviado para {email_destino}.")
+        if "localhost" in link or "127.0.0.1" in link:
+            logger.info(f"[TESTE LOCAL] Link do e-mail: {link}")
         return True
     except Exception as e:
         logger.error(f"? Erro no envio pela Locaweb: {e}")
@@ -510,9 +519,18 @@ def validar_login(dados):
         if usuarios[email].get('bloqueado'): 
             sio.emit('resultado_login', {'sucesso': False, 'erro': 'Conta suspensa.', 'clientId': cid})
         else: 
-            sio.emit('resultado_login', {'sucesso': True, 'user': email, 'isAdmin': usuarios[email].get('admin', False), 'isDev': usuarios[email].get('dev', False), 'hasDashboardAccess': usuarios[email].get('dashboard_access', False), 'clientId': cid})
+            sio.emit('resultado_login', {
+                'sucesso': True, 
+                'user': email, 
+                'isAdmin': usuarios[email].get('admin', False), 
+                'isDev': usuarios[email].get('dev', False), 
+                'hasDashboardAccess': usuarios[email].get('dashboard_access', False),
+                'vendedor': usuarios[email].get('vendedor', ''), # <-- NOVO
+                'clientId': cid
+            })
     else: 
         sio.emit('resultado_login', {'sucesso': False, 'erro': 'E-mail ou Senha incorretos.', 'clientId': cid})
+  
 @sio.on('pedir_dados_dev_seguro')
 def pedir_dados_dev_seguro(dados):
     payload_cifrado = dados.get('payload_cifrado')
@@ -549,11 +567,34 @@ def pedir_dados_dev_seguro(dados):
 
     sio.emit('resposta_painel_dev_cifrado', {'payload': pacote_cifrado, 'clientId': client_id})
 
+VALIDADE_TOKEN_RECUPERACAO_SEG = 60 * 60  # link de redefinicao vale 1 hora
+
+def _token_recuperacao_valido(info, token):
+    if not token or info.get('token_recuperacao') != token:
+        return False
+    expira = info.get('token_recuperacao_expira')
+    return expira is None or time.time() <= float(expira)
+
 @sio.on('verificar_token_python')
 def verificar_token_python(dados):
     token = dados.get('token')
     client_id = dados.get('clientId')
+    tipo = dados.get('tipo', 'ativacao')
     usuarios = carregar_usuarios()
+
+    # Token vazio nunca e valido (evita casar com usuarios cujo token e None)
+    if not token:
+        sio.emit('resultado_verificacao_token', {'sucesso': False, 'erro': 'Link invalido.', 'clientId': client_id})
+        return
+
+    # Link de redefinicao de senha: apenas confere se o token existe e nao expirou (nao consome)
+    if tipo == 'verificar_recuperacao':
+        valido = any(_token_recuperacao_valido(info, token) for info in usuarios.values())
+        if valido:
+            sio.emit('resultado_verificacao_token', {'sucesso': True, 'clientId': client_id})
+        else:
+            sio.emit('resultado_verificacao_token', {'sucesso': False, 'erro': 'Link invalido ou expirado.', 'clientId': client_id})
+        return
 
     sucesso = False
     email_validado = None
@@ -576,23 +617,28 @@ def verificar_token_python(dados):
 
 @sio.on('gerar_token_recuperacao')
 def gerar_token_recuperacao(dados):
-    email = dados.get('email', '').lower()
+    email = (dados.get('email') or '').strip().lower()
     client_id = dados.get('clientId')
     usuarios = carregar_usuarios()
 
     if email in usuarios:
         token = str(uuid.uuid4())
         usuarios[email]['token_recuperacao'] = token
+        usuarios[email]['token_recuperacao_expira'] = time.time() + VALIDADE_TOKEN_RECUPERACAO_SEG
         salvar_usuarios(usuarios)
 
         sucesso = enviar_email_python(email, token, tipo="recuperacao")
         if sucesso:
             sio.emit('resposta_recuperacao_solicitada', {'sucesso': True, 'clientId': client_id})
         else:
-            sio.emit('resposta_recuperacao_solicitada', {'sucesso': False, 'erro': 'Erro ao enviar e-mail de recuperao.', 'clientId': client_id})
+            sio.emit('resposta_recuperacao_solicitada', {'sucesso': False, 'erro': 'Erro ao enviar o e-mail de recuperação. Tente novamente em instantes.', 'clientId': client_id})
     else:
-        # Por segurana, no confirmamos se o e-mail existe ou no, mas enviamos 'sucesso' para a interface
-        sio.emit('resposta_recuperacao_solicitada', {'sucesso': True, 'clientId': client_id})
+        logger.warning(f"Recuperacao de senha pedida para e-mail NAO cadastrado: {email} (nenhum e-mail enviado)")
+        sio.emit('resposta_recuperacao_solicitada', {
+            'sucesso': False,
+            'erro': 'Este e-mail não está cadastrado no Maestro. Verifique o endereço ou crie uma conta.',
+            'clientId': client_id
+        })
 
 @sio.on('processar_nova_senha')
 def processar_nova_senha(dados):
@@ -601,12 +647,18 @@ def processar_nova_senha(dados):
     client_id = dados.get('clientId')
     usuarios = carregar_usuarios()
 
+    if not token or not nova_senha:
+        sio.emit('resultado_nova_senha', {'sucesso': False, 'erro': 'Link invalido ou expirado.', 'clientId': client_id})
+        return
+
     sucesso = False
     for email, info in usuarios.items():
-        if info.get('token_recuperacao') == token:
+        if _token_recuperacao_valido(info, token):
             info['senha'] = nova_senha
             info['token_recuperacao'] = None
+            info.pop('token_recuperacao_expira', None)
             sucesso = True
+            logger.info(f"Senha redefinida com sucesso para {email}")
             break
 
     if sucesso:
@@ -910,6 +962,59 @@ def salvar_config_admin(dados):
     SMTP_PASSWORD = CONFIG_GLOBAL.get("SMTP_PASSWORD", os.environ.get("SMTP_PASSWORD", ""))
     sio.emit('receber_config_admin', {'config': CONFIG_GLOBAL, 'clientId': client_id, 'sucesso': True})
 
+# ==================== PAINEL ADMIN: CONTAS E PRIVILEGIOS ====================
+CAMPOS_PUBLICOS_USUARIO = ('verificado', 'admin', 'dev', 'dashboard_access', 'bloqueado', 'vendedor')
+
+@sio.on('admin_listar_usuarios')
+def admin_listar_usuarios(dados):
+    client_id = dados.get('clientId')
+    try:
+        usuarios = carregar_usuarios()
+        lista = {
+            email: {k: info.get(k, '' if k == 'vendedor' else False) for k in CAMPOS_PUBLICOS_USUARIO}
+            for email, info in usuarios.items()
+        }
+        sio.emit('admin_resposta_usuarios', {'sucesso': True, 'usuarios': lista, 'clientId': client_id})
+    except Exception as e:
+        logger.error(f"Erro ao listar usuarios para o admin: {e}")
+        sio.emit('admin_resposta_usuarios', {'sucesso': False, 'erro': 'Erro ao ler o banco de usuários.', 'clientId': client_id})
+
+@sio.on('admin_alterar_vendedor_usuario')
+def admin_alterar_vendedor_usuario(dados):
+    client_id = dados.get('clientId')
+    email = (dados.get('email') or '').strip().lower()
+    vendedor = (dados.get('vendedor') or '').strip()
+    try:
+        usuarios = carregar_usuarios()
+        if email not in usuarios:
+            sio.emit('admin_resposta_vendedor', {'sucesso': False, 'erro': 'Usuário não encontrado.', 'clientId': client_id})
+            return
+        usuarios[email]['vendedor'] = vendedor
+        salvar_usuarios(usuarios)
+        logger.info(f"Admin vinculou vendedor '{vendedor}' ao usuario {email}")
+        sio.emit('admin_resposta_vendedor', {'sucesso': True, 'email': email, 'vendedor': vendedor, 'clientId': client_id})
+    except Exception as e:
+        logger.error(f"Erro ao alterar vendedor de {email}: {e}")
+        sio.emit('admin_resposta_vendedor', {'sucesso': False, 'erro': 'Erro ao salvar o banco de usuários.', 'clientId': client_id})
+
+@sio.on('admin_alterar_acesso_dashboard')
+def admin_alterar_acesso_dashboard(dados):
+    client_id = dados.get('clientId')
+    email = (dados.get('email') or '').strip().lower()
+    acesso = bool(dados.get('acesso'))
+    try:
+        usuarios = carregar_usuarios()
+        if email not in usuarios:
+            sio.emit('admin_resposta_acesso', {'sucesso': False, 'erro': 'Usuário não encontrado.', 'clientId': client_id})
+            return
+        usuarios[email]['dashboard_access'] = acesso
+        salvar_usuarios(usuarios)
+        logger.info(f"Admin alterou dashboard_access de {email} para {acesso}")
+        sio.emit('admin_resposta_acesso', {'sucesso': True, 'email': email, 'acesso': acesso, 'clientId': client_id})
+    except Exception as e:
+        logger.error(f"Erro ao alterar acesso de {email}: {e}")
+        sio.emit('admin_resposta_acesso', {'sucesso': False, 'erro': 'Erro ao salvar o banco de usuários.', 'clientId': client_id})
+
 @sio.on('connect')
 def connect():
     logger.info("?? Conectado!")
@@ -1024,6 +1129,7 @@ def comando_carregar_planilha_json(dados):
     dados = dados or {}
     client_id = dados.get('clientId')
     origem = dados.get('origem', 'todas')
+    vendedor_filtro = (dados.get('vendedor_filtro') or '').strip().upper() # <-- NOVO
     try:
         from planilha_manager import planilha_manager
         planilha_manager.iniciar()
@@ -1045,10 +1151,16 @@ def comando_carregar_planilha_json(dados):
                                 if chave: chaves_validas.add(chave)
                             except: pass
 
-            # Filtrar
             cotacoes = [c for c in cotacoes if str(c.get('COTAÇÃO', '')).strip() in chaves_validas]
 
-        # Enviar os ltimos 500 registros invertidos
+        # <-- NOVO: Filtra apenas as cotações do vendedor logado
+        if vendedor_filtro:
+            cotacoes = [
+                c for c in cotacoes 
+                if str(c.get('VENDEDOR', '')).strip().upper() == vendedor_filtro
+            ]
+            pedidos = [] # Vendedor na tela de cotações não precisa receber a base inteira de pedidos
+
         sio.emit('retorno_planilha_json', {
             'sucesso': True,
             'cotacoes': cotacoes[::-1], 

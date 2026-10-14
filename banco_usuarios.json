@@ -1,0 +1,65 @@
+{
+    "admin@venturainformatica.com.br": {
+        "senha": "ventura2026",
+        "verificado": true,
+        "token_verificacao": null,
+        "token_recuperacao": null,
+        "admin": true,
+        "ultimo_login": "27/03/2026 14:28:50",
+        "ultima_localizacao": "IP: 187.36.160.41, 172.69.91.9, 10.19.184.1 | Desconhecida"
+    },
+    "vendas2@venturainformatica.com.br": {
+        "senha": "123456",
+        "verificado": true,
+        "token_verificacao": null,
+        "token_recuperacao": null,
+        "ultima_localizacao": "IP: 187.36.160.41, 172.71.146.140, 10.30.229.1 | Desconhecida",
+        "ultimo_login": "06/04/2026 09:12:51",
+        "admin": false
+    },
+    "vendas7@venturainformatica.com.br": {
+        "senha": "ventura2026",
+        "verificado": true,
+        "token_verificacao": null,
+        "token_recuperacao": null,
+        "ultima_localizacao": "IP: Desconhecida",
+        "ultimo_login": "14/10/2026 10:05:40",
+        "admin": false
+    },
+    "cadastro@venturainformatica.com.br": {
+        "senha": "123456",
+        "verificado": true,
+        "token_verificacao": null,
+        "token_recuperacao": null,
+        "ultima_localizacao": "IP: Desconhecida",
+        "ultimo_login": "03/06/2026 14:38:30",
+        "admin": false
+    },
+    "wesley@venturainformatica.com.br": {
+        "senha": "W27r28b8*",
+        "verificado": true,
+        "token_verificacao": null,
+        "token_recuperacao": null,
+        "ultima_localizacao": "IP: Desconhecida",
+        "ultimo_login": "02/09/2026 13:19:12",
+        "admin": false
+    },
+    "vendas9@venturainformatica.com.br": {
+        "senha": "159100",
+        "verificado": true,
+        "token_verificacao": null,
+        "token_recuperacao": null,
+        "ultima_localizacao": "IP: Desconhecida",
+        "ultimo_login": "10/09/2026 12:04:50",
+        "admin": false
+    },
+    "adm3@venturainformatica.com.br": {
+        "senha": "123456",
+        "verificado": false,
+        "token_verificacao": "257126ad-344e-49a9-abee-527fbc549233",
+        "token_recuperacao": null,
+        "ultima_localizacao": "IP: Desconhecida",
+        "ultimo_login": "01/09/2026 14:07:55",
+        "admin": false
+    }
+}
