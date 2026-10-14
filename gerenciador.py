@@ -18,11 +18,18 @@ from datetime import datetime
 import subprocess
 import glob
 import shutil  
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from logging.handlers import RotatingFileHandler
+
+# Ler só o segredo aqui preserva a ordem das outras opções e não ativa o modo de teste local por acidente.
+ROBO_SECRET = os.getenv("ROBO_SECRET")
+if ROBO_SECRET is None:
+    ROBO_SECRET = dotenv_values(encoding='utf-8-sig').get("ROBO_SECRET") or ""
+if __name__ == '__main__' and len(ROBO_SECRET) < 32:
+    raise SystemExit("Configure ROBO_SECRET com pelo menos 32 caracteres, igual ao segredo do servidor Maestro.")
 
 PASTA_LOGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 os.makedirs(PASTA_LOGS, exist_ok=True)
@@ -182,10 +189,8 @@ Sistema Maestro
     except Exception as e:
         print(f"[MAESTRO] Erro ao enviar e-mail de aviso de limpeza: {e}")
 
-load_dotenv()
-
+load_dotenv(encoding='utf-8-sig')
 URL_DO_SERVIDOR = os.getenv("URL_SERVIDOR", "https://maestro.ventura.inf.br")
-ROBO_SECRET = os.getenv("ROBO_SECRET", "VEMKAUAN")
 sio = socketio.Client()
 
 # MONKEY-PATCH: Proteo Global contra quedas de Socket
@@ -1855,7 +1860,7 @@ except: pass
 if __name__ == '__main__':
     try:
         logger.info(f"Conectando ao servidor: {URL_DO_SERVIDOR} ...")
-        sio.connect(URL_DO_SERVIDOR)
+        sio.connect(URL_DO_SERVIDOR, auth={"robo_secret": ROBO_SECRET})
         sio.wait()
     except Exception as e:
         logger.error(f"Erro ao conectar com o servidor: {e}")
