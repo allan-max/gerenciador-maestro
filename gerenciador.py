@@ -77,16 +77,21 @@ else:
     CONFIG_GLOBAL["caminho_banco_dados"] = r"\\SERVIDOR2\Publico\ALLAN\database\Banco-de-dados"
     CONFIG_GLOBAL["caminho_backups"] = r"\\SERVIDOR2\Publico\ALLAN\database\backups_excel"
 
+import eventos
 if __name__ == '__main__':
+    eventos.ativar()   # só o gerenciador de verdade grava eventos; testes importam sem gravar
     # Dois gerenciadores na mesma base brigam pelos JSONs (13-14/10: 790 gravações recusadas)
     from instancia_unica import JaRodando, instancia_unica
     try:
         _TRAVA_INSTANCIA = instancia_unica(CONFIG_GLOBAL["caminho_banco_dados"])
     except JaRodando as e:
         logger.error(f"Já existe um gerenciador rodando ({e}). Feche-o antes de abrir outro.")
+        # ponytail: o recusado acrescenta 1 linha no arquivo do que está rodando; nunca limpa nem regrava
+        eventos.registrar('gerenciador', 'instancia', 'aviso', f'Segundo gerenciador recusado: já existe um rodando ({e})')
         try: input("Pressione Enter para fechar esta janela...")
         except EOFError: pass
         sys.exit(3)
+    eventos.limpar()
 
 from planilha_manager import planilha_manager
 planilha_manager.iniciar(CONFIG_GLOBAL["caminho_excel"])
@@ -1488,6 +1493,9 @@ def comando_registrar_cotacao_manual(dados):
         if not planilha_manager.adicionar_linhas("COTAÇÃO", linhas):
             raise RuntimeError("Falha ao salvar cotacoes; consulte logs/gerenciador.log.")
         sucesso_save = True
+        numeros = [str(l[0]) for l in linhas]
+        eventos.registrar('gerenciador', 'cotacao_nova', 'ok', f'{len(numeros)} cotação(ões) cadastrada(s) à mão no portal',
+                          ref=numeros[0], detalhe={'cotacoes': numeros[:20]})
 
         sio.emit('retorno_registro_cotacao_manual', {'sucesso': True, 'mensagem': f'{len(cotacoes)} cotaes registradas com sucesso!', 'clientId': client_id})
 
@@ -1606,6 +1614,16 @@ def processar_fila_extracao(fila, client_id):
         logger.error(f"Erro conexao: {e}")
         emit_progresso(f'Erro no processamento da fila: {e}', cor="#ef4444")
 
+@sio.on('comando_eventos')
+def comando_eventos(dados):
+    """Dashboard de Atividade: últimos eventos do gerenciador (só leitura)."""
+    dados = dados if isinstance(dados, dict) else {}
+    try:
+        resultado = eventos.ultimos(dados.get('limite', 200), dados.get('desde'))
+        sio.emit('retorno_eventos', {'sucesso': True, 'resultado': resultado, 'clientId': dados.get('clientId')})
+    except Exception as e:
+        sio.emit('retorno_eventos', {'sucesso': False, 'erro': str(e), 'clientId': dados.get('clientId')})
+
 @sio.on('comando_apagar_linha')
 def comando_apagar_linha(dados):
     client_id = dados.get('clientId')
@@ -1704,6 +1722,7 @@ def rotina_backup():
 
 # Agendar para toda manha as 07:00
 schedule.every().day.at("07:00").do(rotina_backup)
+schedule.every().day.at("03:00").do(eventos.limpar)
 
 def rotina_impressao_segura():
     def _impressao_thread():
@@ -1761,6 +1780,7 @@ def loop_automacao():
     while True:
         # === COUPA ===
         try:
+            eventos.registrar('coupa', 'ciclo', 'info', 'Ciclo automático do Coupa começou')
             sio.emit('relatar_progresso_coupa', {'mensagem': '?? Auto-Pilot: Iniciando ciclo de Extrao do COUPA...'})
 
             sio.emit('comando_direto', {'modo': 'ligar_robo', 'portal': 'coupa'})
@@ -1786,12 +1806,14 @@ def loop_automacao():
             time.sleep(10)
             while globals().get('bot_coupa') and getattr(globals().get('bot_coupa'), 'thread_atual', None) and globals().get('bot_coupa').thread_atual.is_alive():
                 time.sleep(5)
+            eventos.registrar('coupa', 'ciclo', 'ok', 'Ciclo automático do Coupa terminou')
 
         except Exception as e_coupa:
             import traceback
             msg_erro = f"""Auto-Pilot falhou no COUPA:\n{e_coupa}\n\n{traceback.format_exc()}"""
             enviar_email_erro(msg_erro)
             logger.error(f"Erro no Coupa: {e_coupa}")
+            eventos.registrar('coupa', 'ciclo', 'erro', f'Ciclo automático do Coupa falhou: {e_coupa}')
             sio.emit('relatar_progresso_coupa', {'mensagem': f'? Erro ou Captcha no Coupa. Cancelando ciclo: {e_coupa}'})
         finally:
             sio.emit('planilha_atualizada')
@@ -1805,6 +1827,7 @@ def loop_automacao():
 
         # === VALE ===
         try:
+            eventos.registrar('vale', 'ciclo', 'info', 'Ciclo automático da Vale começou')
             sio.emit('relatar_progresso_vale', {'mensagem': '?? Auto-Pilot: Iniciando ciclo da VALE...'})
 
             sio.emit('comando_direto', {'modo': 'ligar_robo', 'portal': 'vale'})
@@ -1820,12 +1843,14 @@ def loop_automacao():
             time.sleep(10)
             while globals().get('bot_vale') and getattr(globals().get('bot_vale'), 'thread_atual', None) and globals().get('bot_vale').thread_atual.is_alive():
                 time.sleep(5)
+            eventos.registrar('vale', 'ciclo', 'ok', 'Ciclo automático da Vale terminou')
 
         except Exception as e_vale:
             import traceback
             msg_erro = f"""Auto-Pilot falhou na VALE:\n{e_vale}\n\n{traceback.format_exc()}"""
             enviar_email_erro(msg_erro)
             logger.error(f"Erro na Vale: {e_vale}")
+            eventos.registrar('vale', 'ciclo', 'erro', f'Ciclo automático da Vale falhou: {e_vale}')
             sio.emit('relatar_progresso_vale', {'mensagem': f'? Erro ou Captcha na Vale. Cancelando ciclo: {e_vale}'})
         finally:
             sio.emit('planilha_atualizada')

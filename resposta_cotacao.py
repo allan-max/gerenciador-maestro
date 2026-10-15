@@ -34,6 +34,9 @@ def marcar_respondida(manager, identidade):
             os.replace(temporario, caminho)
             manager.cotacoes = banco
             manager.ultima_mod_c = caminho.stat().st_mtime
+            from eventos import registrar
+            registrar('gerenciador', 'resposta', 'ok', f"Cotação {identidade['COTAÇÃO'].strip()} marcada como respondida no portal",
+                      ref=identidade['COTAÇÃO'].strip(), detalhe={'vendedor': identidade['VENDEDOR'].strip()})
         finally:
             if temporario and os.path.exists(temporario):
                 os.unlink(temporario)

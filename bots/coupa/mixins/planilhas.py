@@ -452,6 +452,11 @@ Coupa Bot
         
             if not planilha_manager.adicionar_linhas(self.NOME_ABA_ALVO, linhas_inserir):
                 raise RuntimeError("Falha ao salvar cotacoes; consulte logs/gerenciador.log.")
+            if linhas_inserir:
+                from eventos import registrar
+                numeros = [str(l[0]) for l in linhas_inserir]
+                registrar('coupa', 'cotacao_nova', 'ok', f"{len(numeros)} cotação(ões) nova(s) do Coupa",
+                          ref=numeros[0], detalhe={'cotacoes': numeros[:20]})
         
             logger.info(f"JSON salvo com sucesso (+{cnt} linhas).")
             return True

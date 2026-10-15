@@ -77,6 +77,8 @@ class PlanilhaManager:
                             break
                         time.sleep(1)
                     else:
+                        from eventos import registrar
+                        registrar('gerenciador', 'base', 'erro', f'Arquivo mudou durante a leitura: {os.path.basename(caminho)}')
                         raise RuntimeError(f'Arquivo mudou durante a leitura: {caminho}')
                     if self.iniciado and self._assinaturas.get(caminho) == assinatura:
                         continue
@@ -146,6 +148,8 @@ class PlanilhaManager:
             except Exception as e:
                 self.iniciado = False
                 logger.exception('Erro ao salvar JSONs; não continuar com dados em memória.')
+                from eventos import registrar
+                registrar('gerenciador', 'base', 'erro', f'Falha ao salvar a base; JSON anterior preservado ({e})')
                 return False
 
     def adicionar_linhas(self, aba_nome_aproximado, lista_linhas, com_estilo=False):
@@ -206,6 +210,7 @@ class PlanilhaManager:
 
         with self.lock:
             salvou = False
+            mudadas = []   # só para o evento do dashboard
             lista = self.cotacoes.get("COTAÇÃO", [])
             chave_str = self.map_cota.get(col_chave)
             alvo_str = self.map_cota.get(col_status)
@@ -252,14 +257,19 @@ class PlanilhaManager:
                             if row.get(alvo_str) != novo_status:
                                 row[alvo_str] = novo_status
                                 salvou = True
+                                mudadas.append(f'{val_s}: {novo_status}')
             
             if salvou:
+                from eventos import registrar
                 try:
                     self._salvar_arquivo(self.caminho_cotacoes, self.cotacoes)
+                    registrar('gerenciador', 'resposta', 'info', f'Status de resposta mudou em {len(mudadas)} cotação(ões)',
+                              ref=mudadas[0].split(':')[0], detalhe={'mudancas': mudadas[:20]})
                     return True
-                except Exception:
+                except Exception as e:
                     self.iniciado = False
                     logger.exception('Falha ao salvar respostas; JSON anterior preservado.')
+                    registrar('gerenciador', 'base', 'erro', f'Falha ao salvar respostas; JSON anterior preservado ({e})')
                     raise
             return False
                 
