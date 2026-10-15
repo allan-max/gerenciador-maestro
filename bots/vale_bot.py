@@ -590,7 +590,7 @@ class ValeScraper:
                     self.driver.execute_script(f"window.open('{t['url']}', '_blank');")
                     self.driver.switch_to.window(self.driver.window_handles[-1])
                     
-                    res = self.extrair_dados_do_evento(t['url'], t['num'], re_extrair=t.get('re_extrair', False))
+                    res = self.extrair_dados_do_evento(t['url'], t['num'], re_extrair=t.get('re_extrair', False), venc_tabela=t.get('venc_tabela', ''))
                     
                     if res is None:
                         self.relatorio_email_stats['erros_extracao'].append(t['num'])
@@ -821,7 +821,85 @@ Vale Bot
             logger.error(f"Erro ao buscar novo link: {e}")
             return None
 
-    def extrair_dados_do_evento(self, url: str, num: str, ja_respondido: bool = False, is_negotiation: bool = False, re_extrair: bool = False):
+    @staticmethod
+    def parsear_data_vencimento(data_str: str) -> Optional[str]:
+        if not data_str or str(data_str).strip() in ['N/A', '', 'None']:
+            return None
+        texto = str(data_str).strip()
+        if re.match(r'^\d{2}/\d{2}/\d{4}(\s*-\s*\d{2}:\d{2})?$', texto):
+            return texto
+        m_iso = re.search(r'(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{1,2}):(\d{2}))?', texto)
+        if m_iso:
+            ano, mes, dia = m_iso.group(1), m_iso.group(2), m_iso.group(3)
+            hora = f"{int(m_iso.group(4)):02d}:{m_iso.group(5)}" if m_iso.group(4) else ""
+            return f"{dia}/{mes}/{ano} - {hora}" if hora else f"{dia}/{mes}/{ano}"
+        m_coupa = re.search(r'(\d{1,2})/(\d{1,2})/(\d{2,4})(?:\s+(\d{1,2}):(\d{2})\s*(am|pm)?)?', texto, re.IGNORECASE)
+        if m_coupa:
+            p1, p2, p3 = int(m_coupa.group(1)), int(m_coupa.group(2)), int(m_coupa.group(3))
+            ano = p3 if p3 >= 1000 else (2000 + p3 if p3 < 100 else p3)
+            if p1 > 12: dia, mes = p1, p2
+            elif p2 > 12: dia, mes = p2, p1
+            else: mes, dia = p1, p2
+            hora_str = ""
+            if m_coupa.group(4) and m_coupa.group(5):
+                h = int(m_coupa.group(4))
+                minu = m_coupa.group(5)
+                ampm = (m_coupa.group(6) or "").lower()
+                if ampm == 'pm' and h < 12: h += 12
+                elif ampm == 'am' and h == 12: h = 0
+                hora_str = f" - {h:02d}:{minu}"
+            return f"{dia:02d}/{mes:02d}/{ano}{hora_str}"
+        return None
+
+    def capturar_end_time_elemento(self) -> Optional[str]:
+        """
+        Captura a data de vencimento real do elemento HTML do Coupa:
+        <div class="img" id="end_time">
+          <div class="month">Out</div>
+          <div class="date">23</div>
+        </div>
+        """
+        try:
+            elementos = self.driver.find_elements(By.CSS_SELECTOR, "#end_time, div.end_time, .end_time")
+            for el in elementos:
+                try:
+                    data_attr = el.get_attribute("data-end-date")
+                    parsed_attr = self.parsear_data_vencimento(data_attr)
+                    if parsed_attr:
+                        return parsed_attr
+                except: pass
+
+                try:
+                    mes_el = el.find_elements(By.CLASS_NAME, "month")
+                    dia_el = el.find_elements(By.CLASS_NAME, "date")
+                    if mes_el and dia_el:
+                        mes_raw = mes_el[0].text.strip().lower()
+                        dia_raw = dia_el[0].text.strip()
+                        mapa_meses = {
+                            'jan': 1, 'fev': 2, 'feb': 2, 'mar': 3, 'abr': 4, 'apr': 4,
+                            'mai': 5, 'may': 5, 'jun': 6, 'jul': 7, 'ago': 8, 'aug': 8,
+                            'set': 9, 'sep': 9, 'out': 10, 'oct': 10, 'nov': 11, 'dez': 12, 'dec': 12
+                        }
+                        mes_prefix = mes_raw[:3]
+                        if mes_prefix in mapa_meses and dia_raw.isdigit():
+                            m = mapa_meses[mes_prefix]
+                            y = datetime.now().year
+                            hora_str = ""
+                            try:
+                                h_els = el.find_elements(By.CSS_SELECTOR, "span.quotes_h1, .time, .hour")
+                                for h_el in h_els:
+                                    t_h = h_el.text.strip()
+                                    m_h = re.search(r'(\d{1,2}:\d{2})', t_h)
+                                    if m_h:
+                                        hora_str = f" - {m_h.group(1)}"
+                                        break
+                            except: pass
+                            return f"{int(dia_raw):02d}/{m:02d}/{y}{hora_str}"
+                except: pass
+        except: pass
+        return None
+
+    def extrair_dados_do_evento(self, url: str, num: str, ja_respondido: bool = False, is_negotiation: bool = False, re_extrair: bool = False, venc_tabela: str = ""):
         if self.evento_ja_processado(num) and not re_extrair: 
             logger.info(f"⏭️ Evento {num} já existe e a data não mudou. Pulando.")
             return "SKIPPED"
@@ -903,7 +981,11 @@ Vale Bot
                     self.req = req
             except: pass
 
-            vencimento = "N/A"
+            vencimento = self.parsear_data_vencimento(venc_tabela) or "N/A"
+            venc_inicial = self.capturar_end_time_elemento()
+            if venc_inicial:
+                vencimento = venc_inicial
+                logger.info(f"   📅 Vencimento detectado na tela do evento: {vencimento}")
             frete = "EXW"
 
             # ==========================================================
@@ -1028,24 +1110,11 @@ Vale Bot
                                 except NoAlertPresentException: pass
                     except Exception as e: pass
 
-                    # Pegar data RIGOROSAMENTE AGORA (como pedido)
-                    try:
-                        et = self.driver.find_elements(By.ID, "end_time")
-                        if et:
-                            mes = et[0].find_element(By.CLASS_NAME, "month").text.strip()
-                            dia = et[0].find_element(By.CLASS_NAME, "date").text.strip()
-                            mapa = {'Jan':1,'Fev':2,'Mar':3,'Abr':4,'Mai':5,'Jun':6,'Jul':7,'Ago':8,'Set':9,'Out':10,'Nov':11,'Dez':12}
-                            m = mapa.get(mes.title(), 1)
-                            y = datetime.now().year
-                            if m < datetime.now().month: y += 1
-                            hora = "14:30"
-                            try: 
-                                t = et[0].find_element(By.CSS_SELECTOR, "span.quotes_h1").text.strip()
-                                if re.match(r'\d{1,2}:\d{2}', t): hora = t
-                            except: pass
-                            vencimento = f"{int(dia):02d}/{m:02d}/{y} - {hora}"
-                            logger.info(f"        Vencimento copiado na recuperação: {vencimento}")
-                    except: pass
+                    # Pegar data se disponivel
+                    venc_recup = self.capturar_end_time_elemento()
+                    if venc_recup:
+                        vencimento = venc_recup
+                        logger.info(f"        Vencimento copiado na recuperação: {vencimento}")
 
                     # Clicar Inserir resposta RIGOROSAMENTE AGORA (como pedido)
                     try:
@@ -1188,29 +1257,20 @@ Vale Bot
                     self.driver.execute_script("arguments[0].click();", btn_info[0])
                     time.sleep(2) 
 
-                div_end_time = self.driver.find_elements(By.CSS_SELECTOR, "div.end_time")
-                
-                if div_end_time:
-                    data_attr = div_end_time[0].get_attribute("data-end-date")
-                    if data_attr:
-                        dt_obj = datetime.strptime(data_attr.split(' ')[0], "%Y-%m-%d")
-                        hora_attr = data_attr.split(' ')[1][:5]
-                        vencimento = f"{dt_obj.strftime('%d/%m/%Y')} - {hora_attr}"
-                    else:
-                        mes = div_end_time[0].find_element(By.CLASS_NAME, "month").text.strip()
-                        dia = div_end_time[0].find_element(By.CLASS_NAME, "date").text.strip()
-                        hora = div_end_time[0].find_element(By.CSS_SELECTOR, "span.quotes_h1").text.strip()
-                        
-                        mapa = {'Jan':1,'Fev':2,'Mar':3,'Abr':4,'Mai':5,'Jun':6,'Jul':7,'Ago':8,'Set':9,'Out':10,'Nov':11,'Dez':12}
-                        m = mapa.get(mes.title()[:3], 1)
-                        y = datetime.now().year
-                        if m < datetime.now().month: y += 1 
-                        
-                        vencimento = f"{int(dia):02d}/{m:02d}/{y} - {hora}"
+                venc_info = self.capturar_end_time_elemento()
+                if venc_info:
+                    vencimento = venc_info
                         
                 logger.info(f"       ✅ Data de vencimento confirmada pelo sistema: {vencimento}")
             except Exception as e:
-                logger.warning(f"       ⚠️ Não foi possível forçar a aba de Informações: {e}. Mantendo data anterior.")
+                logger.warning(f"       ⚠️ Não foi possível forçar a aba de Informações: {e}. Mantendo data anterior: {vencimento}")
+
+            # Se ainda nao tem data valida confirmada, usa a data da tabela do painel (se disponivel)
+            if vencimento in ["N/A", ""] and venc_tabela:
+                parsed_tabela = self.parsear_data_vencimento(venc_tabela)
+                if parsed_tabela:
+                    vencimento = parsed_tabela
+                    logger.info(f"       ✅ Data de vencimento obtida da tabela do painel: {vencimento}")
 
             try: frete = self.driver.find_element(By.CSS_SELECTOR, "p.s-selectField").text
             except: pass
@@ -2107,19 +2167,12 @@ Vale Bot
                             
                     d_agg.append(f"{p}{melhor_desc[:150000]}")
                 
-                vendedores_set = set()
-                for it in ev['itens']:
-                    match2 = it.get('historico_match')
-                    if not match2 and 'dados_ia' in it:
-                        match2 = getattr(self, 'encontrar_vendedor_similar', lambda x,y: None)(it, it['dados_ia'])
-                        it['historico_match'] = match2
-                    if match2:
-                        m = __import__('re').search(r'Ultimo Vendedor:\s*([^\(]+)', match2)
-                        if m: vendedores_set.add(m.group(1).strip())
-                    
-                vendedor_str = ", ".join(vendedores_set) if vendedores_set else ""
+                # O vendedor recomendado e inserido apenas no Word e no email; nao deve ser salvo no banco
+                vendedor_str = ""
+                raw_venc = str(ev.get('data_vencimento', '')).split(' - ')[0].strip()
+                data_venc_salvar = "" if raw_venc in ['N/A', 'None', ''] else raw_venc
 
-                vals = [ev['numero_evento'], ev['data_vencimento'].split(' - ')[0], "\n".join(d_agg), "\n".join(q_agg), ev['itens'][0]['local_entrega'], vendedor_str, "\n".join(mo_agg), "\n".join(ma_agg), ""]
+                vals = [ev['numero_evento'], data_venc_salvar, "\n".join(d_agg), "\n".join(q_agg), ev['itens'][0]['local_entrega'], vendedor_str, "\n".join(mo_agg), "\n".join(ma_agg), ""]
                 linhas_inserir.append(vals)
             
                 cnt += 1
