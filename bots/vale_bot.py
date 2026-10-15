@@ -2179,6 +2179,11 @@ Vale Bot
         
             if not planilha_manager.adicionar_linhas(self.NOME_ABA_ALVO, linhas_inserir):
                 raise RuntimeError("Falha ao salvar cotacoes; consulte logs/gerenciador.log.")
+            if linhas_inserir:
+                from eventos import registrar
+                numeros = [str(l[0]) for l in linhas_inserir]
+                registrar('vale', 'cotacao_nova', 'ok', f"{len(numeros)} cotação(ões) nova(s) da Vale",
+                          ref=numeros[0], detalhe={'cotacoes': numeros[:20]})
         
             logger.info(f"JSON salvo com sucesso (+{cnt} linhas).")
             self.sio.emit('relatar_progresso_vale', {'mensagem': f"Banco de Dados atualizado com sucesso (+{cnt} novas cotações)."})
