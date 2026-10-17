@@ -142,7 +142,7 @@ class ExtracaoMixin:
             except Exception: pass
 
             if self.driver.find_elements(By.XPATH, "//h1[contains(text(), 'já terminou')]"):
-                logger.warning("    Evento encerrado."); self.driver.switch_to.default_content(); return "SKIPPED"
+                logger.warning("    Evento encerrado."); self.driver.switch_to.default_content(); return "ENCERRADO"
 
             req = "N/A"
             try: 
@@ -657,10 +657,15 @@ class ExtracaoMixin:
                     # Passa a flag re_extrair para a função de extração
                     res = self.extrair_dados_do_evento(t['url'], t['num'], is_negotiation=t.get('is_neg', False), re_extrair=t.get('re_extrair', False), venc_tabela=t.get('venc_tabela', ''))
                     
+                    if res == "ENCERRADO" and t.get('re_extrair'):
+                        # Reaberto que já encerrou: guarda a data nova, senão volta em todo ciclo (Oops/0 itens tentam de novo)
+                        anterior = self.db_eventos.get(t['num'], {})
+                        self.salvar_evento_jsonl(t['num'], anterior.get('respondido', True), t.get('venc_tabela', ''))
+
                     if res is None:
                         self.relatorio_email_stats['erros_extracao'].append(t['num'])
                     
-                    if res and res != "SKIPPED":
+                    if res and res not in ("SKIPPED", "ENCERRADO"):
                         # Embutimos a data da tabela para salvar no banco depois
                         res['vencimento_tabela'] = t.get('venc_tabela', "") 
                         self.dados_processados_lote.append(res)

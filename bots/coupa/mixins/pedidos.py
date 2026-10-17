@@ -341,7 +341,7 @@ class PedidosMixin:
                                             print_options = PrintOptions()
                                             pdf_b64 = self.driver.print_page(print_options)
                                         
-                                            pasta_pdfs = r"\SERVIDOR2\Publico\ALLAN\PEDIDOS"
+                                            pasta_pdfs = r"\\SERVIDOR2\Publico\ALLAN\PEDIDOS"
                                             os.makedirs(pasta_pdfs, exist_ok=True)
                                             caminho_pdf = os.path.join(pasta_pdfs, f"Pedido_{num}.pdf")
                                         
@@ -367,7 +367,7 @@ class PedidosMixin:
                                 'evento': evento_num,
                                 'vendedor': vendedor_encontrado,
                                 'itens': itens,
-                                'caminho_pdf': f"\\SERVIDOR2\Publico\ALLAN\PEDIDOS\Pedido_{num}.pdf"
+                                'caminho_pdf': os.path.join(r"\\SERVIDOR2\Publico\ALLAN\PEDIDOS", f"Pedido_{num}.pdf")
                             }
                             pedidos_detalhes.append(novo_pedido)
                             pedidos_existentes.add(num)

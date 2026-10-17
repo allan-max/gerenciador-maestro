@@ -56,7 +56,6 @@ class InteligenciaMixin:
         if not historico: return None
         
         import difflib
-        import re
         modelo_atual = dados_ia.get("modelo", "").strip().upper()
         marca_atual = dados_ia.get("marca", "").strip().upper()
         part_number = dados_ia.get("part_number", "").strip().upper()
