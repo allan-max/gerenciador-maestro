@@ -17,7 +17,8 @@ import uuid
 from datetime import datetime
 import subprocess
 import glob
-import shutil  
+import shutil
+import unicodedata
 from dotenv import load_dotenv, dotenv_values
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -40,6 +41,22 @@ logging.basicConfig(
         os.path.join(PASTA_LOGS, 'gerenciador.log'), maxBytes=5_000_000, backupCount=5, encoding='utf-8')],
 )
 logger = logging.getLogger(__name__)
+
+
+def sem_acento(texto):
+    return ''.join(c for c in unicodedata.normalize('NFKD', str(texto)) if not unicodedata.combining(c))
+
+
+def classificar_resposta(valor):
+    """'respondida', 'nao_respondida' ou '' (pendente). Comparação exata: "NÃO RESPONDIDO" contém "RESPONDIDO"."""
+    texto = sem_acento(valor if valor is not None else '').strip().upper()
+    if texto in ('RESPONDIDO', 'RESPONDIDA'):
+        return 'respondida'
+    # startswith('N') também pega o "NÃƒO" com acento quebrado que existe na base
+    if texto.startswith('N') and texto.endswith(('RESPONDIDO', 'RESPONDIDA')):
+        return 'nao_respondida'
+    return ''
+
 
 def carregar_config():
     path = 'CONFIG.json'
@@ -695,6 +712,18 @@ def processar_nova_senha(dados):
     else:
         sio.emit('resultado_nova_senha', {'sucesso': False, 'erro': 'Link invlido ou expirado.', 'clientId': client_id})
 
+def forcar_troca(portal, espera_s=30):
+    """Botão "Assumir controle" do portal: desliga o outro robô e liga este.
+    Passa pelo Node (comando_direto), como o piloto automático, para a tela acompanhar o estado."""
+    outro = 'vale' if portal == 'coupa' else 'coupa'
+    logger.info(f"Forçar troca: desligando {outro} para ligar {portal}")
+    sio.emit('comando_direto', {'modo': 'desligar_robo', 'portal': outro})
+    limite = time.time() + espera_s
+    while time.time() < limite and (bot_vale if outro == 'vale' else bot_coupa) is not None:
+        time.sleep(1)
+    sio.emit('comando_direto', {'modo': 'ligar_robo', 'portal': portal})
+
+
 @sio.on('comando_para_robo')
 def comando_para_robo(dados):
     global bot_coupa, bot_vale, bot_findes, portal_atual, processo_me, bot_ariba, rodando_monitor_me, rodando_monitor_ariba, rodando_monitor_coupa, rodando_monitor_vale
@@ -843,8 +872,11 @@ WshShell.SendKeys "~"
                     bot_vale = None
             sio.emit('sou_o_robo')
 
+        elif modo == 'forcar_troca':
+            threading.Thread(target=forcar_troca, args=(portal,), daemon=True).start()
+
         # ?? INICIA TAREFAS NORMAIS ??
-        elif modo in ['extrair', 'verificar', 'responder', 'forcar_troca']:
+        elif modo in ['extrair', 'verificar', 'responder']:
             bot_alvo = bot_coupa if portal == 'coupa' else bot_vale
             if bot_alvo:
                 th = threading.Thread(target=bot_alvo.iniciar_tarefa, args=(modo, dados), daemon=True)
@@ -1051,24 +1083,6 @@ def admin_alterar_vendedor_usuario(dados):
     except Exception as e:
         logger.error(f"Erro ao alterar vendedor de {email}: {e}")
         sio.emit('admin_resposta_vendedor', {'sucesso': False, 'erro': 'Erro ao salvar o banco de usuários.', 'clientId': client_id})
-
-@sio.on('admin_alterar_acesso_dashboard')
-def admin_alterar_acesso_dashboard(dados):
-    client_id = dados.get('clientId')
-    email = (dados.get('email') or '').strip().lower()
-    acesso = bool(dados.get('acesso'))
-    try:
-        usuarios = carregar_usuarios()
-        if email not in usuarios:
-            sio.emit('admin_resposta_acesso', {'sucesso': False, 'erro': 'Usuário não encontrado.', 'clientId': client_id})
-            return
-        usuarios[email]['dashboard_access'] = acesso
-        salvar_usuarios(usuarios)
-        logger.info(f"Admin alterou dashboard_access de {email} para {acesso}")
-        sio.emit('admin_resposta_acesso', {'sucesso': True, 'email': email, 'acesso': acesso, 'clientId': client_id})
-    except Exception as e:
-        logger.error(f"Erro ao alterar acesso de {email}: {e}")
-        sio.emit('admin_resposta_acesso', {'sucesso': False, 'erro': 'Erro ao salvar o banco de usuários.', 'clientId': client_id})
 
 @sio.on('connect')
 def connect():
@@ -1280,12 +1294,11 @@ def comando_ler_excel_dashboard(dados):
 
             marca_bruta = str(row.get("MARCAS ", "")).strip() or str(row.get("MARCAS", "")).strip()
             if not marca_bruta or marca_bruta == "None": marca_bruta = "Outros"
-            situacao = str(row.get("RESPOSTA", "")).strip().upper()
-            if situacao == "NONE": situacao = ""
+            situacao = classificar_resposta(row.get("RESPOSTA"))
 
             totais["total"] += 1
-            is_respondida = ("RESPONDIDA" in situacao or "RESPONDIDO" in situacao) and not ("NO" in situacao or "NAO" in situacao or "NO" in situacao)
-            is_nao_respondida = ("NO RESPONDID" in situacao or "NAO RESPONDID" in situacao or "NO RESPONDID" in situacao)
+            is_respondida = situacao == "respondida"
+            is_nao_respondida = situacao == "nao_respondida"
 
             esta_vencida = False
             if data_venc:
@@ -1314,8 +1327,8 @@ def comando_ler_excel_dashboard(dados):
                 elif is_nao_respondida: dic_marcas[marca]['nao_respondidas'] += 1
                 elif not esta_vencida: dic_marcas[marca]['pendentes'] += 1
 
-            ignorar_vendedores = ["informaoes insuficientes para orar", "pouco tempo hbil", "vencida", "provavel vencida", "w"]
-            if vendedor.lower() not in ignorar_vendedores:
+            ignorar_vendedores = ["informacoes insuficientes para orcar", "pouco tempo habil", "vencida", "provavel vencida", "w"]
+            if sem_acento(vendedor).lower() not in ignorar_vendedores:
                 if vendedor not in dic_vendedores:
                     dic_vendedores[vendedor] = {'nome': vendedor, 'total': 0, 'respostas': 0, 'pendentes': 0, 'nao_respondidas': 0}
                 dic_vendedores[vendedor]['total'] += 1
@@ -1514,7 +1527,7 @@ def comando_registrar_pedido_manual(dados):
     try:
         from planilha_manager import planilha_manager
         # Iniciar no gerenciador pode ser bom, embora teoricamente j deva estar
-        caminho_excel = CONFIG_GLOBAL.get("caminho_excel", r"\SERVIDOR2\Publico\PLANILHA DE CONTROLE VALE - ESTAGIARIOS (copia 1).xlsx")
+        caminho_excel = CONFIG_GLOBAL.get("caminho_excel", r"\\SERVIDOR2\Publico\PLANILHA DE CONTROLE VALE - ESTAGIARIOS (copia 1).xlsx")
         planilha_manager.iniciar(caminho_excel)
 
         sucesso = planilha_manager.adicionar_linhas_pedidos("PEDIDO", pedidos)
