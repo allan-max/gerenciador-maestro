@@ -868,13 +868,17 @@ WshShell.SendKeys "~"
     elif portal in ['coupa', 'vale']:
         if modo == 'ligar_robo':
             existente = bot_coupa if portal == 'coupa' else bot_vale
-            if existente is not None:
+            if existente is not None and getattr(existente, 'is_ready', False):
                 # Não cria um segundo navegador por cima do primeiro (antes sobrescrevia sem fechar o driver)
-                logger.warning(f"{portal}: já está ligado; ignorando o novo 'ligar' (desligue antes para reiniciar)")
+                logger.warning(f"{portal}: já está ligado; ignorando o novo 'ligar'")
                 sio.emit(f'relatar_progresso_{portal}', {'mensagem': f'⚠️ O robô {portal.upper()} já está ligado.'})
-                if getattr(existente, 'is_ready', False):
-                    sio.emit('tarefa_concluida', {'evento': 'Login do Robo', 'sucesso': True})   # a tela volta ao estado certo
+                sio.emit('tarefa_concluida', {'evento': 'Login do Robo', 'sucesso': True})   # a tela volta ao estado certo
                 return
+            if existente is not None:   # ficou sem login (falhou ou travou): fecha antes de abrir outro
+                logger.warning(f"{portal}: robô anterior sem login; fechando e ligando de novo")
+                existente.solicitacao_parada = True
+                try: existente.driver.quit()
+                except Exception: pass
             portal_atual = portal
             if portal == 'coupa':
                 from bots.coupa import CoupaScraper
@@ -922,10 +926,13 @@ WshShell.SendKeys "~"
                     if anterior is not None and anterior.is_alive():
                         logger.info(f"{portal}: '{modo}' aguardando a tarefa anterior terminar")
                         anterior.join()
+                    if globals().get('bot_' + portal) is not bot:
+                        logger.warning(f"{portal}: '{modo}' descartado: o robô foi desligado enquanto esperava")
+                        return
                     bot.iniciar_tarefa(modo, dados)
                 th = threading.Thread(target=rodar, daemon=True)
-                bot_alvo.thread_atual = th
                 th.start()
+                bot_alvo.thread_atual = th   # depois do start: quem espera nunca vê uma thread ainda não iniciada
             else:
                 sio.emit('relatar_progresso', {'mensagem': "? Erro: O rob no est ligado no Servidor!"})
 
@@ -1832,6 +1839,7 @@ def enviar_email_erro(detalhes_erro):
     except Exception as e:
         logger.error(f"Erro ao enviar email de erro crtico: {e}")
 
+DURACAO_MAX_TAREFA_S = 3 * 3600   # tarefa travada além disso derruba o ciclo (e o próximo recomeça)
 INATIVIDADE_ALERTA_S = 6 * 3600   # robô sem extração concluída por mais que isso gera um alerta (uma vez)
 ultima_extracao_ok = {'coupa': time.time(), 'vale': time.time()}
 inatividade_alertada = {'coupa': False, 'vale': False}
@@ -1872,8 +1880,10 @@ def executar_tarefa(portal, modo, timeout_inicio=60):
         if time.time() > limite:
             raise Exception(f"O comando '{modo}' não chegou ao robô {portal} em {timeout_inicio}s")
         time.sleep(1)
-    while bot.thread_atual.is_alive():
-        time.sleep(5)
+    tarefa = bot.thread_atual
+    tarefa.join(DURACAO_MAX_TAREFA_S)
+    if tarefa.is_alive():
+        raise Exception(f"'{modo}' do {portal} travado há mais de {DURACAO_MAX_TAREFA_S // 3600} h")
     fim = getattr(bot.sio, 'ultima_conclusao', None)
     if not fim or not fim.get('sucesso'):
         raise Exception(f"'{modo}' do {portal} não terminou bem: {(fim or {}).get('erro') or 'sem confirmação do robô'}")
@@ -1883,13 +1893,18 @@ def precisa_alertar_inatividade(agora, ultimo_ok, ja_alertado, limite_s=INATIVID
     return not ja_alertado and agora - ultimo_ok > limite_s
 
 
+_trava_inatividade = threading.Lock()
+
+
 def checar_inatividade(portal):
-    if precisa_alertar_inatividade(time.time(), ultima_extracao_ok[portal], inatividade_alertada[portal]):
+    with _trava_inatividade:
+        if not precisa_alertar_inatividade(time.time(), ultima_extracao_ok[portal], inatividade_alertada[portal]):
+            return
         inatividade_alertada[portal] = True
-        msg = f"Robô {portal} sem extração concluída há {(time.time() - ultima_extracao_ok[portal]) / 3600:.0f} h"
-        logger.error(msg)
-        eventos.registrar(portal, 'robo_inativo', 'erro', msg)
-        enviar_email_erro(msg)
+    msg = f"Robô {portal} sem extração concluída há {(time.time() - ultima_extracao_ok[portal]) / 3600:.0f} h"
+    logger.error(msg)
+    eventos.registrar(portal, 'robo_inativo', 'erro', msg)
+    enviar_email_erro(msg)
 
 
 def extracao_ok(portal):
@@ -1924,7 +1939,10 @@ def loop_automacao():
         finally:
             sio.emit('planilha_atualizada')
             sio.emit('relatar_progresso_coupa', {'mensagem': 'Auto-Pilot: desligando o robô Coupa; pausa de 1h30...'})
-            comandar('desligar_robo', 'coupa')
+            try:
+                comandar('desligar_robo', 'coupa')
+            except Exception:
+                logger.exception('Falha ao desligar o robô coupa no fim do ciclo')
             logger.info("Auto-Pilot: pausa de 1h30...")
             time.sleep(90 * 60)
 
@@ -1954,13 +1972,21 @@ def loop_automacao():
         finally:
             sio.emit('planilha_atualizada')
             sio.emit('relatar_progresso_vale', {'mensagem': 'Auto-Pilot: desligando o robô Vale; pausa de 1h30...'})
-            comandar('desligar_robo', 'vale')
+            try:
+                comandar('desligar_robo', 'vale')
+            except Exception:
+                logger.exception('Falha ao desligar o robô vale no fim do ciclo')
             logger.info("Auto-Pilot: pausa de 1h30...")
             time.sleep(90 * 60)
 
 
 def loop_agendamento():
     while True:
+        for portal in ('coupa', 'vale'):
+            try:
+                checar_inatividade(portal)
+            except Exception:
+                logger.exception('Falha ao checar inatividade')
         schedule.run_pending()
         time.sleep(60)
 

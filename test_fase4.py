@@ -13,11 +13,11 @@ from test_fase0 import LOGGER, Relogio, carregar
 RAIZ = Path(__file__).parent
 GER = RAIZ / 'gerenciador.py'
 FUNCOES = {'SioDoRobo', 'comandar', 'esperar_robo_pronto', 'executar_tarefa', 'precisa_alertar_inatividade',
-           'checar_inatividade', 'extracao_ok', 'INATIVIDADE_ALERTA_S'}
+           'checar_inatividade', 'extracao_ok', 'INATIVIDADE_ALERTA_S', 'DURACAO_MAX_TAREFA_S', '_trava_inatividade'}
 
 
 def gerenciador(**globais):
-    padrao = dict(time=Relogio(), sio=SimpleNamespace(connected=True, emit=MagicMock(), on=lambda e: (lambda f: f)),
+    padrao = dict(threading=threading, time=Relogio(), sio=SimpleNamespace(connected=True, emit=MagicMock(), on=lambda e: (lambda f: f)),
                   eventos=MagicMock(), enviar_email_erro=MagicMock(), comando_para_robo=MagicMock())
     return carregar(GER, FUNCOES | set(globais.pop('extras', ())), **{**padrao, **globais})
 
@@ -63,6 +63,21 @@ class ExecutarTarefaTest(unittest.TestCase):
             th.join()
         ns.update(comandar=comandar, bot_coupa=bot)
         return ns
+
+    def test_tarefa_travada_nao_prende_o_piloto(self):
+        ns = gerenciador()
+        ns['DURACAO_MAX_TAREFA_S'] = 0.2   # depois do carregar: a definição do módulo sobrescreveria
+        bot = SimpleNamespace(thread_atual=None, sio=ns['SioDoRobo'](SimpleNamespace(emit=lambda *a, **k: None)))
+        travar = threading.Event()
+
+        def comandar(modo, portal):
+            th = threading.Thread(target=travar.wait, daemon=True)
+            th.start()
+            bot.thread_atual = th
+        ns.update(comandar=comandar, bot_coupa=bot)
+        with self.assertRaisesRegex(Exception, 'travado'):
+            ns['executar_tarefa']('coupa', 'extrair')
+        travar.set()
 
     def test_sucesso_confirmado_pelo_robo(self):
         self.preparar(conclusao={'sucesso': True})['executar_tarefa']('coupa', 'extrair')
@@ -134,6 +149,18 @@ class ComandoParaRoboTest(unittest.TestCase):
             bot.thread_atual.join(5)
         self.assertIsNot(bot.thread_atual, primeira)
         self.assertEqual(ordem, ['início extrair', 'fim extrair', 'início responder', 'fim responder'])
+
+    def test_tarefa_na_fila_e_descartada_se_o_robo_foi_desligado(self):
+        rodou, liberar = [], threading.Event()
+        bot = SimpleNamespace(thread_atual=None, iniciar_tarefa=lambda modo, d: (rodou.append(modo), modo == 'extrair' and liberar.wait(5)))
+        ns = self.ns(bot_coupa=bot)
+        with patch.object(LOGGER, 'handle'):
+            ns['comando_para_robo']({'modo': 'extrair', 'portal': 'coupa'})
+            ns['comando_para_robo']({'modo': 'verificar', 'portal': 'coupa'})
+            ns['bot_coupa'] = None              # desligado enquanto o verificar esperava
+            liberar.set()
+            bot.thread_atual.join(5)
+        self.assertEqual(rodou, ['extrair'])
 
 
 class OopsTest(unittest.TestCase):
