@@ -444,52 +444,17 @@ def monitorar_log_ariba():
         logger.error(f"Erro no monitor do Ariba: {e}")
 
 def monitorar_log_coupa():
-    global rodando_monitor_coupa
-    caminho_log = r"\\SERVIDOR2\Publico\ALLAN\Logs\log-coupa.txt"
+    import log_robos
+    log_robos.acompanhar(log_robos.caminho_log('log-coupa.txt'),
+                         lambda linha: sio.emit('relatar_progresso_coupa', {'mensagem': linha}),
+                         lambda: rodando_monitor_coupa)
 
-    # D 2 segundos para o rob do Coupa iniciar e criar o arquivo
-    time.sleep(2) 
-
-    try:
-        with open(caminho_log, 'r', encoding='utf-8', errors='ignore') as f:
-            # Pula direto para o final para no ler logs velhos do dia anterior
-            f.seek(0, os.SEEK_END) 
-            while rodando_monitor_coupa:
-                linha = f.readline()
-                if linha and linha.strip():
-                    # Envia tudo o que for escrito no TXT direto para o painel preto do Coupa!
-                    sio.emit('relatar_progresso_coupa', {'mensagem': linha.strip()})
-                else:
-                    time.sleep(0.5)
-    except Exception as e: 
-        logger.error(f"Erro no monitor do Coupa: {e}")
 
 def monitorar_log_vale():
-    global rodando_monitor_vale
-    caminho_log = r"\\SERVIDOR2\Publico\ALLAN\Logs\log-vale.txt"
-
-    while rodando_monitor_vale and not os.path.exists(caminho_log):
-        time.sleep(1)
-
-    if not rodando_monitor_vale: 
-        return 
-
-    try:
-        with open(caminho_log, 'r', encoding='utf-8', errors='ignore') as f:
-            f.seek(0, os.SEEK_END) 
-            while rodando_monitor_vale:
-                linha = f.readline()
-
-                if not linha:
-                    time.sleep(0.5)
-                    # ?? A CHAVE MGICA: Obriga o Windows a verificar se h texto novo! ??
-                    f.seek(f.tell()) 
-                elif linha.strip():
-                    # Envia a linha direto para o terminal do site
-                    sio.emit('relatar_progresso_vale', {'mensagem': linha.strip()})
-
-    except Exception as e: 
-        logger.error(f"Erro no monitor da Vale: {e}")
+    import log_robos
+    log_robos.acompanhar(log_robos.caminho_log('log-vale.txt'),
+                         lambda linha: sio.emit('relatar_progresso_vale', {'mensagem': linha}),
+                         lambda: rodando_monitor_vale)
 
 def monitorar_pastas_impressao():
     """Vigia as pastas de todos os portais e conta os arquivos prontos para impressão"""

@@ -78,24 +78,10 @@ class UtilitariosMixin:
         return True
 
     def _configurar_log_arquivo(self):
-        try:
-            # Caminho fixo exigido
-            pasta_logs_fixa = r"\\SERVIDOR2\Publico\ALLAN\Logs"
-            os.makedirs(pasta_logs_fixa, exist_ok=True)
-            caminho_log = os.path.join(pasta_logs_fixa, "log-coupa.txt")
-            
-            # Remove arquivos de log antigos diários, se existirem na memória
-            handlers_to_remove = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
-            for h in handlers_to_remove:
-                logger.removeHandler(h)
-
-            # Define o modo 'a' (Append) para escrever continuamente no mesmo txt
-            file_handler = logging.FileHandler(caminho_log, mode='a', encoding='utf-8')
-            file_handler.setFormatter(formatter)
-            logger.addHandler(file_handler)
-            logger.info(f" Log contínuo do Coupa ativo em: {caminho_log}")
-        except Exception as e:
-            pass
+        import log_robos
+        caminho = log_robos.configurar(logger, 'log-coupa.txt')   # data, máquina e rotação
+        if caminho:
+            logger.info(f" Log contínuo do Coupa ativo em: {caminho}")
 
     def _validar_txt(self, t):
         return not (re.search(r'\d{2}/\d{2}/\d{4}', t) or len(t) < 2)
