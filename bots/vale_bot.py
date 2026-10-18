@@ -195,7 +195,7 @@ class ValeScraper:
         
         @self.sio.on('receber_otp_frontend')
         def on_receber_otp(dados):
-            self.otp_atual = dados.get('otp')
+            self.otp_atual = (str(dados.get('otp') or '')).strip() or None   # vazio não conta
             logger.info(" Código OTP recebido do painel.")
 
     # ==========================================
@@ -1711,6 +1711,10 @@ Vale Bot
         nome = os.path.basename(str(f_data.get('name') or '').replace('\\', '/'))
         nome = re.sub(r'[<>:"|?*\x00-\x1f]', '_', nome).strip(' .')   # caracteres que o Windows recusa
         caminho = os.path.join(pasta, nome or 'anexo.pdf')
+        n = 1
+        while os.path.exists(caminho):   # datasheet e DAV com o mesmo nome não se sobrescrevem
+            caminho = os.path.join(pasta, f"{n}_{nome or 'anexo.pdf'}")
+            n += 1
         with open(caminho, 'wb') as out:
             out.write(base64.b64decode(f_data['data']))
         return caminho
@@ -2270,6 +2274,7 @@ Vale Bot
         """Lê a coluna de respostas enviadas (precisa do OTP) e aplica planilha_manager.novo_status nas cotações da Vale.
         Sem OTP em OTP_TIMEOUT_S, pula e registra o motivo (não trava o ciclo)."""
         logger.info("--- VERIFICAÇÃO DE EVENTOS VALE ---")
+        self.solicitacao_parada = False   # parada/login esgotado da extração anterior não cancela a verificação
         try:
             self.driver.execute_script("window.open('');")
             self.driver.switch_to.window(self.driver.window_handles[-1])
@@ -2366,7 +2371,14 @@ Vale Bot
                 time.sleep(2)
                 # coupa_datatable_row é a tela antiga; a extração já usa coupaTable__row
                 linhas = self.driver.find_elements(By.XPATH, "//tr[contains(@class, 'coupa_datatable_row') or contains(@class, 'coupaTable__row')]")
+                for _ in range(3 if paginas == 0 else 0):   # primeira página lenta não é "lista vazia"
+                    if linhas:
+                        break
+                    time.sleep(5)
+                    linhas = self.driver.find_elements(By.XPATH, "//tr[contains(@class, 'coupa_datatable_row') or contains(@class, 'coupaTable__row')]")
                 if not linhas:
+                    if paginas == 0:
+                        raise Exception("A lista de eventos da Vale não carregou.")
                     break
                 paginas += 1
                 for linha in linhas:

@@ -92,7 +92,7 @@ class VerificacaoValeTest(BaseTemporaria):
               {'COTAÇÃO': '54268', 'VENCIMENTO': PAS_REAL, 'RESPOSTA': 'RASCUNHO', 'VENDEDOR': 'BIA'},
               {'COTAÇÃO': '290000', 'VENCIMENTO': PAS_REAL, 'RESPOSTA': ''}]          # do Coupa: não é alvo da Vale
 
-    def rodar(self, paginas, otp='123456'):
+    def rodar(self, paginas, otp='123456', parada=False):
         relogio, emitidos = Relogio(), []
         ns = carregar(ARQ_VALE, CONSTANTES)
         ns = carregar(ARQ_VALE, METODOS, 'ValeScraper', time=relogio, By=By, csv=csv, os=os, datetime=datetime,
@@ -106,7 +106,7 @@ class VerificacaoValeTest(BaseTemporaria):
             emitidos.append((evento, dados))
             if evento == 'pedir_otp_usuario' and otp:
                 bot.otp_atual = otp          # alguém digitou o código no painel
-        bot.__dict__.update(driver=PortalVale(paginas), config={}, NOME_ABA_ALVO='COTAÇÃO', solicitacao_parada=False,
+        bot.__dict__.update(driver=PortalVale(paginas), config={}, NOME_ABA_ALVO='COTAÇÃO', solicitacao_parada=parada,
                             db_eventos={n: {} for n in ('54328', '54291', '54268')}, sio=SimpleNamespace(emit=emit),
                             wait=SimpleNamespace(until=lambda cond: Celula()))
         modulo = SimpleNamespace(planilha_manager=self.manager,
@@ -124,6 +124,19 @@ class VerificacaoValeTest(BaseTemporaria):
         self.assertEqual(bot.driver.abas, ['principal'])      # fechou a aba da verificação
         with open(self.dir / 'relatorios' / f'verificacao_vale_{datetime.now():%Y-%m-%d}.csv', encoding='utf-8-sig') as f:
             self.assertEqual(list(csv.reader(f, delimiter=';'))[1], ['54268', PAS_REAL, 'RASCUNHO', 'BIA'])
+
+    def test_lista_que_nao_carrega_e_erro_e_nao_lista_vazia(self):
+        antes = self.cota.read_bytes()
+        bot, emitidos, _, _ = self.rodar([[]])
+        self.assertFalse(emitidos[-1][1]['sucesso'])
+        self.assertIn('não carregou', emitidos[-1][1]['erro'])
+        self.assertEqual(self.cota.read_bytes(), antes)
+        self.assertFalse((self.dir / 'relatorios').exists())   # não acusa todas como "não encontradas"
+
+    def test_parada_da_extracao_anterior_nao_cancela_a_verificacao(self):
+        paginas = [[LinhaVale('54328', '1')]]
+        _, emitidos, _, _ = self.rodar(paginas, parada=True)
+        self.assertTrue(emitidos[-1][1]['sucesso'])
 
     def test_sem_otp_pula_registra_e_nao_grava(self):
         antes = self.cota.read_bytes()
@@ -152,6 +165,11 @@ class FonteValeTest(unittest.TestCase):
             for nome in ('..\\..\\x.pdf', '../x.pdf', '..', 'a:b?.pdf'):
                 caminho = Path(gravar(tmp, {'name': nome, 'data': base64.b64encode(b'1').decode()}))
                 self.assertEqual(caminho.parent, Path(tmp))
+            # datasheet e DAV com o mesmo nome: os dois ficam
+            a = gravar(tmp, {'name': 'igual.pdf', 'data': base64.b64encode(b'ds').decode()})
+            b = gravar(tmp, {'name': 'igual.pdf', 'data': base64.b64encode(b'dav').decode()})
+            self.assertNotEqual(a, b)
+            self.assertEqual((Path(a).read_bytes(), Path(b).read_bytes()), (b'ds', b'dav'))
 
 
 if __name__ == '__main__':

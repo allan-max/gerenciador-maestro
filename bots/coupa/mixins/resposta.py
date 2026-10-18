@@ -428,6 +428,10 @@ class RespostaMixin:
         nome = os.path.basename(str(f_data.get('name') or '').replace('\\', '/'))
         nome = re.sub(r'[<>:"|?*\x00-\x1f]', '_', nome).strip(' .')   # caracteres que o Windows recusa
         caminho = os.path.join(pasta, nome or 'anexo.pdf')
+        n = 1
+        while os.path.exists(caminho):   # datasheet e DAV com o mesmo nome não se sobrescrevem
+            caminho = os.path.join(pasta, f"{n}_{nome or 'anexo.pdf'}")
+            n += 1
         with open(caminho, 'wb') as out:
             out.write(base64.b64decode(f_data['data']))
         return caminho
