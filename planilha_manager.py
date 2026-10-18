@@ -8,6 +8,8 @@ import tempfile
 import time
 from datetime import date, datetime
 
+import ambiente
+
 logger = logging.getLogger(__name__)
 
 RESPONDIDO, NAO_RESPONDIDO, RASCUNHO = 'RESPONDIDO', 'NÃO RESPONDIDO', 'RASCUNHO'
@@ -82,23 +84,15 @@ class PlanilhaManager:
             9: "RESPOSTA"
         }
         
-        import os
-        dir_db = r"\\SERVIDOR2\Publico\ALLAN\database\Banco-de-dados"
-        if not os.path.exists(dir_db):
-            try: os.makedirs(dir_db, exist_ok=True)
-            except: pass
+        dir_db = ambiente.pasta_banco()
         self.caminho_cotacoes = os.path.join(dir_db, "COTAÇÕES.json")
         self.caminho_pedidos = os.path.join(dir_db, "PEDIDOS.json")
-        
-        # Mover arquivos existentes se eles estiverem na pasta raiz e não no servidor
-        try:
-            import shutil
-            if os.path.exists("COTAÇÕES.json") and not os.path.exists(self.caminho_cotacoes):
-                shutil.copy2("COTAÇÕES.json", self.caminho_cotacoes)
-            if os.path.exists("PEDIDOS.json") and not os.path.exists(self.caminho_pedidos):
-                shutil.copy2("PEDIDOS.json", self.caminho_pedidos)
-        except Exception as e:
-            print("Erro ao copiar base para servidor:", e)
+        if ambiente.modo_teste():   # a base de teste começa vazia; a de produção nunca é criada nem copiada daqui
+            os.makedirs(dir_db, exist_ok=True)
+            for caminho, chave in ((self.caminho_cotacoes, "COTAÇÃO"), (self.caminho_pedidos, "PEDIDOS")):
+                if not os.path.exists(caminho):
+                    with open(caminho, 'w', encoding='utf-8') as f:
+                        json.dump({chave: []}, f)
 
         self.iniciado = False
 
@@ -160,6 +154,7 @@ class PlanilhaManager:
             self.iniciado = True
 
     def _salvar_arquivo(self, caminho, banco):
+        ambiente.exigir_trava(caminho)
         if not self.iniciado or caminho not in self._originais:
             raise RuntimeError('Base não carregada; gravação bloqueada.')
         original = self._originais[caminho]
