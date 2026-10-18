@@ -75,7 +75,7 @@ class VerificacaoMixin:
             from planilha_manager import planilha_manager
             mudancas = planilha_manager.atualizar_status_respostas(self.NOME_ABA_ALVO, vistos, 1, 9)
             for num, qtd in vistos.items():
-                if qtd and not self.db_eventos[num].get('respondido'):
+                if qtd and not self.db_eventos.get(num, {}).get('respondido'):
                     self.atualizar_status_respondido_jsonl(num)
             if erro:
                 raise erro   # o que foi lido já está gravado

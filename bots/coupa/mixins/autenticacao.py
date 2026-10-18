@@ -351,6 +351,13 @@ class AutenticacaoMixin:
             return False
 
     def iniciar_e_logar(self):
+        import ambiente, instancia_unica
+        if not ambiente.modo_teste() and not instancia_unica.trava_ativa():
+            # testar_coupa.py e afins rodavam o robô sozinho e gravavam na base de produção (13/10)
+            msg = "Robô recusado: fora do gerenciador ele só roda em modo teste (MAESTRO_TESTE=1)."
+            logger.error(msg)
+            self.sio.emit('tarefa_concluida', {'evento': 'Login do Robo', 'sucesso': False, 'erro': msg})
+            return
         logger.info(" INICIANDO ROBO” (FASE 1: PREPARAÇãO E LOGIN)...")
         self.verificar_acesso_pastas()
         
