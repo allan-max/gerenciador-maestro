@@ -56,24 +56,15 @@ class RespostaMixin:
         lista_origens = dados.get('origens', [])
         lista_icms = dados.get('icms', [])
         
-        ds_paths = []
-        for f_data in dados.get('datasheets', []):
-            # Cria o arquivo fisicamente na pasta de arquivos temporários do Windows
-            caminho = os.path.join(tempfile.gettempdir(), f_data['name'])
-            with open(caminho, 'wb') as out:
-                out.write(base64.b64decode(f_data['data']))
-            ds_paths.append(caminho)
-            
-        dav_paths = []
-        for f_data in dados.get('davs', []):
-            caminho = os.path.join(tempfile.gettempdir(), f_data['name'])
-            with open(caminho, 'wb') as out:
-                out.write(base64.b64decode(f_data['data']))
-            dav_paths.append(caminho)
-            
+        pasta_anexos = tempfile.mkdtemp(prefix='maestro-resposta-')   # apagada no fim, com ou sem erro
+        falhas = []
+
         logger.info(f"🚀 Iniciando Resposta do Evento {evento}...")
-        
+
         try:
+            ds_paths = [self._gravar_anexo(pasta_anexos, f) for f in dados.get('datasheets', [])]
+            dav_paths = [self._gravar_anexo(pasta_anexos, f) for f in dados.get('davs', [])]
+
             # 1. ROTA DIRETA PARA SOURCING (À PROVA DE FALHAS)
             self.sio.emit('relatar_progresso', {'mensagem': f" Acedendo diretamente ã  página de Sourcing..."})
             
@@ -357,6 +348,7 @@ class RespostaMixin:
                                 logger.info(f"      ✅ Preço {preco_atual} inserido.")
                                 time.sleep(1.5) # Freio após injetar o Preço
                             except Exception as e:
+                                falhas.append(f"item {idx+1} (preço)")
                                 logger.warning(f"      âš ï¸ Falha ao inserir preço: {e}")
 
                         if se_tem_prazo:
@@ -391,27 +383,34 @@ class RespostaMixin:
                                 logger.info(f"      ✅ Prazo {prazo_atual} inserido.")
                                 time.sleep(1.5) # Freio após injetar o Prazo
                             except Exception as e:
+                                falhas.append(f"item {idx+1} (prazo)")
                                 logger.warning(f"      âš ï¸ Falha ao inserir prazo: {e}")
                     else:
                         logger.info(f"    Item {idx+1} ignorado (Você deixou os campos vazios).")
                         
             except Exception as e:
+                falhas.append("preenchimento das linhas")
                 logger.error(f" Erro crítico no preenchimento das linhas: {e}")
 
-            # 8. Salvar Final
+            # 8. Salvar Final (só salva o rascunho; o envio ao cliente é feito por uma pessoa no portal)
             logger.info("✅ Finalizando salvamento do evento...")
             try:
                 btn_salvar = self.driver.find_element(By.CSS_SELECTOR, "button.s-save")
-                self.driver.execute_script("arguments[0].click();", btn_salvar)
-                time.sleep(4)
-            except: pass
+            except NoSuchElementException:
+                raise Exception("Botão Salvar não encontrado: o rascunho não foi salvo.")
+            self.driver.execute_script("arguments[0].click();", btn_salvar)
+            time.sleep(4)
+            self._marcar_rascunho(evento)
+            if falhas:
+                raise Exception(f"Rascunho salvo, mas com falha em: {', '.join(falhas)}. Confira no portal antes de enviar.")
 
-            logger.info(f"🎉 Evento {evento} respondido com sucesso!")
+            logger.info(f"🎉 Rascunho do evento {evento} salvo. O envio ao cliente é manual.")
             self.sio.emit('tarefa_concluida', {'evento': f'Evento {evento}', 'sucesso': True})
-            
-            self.driver.close()
-            self.driver.switch_to.window(self.driver.window_handles[0])
-            
+
+            if len(self.driver.window_handles) > 1:
+                self.driver.close()
+                self.driver.switch_to.window(self.driver.window_handles[0])
+
         except Exception as e:
             logger.error(f"âŒ Erro ao responder evento: {e}")
             self.sio.emit('tarefa_concluida', {'evento': f'Evento {evento}', 'sucesso': False, 'erro': str(e)})
@@ -420,3 +419,23 @@ class RespostaMixin:
             if len(self.driver.window_handles) > 1:
                 self.driver.close()
                 self.driver.switch_to.window(self.driver.window_handles[0])
+        finally:
+            shutil.rmtree(pasta_anexos, ignore_errors=True)
+
+    @staticmethod
+    def _gravar_anexo(pasta, f_data):
+        # basename: o nome vem do portal e não pode apontar para fora da pasta temporária
+        nome = os.path.basename(str(f_data.get('name') or '').replace('\\', '/'))
+        nome = re.sub(r'[<>:"|?*\x00-\x1f]', '_', nome).strip(' .')   # caracteres que o Windows recusa
+        caminho = os.path.join(pasta, nome or 'anexo.pdf')
+        with open(caminho, 'wb') as out:
+            out.write(base64.b64decode(f_data['data']))
+        return caminho
+
+    def _marcar_rascunho(self, evento):
+        try:
+            from planilha_manager import planilha_manager
+            if planilha_manager.marcar_rascunho(evento):
+                logger.info(f"   📝 Cotação {evento} marcada como RASCUNHO no banco.")
+        except Exception:
+            logger.exception(f"Rascunho salvo no portal, mas não deu para marcar {evento} como RASCUNHO no banco")

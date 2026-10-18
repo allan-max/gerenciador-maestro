@@ -458,21 +458,6 @@ Coupa Bot
             logger.error(f"ERRO AO SALVAR JSON: {e}")
             return False
 
-    def atualizar_status(self, num, resp):
-        try:
-            from planilha_manager import planilha_manager
-            
-            # Formata a string corretamente para o JSON
-            texto_resp = "RESPONDIDO" if resp else "NÃO RESPONDIDO"
-            
-            # Atualiza direto no JSON!
-            # 1 = COTAÇÃO (chave), 9 = RESPOSTA (status)
-            salvou = planilha_manager.atualizar_status_respostas(self.NOME_ABA_ALVO, {str(num): texto_resp}, 1, 9)
-            if salvou:
-                logger.info(f"   ✅ Status atualizado no JSON: {num} -> {texto_resp}")
-        except Exception as e:
-            logger.error(f"Erro ao atualizar_status: {e}")
-
     def atualizar_pedidos_excel(self, pedidos: list):
         logger.info(f" --- INICIANDO GRAVACAO DE PEDIDOS NO EXCEL --- ")
         if not pedidos:

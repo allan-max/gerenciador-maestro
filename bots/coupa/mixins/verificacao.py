@@ -5,6 +5,8 @@ Módulo Especialista: Coupa Enterprise (Trabalhador do Maestro)
 Autor: Allan Simão
 """
 import os
+import csv
+from pathlib import Path
 import re
 import time
 import json
@@ -15,7 +17,7 @@ import sys
 import threading
 import random
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Set, Optional, Any
 from google import genai
 from groq import Groq
@@ -48,175 +50,153 @@ if not logger.handlers:
     logger.addHandler(console_handler)
 
 
+MAX_PAGINAS_PADRAO = 60   # teto de segurança; CONFIG.json "verificacao_max_paginas" muda
+PASTA_RELATORIOS = Path(__file__).resolve().parents[3] / 'relatorios'
+JANELA_NAO_RESPONDIDO_DIAS = 7   # NÃO RESPONDIDO recente continua sendo conferido
+
+
 class VerificacaoMixin:
     def fase_verificacao(self):
-        logger.info("--- FASE 2: VERIFICAÇãO ---")
+        """Lê a coluna de respostas enviadas da lista do Coupa e aplica as regras do planilha_manager.novo_status.
+        Para quando acha todas as cotações pendentes, quando a lista acaba ou no teto de páginas."""
+        logger.info("--- FASE 2: VERIFICAÇÃO ---")
         try:
             self.garantir_logado(self.EVENTS_URL)
             self.driver.get(self.EVENTS_URL)
             time.sleep(3)
-            
-            # O get() acima já garante que estamos na primeira página.
-            
-            logger.info(f" Iniciando varredura total das últimas 40 páginas...")
-            curr = 1
-            limite_pag = 40 # Garante um limite mesmo se não estiver no __init__
-            
-            while True:
-                if self.solicitacao_parada or curr > limite_pag: break
-                logger.info(f"    Verificando Página {curr}...")
-                self.sio.emit('relatar_progresso_coupa', {'mensagem': f"🔍 Verificando Página {curr}..."})
-                
-                try: 
-                    WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
-                except: 
-                    break
-                
-                rows = self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
-                if not rows: break
-                
-                matches_pagina = 0
-                
-                for r in rows:
-                    if self.solicitacao_parada: break
-                    try:
-                        num = r.find_element(By.CSS_SELECTOR, "a span.dt_open_link").text.strip()
-                        matches_pagina += 1
-                        qtd = 0
-                        try: 
-                            qtd = int(r.find_element(By.CLASS_NAME, "s-datatable-cell-num_responses").text)
-                        except: pass
-                        
-                        if qtd > 0:
-                            self.atualizar_status(num, True)
-                            msg_ui = f"✅ {num} - RESPONDIDO"
-                            self.sio.emit('relatar_progresso_coupa', {'mensagem': msg_ui})
-                            logger.info(f"      {msg_ui}")
-                            
-                            if not self.db_eventos.get(num, {}).get('respondido'):
-                                self.atualizar_status_respondido_jsonl(num)
-                        else:
-                            self.atualizar_status(num, False)
-                            msg_ui = f"⏳ {num} - NÃO RESPONDIDO"
-                            self.sio.emit('relatar_progresso_coupa', {'mensagem': msg_ui})
-                            logger.info(f"      {msg_ui}")
-                    except: 
-                        continue
-                
-                logger.info(f"    Fim da Página {curr}. Matches encontrados: {matches_pagina}.")
 
-                try:
-                    next_btn = None
-                    seletores = [
-                        (By.CSS_SELECTOR, "a.next_page"),
-                        (By.LINK_TEXT, "Próximo"),
-                        (By.LINK_TEXT, "Next"),
-                        (By.XPATH, "//a[contains(@class, 'next_page')]")
-                    ]
-                    
-                    for metodo, query in seletores:
-                        try:
-                            el = self.driver.find_element(metodo, query)
-                            if el.is_displayed():
-                                next_btn = el; break
-                        except: continue
-                    
-                    if not next_btn:
-                        logger.info("    Fim da paginação (Botão não encontrado).")
-                        break
+            pendentes = self._pendentes_coupa()
+            max_paginas = int(getattr(self, 'config', {}).get('verificacao_max_paginas', MAX_PAGINAS_PADRAO))
+            logger.info(f" Verificando {len(pendentes)} cotações pendentes (até {max_paginas} páginas)...")
+            lidos, ilegiveis, paginas, erro = self._ler_lista(pendentes, max_paginas)
 
-                    cls = next_btn.get_attribute("class") or ""
-                    try: p_cls = next_btn.find_element(By.XPATH, "..").get_attribute("class") or ""
-                    except: p_cls = ""
-                    
-                    if "disabled" in cls or "disabled" in p_cls:
-                        logger.info("    Fim da paginação (Botão desabilitado).")
-                        break
+            # Só números deste robô: um número da Vale igual ao de um evento do Coupa não é tocado
+            vistos = {n: q for n, q in lidos.items() if n in self.db_eventos}
+            from planilha_manager import planilha_manager
+            mudancas = planilha_manager.atualizar_status_respostas(self.NOME_ABA_ALVO, vistos, 1, 9)
+            for num, qtd in vistos.items():
+                if qtd and not self.db_eventos[num].get('respondido'):
+                    self.atualizar_status_respondido_jsonl(num)
+            if erro:
+                raise erro   # o que foi lido já está gravado
 
-                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_btn)
-                    time.sleep(1)
-                    self.driver.execute_script("arguments[0].click();", next_btn)
-                    time.sleep(4) 
-                    curr += 1
-                except Exception as e:
-                    logger.error(f" Erro crítico na paginação da Fase 2: {e}")
-                    break
-            
-            logger.info("✅ Fase de verificação finalizada.")
+            achadas = sum(1 for n in pendentes if n in vistos)
+            relatorio = self._relatorio_nao_encontradas(pendentes, vistos)
+            resumo = (f"Verificação: {len(vistos)} eventos lidos em {paginas} página(s), {achadas}/{len(pendentes)} pendentes encontradas, "
+                      f"{len(mudancas)} status alterados, {ilegiveis} linhas ilegíveis")
+            logger.info(f"✅ {resumo}" + (f". Não encontradas: {relatorio}" if relatorio else ""))
+            self.sio.emit('relatar_progresso_coupa', {'mensagem': f"✅ {resumo}"})
             self.sio.emit('tarefa_concluida', {'evento': 'Verificação de Status', 'sucesso': True})
-            
+
         except Exception as e:
-            logger.error(f" Erro geral na Fase de Verificação: {e}")
+            logger.exception(f" Erro geral na Fase de Verificação: {e}")
             self.sio.emit('tarefa_concluida', {'evento': 'Verificação de Status', 'sucesso': False, 'erro': str(e)})
 
-    def _get_vencidos(self):
-        logger.info(" Lendo Excel para identificar eventos vencidos (Pente Fino)...")
-        v = set()
-        if not os.path.exists(self.ARQUIVO_PLANILHA_CONTROLE): 
-            logger.error(" Arquivo de controle não encontrado para leitura.")
-            return v
-        
-        wb = None # Inicia a variável vazia para evitar erros
+    def _ler_lista(self, pendentes, max_paginas):
+        """{número: respostas} da lista do portal. Se o portal falhar no meio, devolve o que já leu e o erro."""
+        vistos, ilegiveis, paginas = {}, 0, 0
+        ordem = lambda q: -1 if q is None else q   # número repetido na lista: vale a maior quantidade lida
         try:
-            wb = load_workbook(self.ARQUIVO_PLANILHA_CONTROLE, data_only=True)
-            ws = wb[self.NOME_ABA_ALVO] if self.NOME_ABA_ALVO in wb.sheetnames else wb.active
-            
-            logger.info(f"    O Excel reporta {ws.max_row} linhas preenchidas.")
-
-            agora = datetime.now()
-            hoje = agora.date()
-            passou_do_horario = (agora.hour > 14) or (agora.hour == 14 and agora.minute >= 30)
-            
-            count_total = 0
-            count_erro_data = 0
-            
-            for r in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=2):
+            while not self.solicitacao_parada and paginas < max_paginas:
                 try:
-                    if not r[0].value: continue 
-                    val = r[1].value
-                    dt_obj = None
-                    
-                    if isinstance(val, datetime):
-                        dt_obj = val.date()
-                    elif isinstance(val, str):
-                        val = val.strip()
-                        formatos = ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d", "%d/%m/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S"]
-                        for fmt in formatos:
-                            try:
-                                dt_obj = datetime.strptime(val.split(' ')[0], fmt.split(' ')[0]).date()
-                                break
-                            except: pass
-                    
-                    if dt_obj:
-                        if dt_obj < hoje:
-                            v.add(str(r[0].value).strip())
-                            count_total += 1
-                        elif dt_obj == hoje and passou_do_horario:
-                            v.add(str(r[0].value).strip())
-                            count_total += 1
-                    else:
-                        if val: count_erro_data += 1
+                    WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
+                except Exception:
+                    logger.warning(f"    Página {paginas + 1}: tabela não carregou; encerrando a leitura.")
+                    break
+                rows = self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+                if not rows:
+                    break
+                paginas += 1
+                for r in rows:
+                    try:
+                        num, qtd = self._ler_linha_verificacao(r)
+                    except Exception:
+                        ilegiveis += 1
+                        continue
+                    if num and (num not in vistos or ordem(qtd) > ordem(vistos[num])):
+                        vistos[num] = qtd
 
-                except: pass
-            
-            if count_erro_data > 0:
-                logger.warning(f"    {count_erro_data} linhas ignoradas por data inválida ou formato desconhecido.")
-            
-            logger.info(f"✅ Total de eventos confirmados como VENCIDOS no Excel: {count_total}")
-            
-            wb.close()
-            
-            # <--- TRAVA DE SEGURANÇA 1: Libera a planilha na memória!
-            return v
-            
+                faltam = sum(1 for n in pendentes if n not in vistos)
+                logger.info(f"    Página {paginas}: {len(rows)} linhas, faltam {faltam} pendentes.")
+                self.sio.emit('relatar_progresso_coupa', {'mensagem': f"🔍 Verificando página {paginas} (faltam {faltam} pendentes)..."})
+                if not faltam:
+                    logger.info("    Todas as pendentes encontradas.")
+                    break
+                if not self._proxima_pagina():
+                    break
         except Exception as e:
-            if 'wb' in locals() and wb:
-                try: wb.close()
-                except: pass 
-            logger.error(f" Erro ao ler datas do Excel: {e}")
-            if wb: 
-                try: wb.close() # <--- TRAVA DE SEGURANÇA 2: Libera mesmo se der erro crítico!
-                except: pass
-            return v
+            logger.exception(f"Leitura interrompida na página {paginas}; gravando o que já foi lido.")
+            return vistos, ilegiveis, paginas, e
+        return vistos, ilegiveis, paginas, None
 
+    def _pendentes_coupa(self):
+        """Cotações deste robô (as do eventos.jsonl do Coupa) sem resposta confirmada: vazias, RASCUNHO e
+        NÃO RESPONDIDO que venceram há poucos dias (prazo prorrogado ou resposta enviada no limite)."""
+        from planilha_manager import planilha_manager, status_atual, data_vencimento, RASCUNHO, NAO_RESPONDIDO
+        planilha_manager.iniciar()
+        limite = datetime.now().date() - timedelta(days=JANELA_NAO_RESPONDIDO_DIAS)
 
+        def alvo(r):
+            s = status_atual(r.get('RESPOSTA'))
+            d = data_vencimento(r.get('VENCIMENTO'))
+            return s in ('', RASCUNHO) or (s == NAO_RESPONDIDO and d is not None and d >= limite)
+        return {str(r.get('COTAÇÃO')).strip(): r for r in planilha_manager.cotacoes.get('COTAÇÃO', [])
+                if isinstance(r, dict) and str(r.get('COTAÇÃO') or '').strip() in self.db_eventos and alvo(r)}
+
+    @staticmethod
+    def _ler_linha_verificacao(linha):
+        """(número, respostas enviadas). Célula ausente ou sem número = None: não dá para afirmar que é 0."""
+        num = linha.find_element(By.CSS_SELECTOR, "a span.dt_open_link").text.strip()
+        try:
+            qtd = int(linha.find_element(By.CLASS_NAME, "s-datatable-cell-num_responses").text.strip())
+        except (NoSuchElementException, ValueError):
+            qtd = None
+        return num, qtd
+
+    def _relatorio_nao_encontradas(self, pendentes, vistos):
+        faltando = [r for n, r in pendentes.items() if n not in vistos]
+        if not faltando:
+            return None
+        PASTA_RELATORIOS.mkdir(exist_ok=True)
+        caminho = PASTA_RELATORIOS / f"verificacao_coupa_{datetime.now():%Y-%m-%d}.csv"
+        with open(caminho, 'w', newline='', encoding='utf-8-sig') as f:
+            w = csv.writer(f, delimiter=';')
+            w.writerow(['COTAÇÃO', 'VENCIMENTO', 'RESPOSTA', 'VENDEDOR'])
+            w.writerows([r.get('COTAÇÃO'), r.get('VENCIMENTO'), r.get('RESPOSTA') or '', r.get('VENDEDOR')] for r in faltando)
+        return str(caminho)
+
+    def _proxima_pagina(self):
+        try:
+            next_btn = None
+            seletores = [
+                (By.CSS_SELECTOR, "a.next_page"),
+                (By.LINK_TEXT, "Próximo"),
+                (By.LINK_TEXT, "Next"),
+                (By.XPATH, "//a[contains(@class, 'next_page')]")
+            ]
+            for metodo, query in seletores:
+                try:
+                    el = self.driver.find_element(metodo, query)
+                    if el.is_displayed():
+                        next_btn = el; break
+                except Exception: continue
+
+            if not next_btn:
+                logger.info("    Fim da paginação (Botão não encontrado).")
+                return False
+
+            cls = next_btn.get_attribute("class") or ""
+            try: p_cls = next_btn.find_element(By.XPATH, "..").get_attribute("class") or ""
+            except Exception: p_cls = ""
+            if "disabled" in cls or "disabled" in p_cls:
+                logger.info("    Fim da paginação (Botão desabilitado).")
+                return False
+
+            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_btn)
+            time.sleep(1)
+            self.driver.execute_script("arguments[0].click();", next_btn)
+            time.sleep(4)
+            return True
+        except Exception as e:
+            logger.error(f" Erro crítico na paginação da verificação: {e}")
+            return False
