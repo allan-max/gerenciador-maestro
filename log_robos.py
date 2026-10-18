@@ -14,6 +14,7 @@ import ambiente
 
 TAMANHO_MAX = 10 * 1024 * 1024
 ARQUIVOS_GUARDADOS = 5
+LEITURA_MAX = 1024 * 1024
 FORMATO = logging.Formatter(f'%(asctime)s [{socket.gethostname()}] [%(levelname)s] %(message)s',
                             datefmt='%Y-%m-%d %H:%M:%S')
 
@@ -49,7 +50,7 @@ def novas_linhas(caminho, pos):
     try:
         tamanho = os.path.getsize(caminho)
     except OSError:
-        return [], pos
+        return [], 0 if pos is None else pos   # ainda não existe: quando aparecer, lê do começo
     if pos is None:
         return [], tamanho
     if tamanho < pos:
@@ -58,7 +59,7 @@ def novas_linhas(caminho, pos):
         return [], pos
     with open(caminho, 'rb') as f:
         f.seek(pos)
-        bloco = f.read()
+        bloco = f.read(LEITURA_MAX)   # o resto vem nas próximas leituras
     fim = bloco.rfind(b'\n')
     if fim < 0:
         return [], pos          # linha ainda sendo escrita

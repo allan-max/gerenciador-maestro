@@ -78,6 +78,18 @@ class MonitorTest(LogBase):
         self.assertTrue(Path(caminho + '.1').exists())                # rodou mesmo com o monitor lendo
         self.assertTrue(any('linha 39' in l for l in lidas))         # e o monitor continuou depois da rotação
 
+    def test_arquivo_que_aparece_depois_e_lido_do_comeco_em_partes(self):
+        arq = Path(self.tmp.name, 'novo.txt')
+        linhas, pos = log_robos.novas_linhas(str(arq), None)
+        self.assertEqual((linhas, pos), ([], 0))                      # não existia: quando aparecer, do começo
+        arq.write_text(''.join(f'linha {i}\n' for i in range(30)), encoding='utf-8')
+        with patch.object(log_robos, 'LEITURA_MAX', 50):
+            lidas = []
+            for _ in range(20):
+                novas, pos = log_robos.novas_linhas(str(arq), pos)
+                lidas += novas
+        self.assertEqual(lidas, [f'linha {i}' for i in range(30)])
+
     def test_acompanhar_repassa_as_linhas(self):
         arq = Path(self.tmp.name, 'log.txt')
         arq.write_text('', encoding='utf-8')

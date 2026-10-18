@@ -486,6 +486,7 @@ class ValeScraper:
             logger.error(msg)
             self.sio.emit('tarefa_concluida', {'evento': 'Login do Robo', 'sucesso': False, 'erro': msg})
             return
+        log_robos.configurar(logger, 'log-vale.txt')   # o servidor podia estar fora quando o módulo foi importado
         logger.info(" INICIANDO ROBÃ” (FASE 1: PREPARAÃ‡ÃƒO E LOGIN)...")
         self.verificar_acesso_pastas()
         self.carregar_banco_dados()
