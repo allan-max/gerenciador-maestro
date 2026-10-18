@@ -714,6 +714,32 @@ def processar_nova_senha(dados):
     else:
         sio.emit('resultado_nova_senha', {'sucesso': False, 'erro': 'Link invlido ou expirado.', 'clientId': client_id})
 
+class SioDoRobo:
+    """Repassa tudo ao sio e guarda o último 'tarefa_concluida' do robô: o piloto sabe se a tarefa deu certo."""
+    def __init__(self, sio_real):
+        self._sio = sio_real
+        self.ultima_conclusao = None
+
+    def emit(self, evento, *args, **kwargs):
+        if evento == 'tarefa_concluida':
+            self.ultima_conclusao = (args[0] if args else kwargs.get('data')) or {}
+        return self._sio.emit(evento, *args, **kwargs)
+
+    def __getattr__(self, nome):
+        return getattr(self._sio, nome)
+
+
+def comandar(modo, portal):
+    """Comando do piloto: pelo Node quando conectado (a tela acompanha o estado); sem conexão, executa aqui
+    (antes o emit falhava calado e o ciclo seguia como se o robô tivesse recebido)."""
+    dados = {'modo': modo, 'portal': portal}
+    if sio.connected:
+        sio.emit('comando_direto', dados)
+    else:
+        logger.warning(f"Sem conexão com o portal: '{modo}' do {portal} executado direto no gerenciador")
+        comando_para_robo(dados)
+
+
 def forcar_troca(portal, espera_s=30):
     """Botão "Assumir controle" do portal: desliga o outro robô e liga este.
     Passa pelo Node (comando_direto), como o piloto automático, para a tela acompanhar o estado."""
@@ -841,16 +867,24 @@ WshShell.SendKeys "~"
 
     elif portal in ['coupa', 'vale']:
         if modo == 'ligar_robo':
+            existente = bot_coupa if portal == 'coupa' else bot_vale
+            if existente is not None:
+                # Não cria um segundo navegador por cima do primeiro (antes sobrescrevia sem fechar o driver)
+                logger.warning(f"{portal}: já está ligado; ignorando o novo 'ligar' (desligue antes para reiniciar)")
+                sio.emit(f'relatar_progresso_{portal}', {'mensagem': f'⚠️ O robô {portal.upper()} já está ligado.'})
+                if getattr(existente, 'is_ready', False):
+                    sio.emit('tarefa_concluida', {'evento': 'Login do Robo', 'sucesso': True})   # a tela volta ao estado certo
+                return
             portal_atual = portal
             if portal == 'coupa':
                 from bots.coupa import CoupaScraper
-                bot_coupa = CoupaScraper(sio, aguardando_clique, coordenadas_clique)
+                bot_coupa = CoupaScraper(SioDoRobo(sio), aguardando_clique, coordenadas_clique)
                 rodando_monitor_coupa = True
                 threading.Thread(target=monitorar_log_coupa, daemon=True).start()
                 threading.Thread(target=bot_coupa.iniciar_e_logar, daemon=True).start()
             else:
                 from bots.vale_bot import ValeScraper
-                bot_vale = ValeScraper(sio, aguardando_clique, coordenadas_clique)
+                bot_vale = ValeScraper(SioDoRobo(sio), aguardando_clique, coordenadas_clique)
                 rodando_monitor_vale = True
                 threading.Thread(target=monitorar_log_vale, daemon=True).start()
                 threading.Thread(target=bot_vale.iniciar_e_logar, daemon=True).start()
@@ -881,7 +915,15 @@ WshShell.SendKeys "~"
         elif modo in ['extrair', 'verificar', 'responder']:
             bot_alvo = bot_coupa if portal == 'coupa' else bot_vale
             if bot_alvo:
-                th = threading.Thread(target=bot_alvo.iniciar_tarefa, args=(modo, dados), daemon=True)
+                anterior = getattr(bot_alvo, 'thread_atual', None)
+
+                def rodar(bot=bot_alvo, anterior=anterior):
+                    # Uma tarefa por vez no mesmo navegador: a nova espera a anterior terminar
+                    if anterior is not None and anterior.is_alive():
+                        logger.info(f"{portal}: '{modo}' aguardando a tarefa anterior terminar")
+                        anterior.join()
+                    bot.iniciar_tarefa(modo, dados)
+                th = threading.Thread(target=rodar, daemon=True)
                 bot_alvo.thread_atual = th
                 th.start()
             else:
@@ -1790,6 +1832,9 @@ def enviar_email_erro(detalhes_erro):
     except Exception as e:
         logger.error(f"Erro ao enviar email de erro crtico: {e}")
 
+INATIVIDADE_ALERTA_S = 6 * 3600   # robô sem extração concluída por mais que isso gera um alerta (uma vez)
+ultima_extracao_ok = {'coupa': time.time(), 'vale': time.time()}
+inatividade_alertada = {'coupa': False, 'vale': False}
 ultimo_dia_verificacao_vale = None
 
 
@@ -1798,125 +1843,145 @@ def deve_verificar_vale(agora, ultimo_dia, hora=9):
     return agora.hour >= hora and ultimo_dia != agora.date()
 
 
+def esperar_robo_pronto(portal, timeout=120):
+    limite = time.time() + timeout
+    while True:
+        bot = globals().get('bot_' + portal)
+        if bot is not None and getattr(bot, 'is_ready', False):
+            return bot
+        fim = getattr(getattr(bot, 'sio', None), 'ultima_conclusao', None)
+        if fim and fim.get('sucesso') is False:
+            raise Exception(f"Login do {portal} falhou: {fim.get('erro')}")
+        if time.time() > limite:
+            raise Exception(f"Timeout ao ligar o robô {portal} (captcha ou bloqueio?)")
+        time.sleep(2)
+
+
+def executar_tarefa(portal, modo, timeout_inicio=60):
+    """Manda a tarefa e espera terminar. Erro se o comando não chegar ao robô ou se ele não confirmar sucesso
+    (antes, um comando perdido ou uma extração com erro davam o ciclo como "ok")."""
+    bot = globals().get('bot_' + portal)
+    if bot is None:
+        raise Exception(f"Robô {portal} não está ligado")
+    anterior = getattr(bot, 'thread_atual', None)
+    if isinstance(bot.sio, SioDoRobo):
+        bot.sio.ultima_conclusao = None
+    comandar(modo, portal)
+    limite = time.time() + timeout_inicio
+    while getattr(bot, 'thread_atual', None) is anterior:
+        if time.time() > limite:
+            raise Exception(f"O comando '{modo}' não chegou ao robô {portal} em {timeout_inicio}s")
+        time.sleep(1)
+    while bot.thread_atual.is_alive():
+        time.sleep(5)
+    fim = getattr(bot.sio, 'ultima_conclusao', None)
+    if not fim or not fim.get('sucesso'):
+        raise Exception(f"'{modo}' do {portal} não terminou bem: {(fim or {}).get('erro') or 'sem confirmação do robô'}")
+
+
+def precisa_alertar_inatividade(agora, ultimo_ok, ja_alertado, limite_s=INATIVIDADE_ALERTA_S):
+    return not ja_alertado and agora - ultimo_ok > limite_s
+
+
+def checar_inatividade(portal):
+    if precisa_alertar_inatividade(time.time(), ultima_extracao_ok[portal], inatividade_alertada[portal]):
+        inatividade_alertada[portal] = True
+        msg = f"Robô {portal} sem extração concluída há {(time.time() - ultima_extracao_ok[portal]) / 3600:.0f} h"
+        logger.error(msg)
+        eventos.registrar(portal, 'robo_inativo', 'erro', msg)
+        enviar_email_erro(msg)
+
+
+def extracao_ok(portal):
+    ultima_extracao_ok[portal] = time.time()
+    inatividade_alertada[portal] = False
+
+
 def loop_automacao():
     global ultimo_dia_verificacao_vale
-    logger.info("?? Iniciando Auto-Pilot (Coupa -> Verificao -> 1.5h -> Vale -> 1.5h)...")
+    logger.info("Auto-Pilot: Coupa (extração + verificação) -> 1h30 -> Vale (extração + verificação diária) -> 1h30")
     time.sleep(10)
 
     while True:
         # === COUPA ===
+        checar_inatividade('coupa')
         try:
             eventos.registrar('coupa', 'ciclo', 'info', 'Ciclo automático do Coupa começou')
-            sio.emit('relatar_progresso_coupa', {'mensagem': '?? Auto-Pilot: Iniciando ciclo de Extrao do COUPA...'})
-
-            sio.emit('comando_direto', {'modo': 'ligar_robo', 'portal': 'coupa'})
-
-            espera = 0
-            while not (globals().get('bot_coupa') and getattr(globals().get('bot_coupa'), 'is_ready', False)):
-                time.sleep(2)
-                espera += 2
-                if espera > 120: raise Exception("Timeout ao ligar o rob Coupa. Possvel Captcha ou bloqueio.")
-
-            sio.emit('comando_direto', {'modo': 'extrair', 'portal': 'coupa'})
-
-            time.sleep(10)
-            while globals().get('bot_coupa') and getattr(globals().get('bot_coupa'), 'thread_atual', None) and globals().get('bot_coupa').thread_atual.is_alive():
-                time.sleep(5)
-
-            
-
-            sio.emit('relatar_progresso_coupa', {'mensagem': '?? Auto-Pilot: Extrao do Coupa finalizada. Iniciando Verificao (Pente Fino)...'})
-
-            sio.emit('comando_direto', {'modo': 'verificar', 'portal': 'coupa'})
-
-            time.sleep(10)
-            while globals().get('bot_coupa') and getattr(globals().get('bot_coupa'), 'thread_atual', None) and globals().get('bot_coupa').thread_atual.is_alive():
-                time.sleep(5)
+            sio.emit('relatar_progresso_coupa', {'mensagem': 'Auto-Pilot: iniciando o ciclo de extração do COUPA...'})
+            comandar('ligar_robo', 'coupa')
+            esperar_robo_pronto('coupa')
+            executar_tarefa('coupa', 'extrair')
+            extracao_ok('coupa')
+            sio.emit('relatar_progresso_coupa', {'mensagem': 'Auto-Pilot: extração do Coupa finalizada. Iniciando a verificação...'})
+            executar_tarefa('coupa', 'verificar')
             eventos.registrar('coupa', 'ciclo', 'ok', 'Ciclo automático do Coupa terminou')
-
         except Exception as e_coupa:
             import traceback
-            msg_erro = f"""Auto-Pilot falhou no COUPA:\n{e_coupa}\n\n{traceback.format_exc()}"""
-            enviar_email_erro(msg_erro)
+            enviar_email_erro(f"Auto-Pilot falhou no COUPA:\n{e_coupa}\n\n{traceback.format_exc()}")
             logger.error(f"Erro no Coupa: {e_coupa}")
             eventos.registrar('coupa', 'ciclo', 'erro', f'Ciclo automático do Coupa falhou: {e_coupa}')
-            sio.emit('relatar_progresso_coupa', {'mensagem': f'? Erro ou Captcha no Coupa. Cancelando ciclo: {e_coupa}'})
+            sio.emit('relatar_progresso_coupa', {'mensagem': f'Erro no ciclo do Coupa: {e_coupa}'})
         finally:
             sio.emit('planilha_atualizada')
-            sio.emit('relatar_progresso_coupa', {'mensagem': '?? Auto-Pilot: Desligando rob Coupa e entrando em Pausa...'})
-
-            sio.emit('comando_direto', {'modo': 'desligar_robo', 'portal': 'coupa'})
-
-            sio.emit('relatar_progresso_coupa', {'mensagem': '?? Auto-Pilot: Coupa em pausa de 1 hora e 30 minutos...'})
-            logger.info("?? Auto-Pilot: Pausa de 1.5h...")
-            time.sleep(90 * 60) # 1.5 horas
+            sio.emit('relatar_progresso_coupa', {'mensagem': 'Auto-Pilot: desligando o robô Coupa; pausa de 1h30...'})
+            comandar('desligar_robo', 'coupa')
+            logger.info("Auto-Pilot: pausa de 1h30...")
+            time.sleep(90 * 60)
 
         # === VALE ===
+        checar_inatividade('vale')
         try:
             eventos.registrar('vale', 'ciclo', 'info', 'Ciclo automático da Vale começou')
-            sio.emit('relatar_progresso_vale', {'mensagem': '?? Auto-Pilot: Iniciando ciclo da VALE...'})
-
-            sio.emit('comando_direto', {'modo': 'ligar_robo', 'portal': 'vale'})
-
-            espera = 0
-            while not (globals().get('bot_vale') and getattr(globals().get('bot_vale'), 'is_ready', False)):
-                time.sleep(2)
-                espera += 2
-                if espera > 120: raise Exception("Timeout ao ligar o rob Vale.")
-
-            sio.emit('comando_direto', {'modo': 'extrair', 'portal': 'vale'})
-
-            time.sleep(10)
-            while globals().get('bot_vale') and getattr(globals().get('bot_vale'), 'thread_atual', None) and globals().get('bot_vale').thread_atual.is_alive():
-                time.sleep(5)
-
+            sio.emit('relatar_progresso_vale', {'mensagem': 'Auto-Pilot: iniciando o ciclo da VALE...'})
+            comandar('ligar_robo', 'vale')
+            esperar_robo_pronto('vale')
+            executar_tarefa('vale', 'extrair')
+            extracao_ok('vale')
             if deve_verificar_vale(datetime.now(), ultimo_dia_verificacao_vale):
                 ultimo_dia_verificacao_vale = datetime.now().date()   # uma tentativa por dia, mesmo se o OTP não vier
                 sio.emit('relatar_progresso_vale', {'mensagem': 'Auto-Pilot: verificação diária da Vale (vai pedir o OTP no painel)...'})
-                sio.emit('comando_direto', {'modo': 'verificar', 'portal': 'vale'})
-                time.sleep(10)
-                while globals().get('bot_vale') and getattr(globals().get('bot_vale'), 'thread_atual', None) and globals().get('bot_vale').thread_atual.is_alive():
-                    time.sleep(5)
+                try:
+                    executar_tarefa('vale', 'verificar')
+                except Exception as e_verif:   # OTP não informado não derruba o ciclo
+                    logger.warning(f"Verificação diária da Vale não concluída: {e_verif}")
             eventos.registrar('vale', 'ciclo', 'ok', 'Ciclo automático da Vale terminou')
-
         except Exception as e_vale:
             import traceback
-            msg_erro = f"""Auto-Pilot falhou na VALE:\n{e_vale}\n\n{traceback.format_exc()}"""
-            enviar_email_erro(msg_erro)
+            enviar_email_erro(f"Auto-Pilot falhou na VALE:\n{e_vale}\n\n{traceback.format_exc()}")
             logger.error(f"Erro na Vale: {e_vale}")
             eventos.registrar('vale', 'ciclo', 'erro', f'Ciclo automático da Vale falhou: {e_vale}')
-            sio.emit('relatar_progresso_vale', {'mensagem': f'? Erro ou Captcha na Vale. Cancelando ciclo: {e_vale}'})
+            sio.emit('relatar_progresso_vale', {'mensagem': f'Erro no ciclo da Vale: {e_vale}'})
         finally:
             sio.emit('planilha_atualizada')
-            sio.emit('relatar_progresso_vale', {'mensagem': '?? Auto-Pilot: Desligando rob Vale e entrando em Pausa...'})
+            sio.emit('relatar_progresso_vale', {'mensagem': 'Auto-Pilot: desligando o robô Vale; pausa de 1h30...'})
+            comandar('desligar_robo', 'vale')
+            logger.info("Auto-Pilot: pausa de 1h30...")
+            time.sleep(90 * 60)
 
-            sio.emit('comando_direto', {'modo': 'desligar_robo', 'portal': 'vale'})
-
-            sio.emit('relatar_progresso_vale', {'mensagem': '?? Auto-Pilot: Vale em pausa de 1 hora e 30 minutos...'})
-            logger.info("?? Auto-Pilot: Pausa de 1.5h...")
-            time.sleep(90 * 60) # 1.5 horas
-
-threading.Thread(target=loop_automacao, daemon=True).start()
-threading.Thread(target=monitorar_pastas_impressao, daemon=True).start()
 
 def loop_agendamento():
     while True:
         schedule.run_pending()
         time.sleep(60)
 
-threading.Thread(target=loop_agendamento, daemon=True).start()
 
-# Forcar um backup logo ao ligar, se nao existir backup de hoje
-try:
-    caminho_backup_dir = CONFIG_GLOBAL.get("caminho_backups", "backups")
-    if os.path.exists(caminho_backup_dir):
-        hoje = datetime.now().strftime("%Y-%m-%d")
-        ja_tem = any(hoje in f for f in os.listdir(caminho_backup_dir))
-        if not ja_tem:
-            rotina_backup()
-except: pass
+def backup_inicial():
+    """Backup ao ligar, se ainda não houver um de hoje."""
+    try:
+        caminho_backup_dir = CONFIG_GLOBAL.get("caminho_backups", "backups")
+        if os.path.exists(caminho_backup_dir):
+            hoje = datetime.now().strftime("%Y-%m-%d")
+            if not any(hoje in f for f in os.listdir(caminho_backup_dir)):
+                rotina_backup()
+    except Exception:
+        logger.exception('Falha no backup inicial')
 
 if __name__ == '__main__':
+    # Threads só no gerenciador de verdade: importar este arquivo (testes, bots) não liga o piloto
+    threading.Thread(target=loop_automacao, daemon=True).start()
+    threading.Thread(target=monitorar_pastas_impressao, daemon=True).start()
+    threading.Thread(target=loop_agendamento, daemon=True).start()
+    backup_inicial()
     try:
         logger.info(f"Conectando ao servidor: {URL_DO_SERVIDOR} ...")
         sio.connect(URL_DO_SERVIDOR, auth={"robo_secret": ROBO_SECRET})
