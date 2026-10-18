@@ -1,12 +1,67 @@
 import os
+import re
+import shutil
 import threading
 import json
 import logging
 import tempfile
 import time
-from datetime import datetime
+from datetime import date, datetime
 
 logger = logging.getLogger(__name__)
+
+RESPONDIDO, NAO_RESPONDIDO, RASCUNHO = 'RESPONDIDO', 'NÃO RESPONDIDO', 'RASCUNHO'
+HORA_CORTE = (14, 30)        # no dia do vencimento, a partir daqui já conta como vencida
+BACKUP_A_PARTIR_DE = 50      # verificação que muda muitos status de uma vez guarda cópia antes
+
+
+def status_atual(valor):
+    """RESPONDIDO, NÃO RESPONDIDO, RASCUNHO ou '' (sem status). Aceita o "NÃƒO" com acento quebrado."""
+    texto = str(valor or '').strip().upper()
+    if texto in ('RESPONDIDO', 'RESPONDIDA'):
+        return RESPONDIDO
+    if texto == RASCUNHO:
+        return RASCUNHO
+    if texto.startswith('N') and texto.endswith(('RESPONDIDO', 'RESPONDIDA')):
+        return NAO_RESPONDIDO
+    return ''
+
+
+def data_vencimento(texto):
+    m = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', str(texto or ''))
+    if not m:
+        return None
+    p1, p2, ano = map(int, m.groups())
+    dia, mes = (p2, p1) if p2 > 12 else (p1, p2)   # DD/MM; MM/DD só quando o segundo não cabe em mês
+    try:
+        return date(ano, mes, dia)
+    except ValueError:
+        return None
+
+
+def vencida(vencimento, agora):
+    d = data_vencimento(vencimento)
+    return d is not None and (d < agora.date() or (d == agora.date() and (agora.hour, agora.minute) >= HORA_CORTE))
+
+
+def novo_status(atual, respostas, vencimento, agora):
+    """Regras D3 (docs/melhorias-bots/plano.md). `respostas`: enviadas segundo o portal; None = não deu para ler.
+    RESPONDIDO assim que houver resposta; NÃO RESPONDIDO só depois do vencimento; RESPONDIDO nunca volta."""
+    if respostas is None or status_atual(atual) == RESPONDIDO:
+        return atual
+    if respostas > 0:
+        return RESPONDIDO
+    if vencida(vencimento, agora):
+        return NAO_RESPONDIDO
+    return atual
+
+
+def _quantidade(valor):
+    """Compatível com quem ainda manda bool/texto (Vale): True/RESPONDIDO = 1, False/NÃO RESPONDIDO = 0."""
+    if valor is None or isinstance(valor, int):
+        return int(valor) if isinstance(valor, bool) else valor
+    return {RESPONDIDO: 1, NAO_RESPONDIDO: 0}.get(status_atual(valor))
+
 
 class PlanilhaManager:
     def __init__(self):
@@ -200,78 +255,71 @@ class PlanilhaManager:
                 return self.salvar()
             return False
 
-    def atualizar_status_respostas(self, aba_nome_aproximado, mapa_cotacao_status, col_chave, col_status):
+    def atualizar_status_respostas(self, aba_nome_aproximado, mapa_cotacao_status, col_chave, col_status, agora=None):
+        """mapa: {número: respostas enviadas (int), None se não deu para ler}. Aplica novo_status em todas as
+        linhas do número (duplicadas incluídas) e grava uma vez. Devolve as mudanças ('123: RESPONDIDO')."""
         self.iniciar()
-        
-        from datetime import datetime
-        agora = datetime.now()
-        hoje = agora.date()
-        passou_das_14h30 = agora.hour > 14 or (agora.hour == 14 and agora.minute >= 30)
+        agora = agora or datetime.now()
 
         with self.lock:
-            salvou = False
-            mudadas = []   # só para o evento do dashboard
-            lista = self.cotacoes.get("COTAÇÃO", [])
             chave_str = self.map_cota.get(col_chave)
             alvo_str = self.map_cota.get(col_status)
             venc_str = self.map_cota.get(2)
-            
             if not chave_str or not alvo_str:
-                return False
-                
-            import re
-            
-            for row in lista:
-                val = row.get(chave_str)
-                if val is not None:
-                    val_s = str(val).strip()
-                    if val_s in mapa_cotacao_status:
-                        # ===== REGRA DE TEMPO =====
-                        pode_atualizar = False
-                        venc = row.get(venc_str, "")
-                        if venc and venc != "-":
-                            match = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', venc)
-                            if match:
-                                p1 = int(match.group(1))
-                                p2 = int(match.group(2))
-                                yr = int(match.group(3))
-                                d = p2 if p2 > 12 else p1
-                                m = p1 if p2 > 12 else p2
-                                if p1 > 12: 
-                                    d, m = p1, p2
-                                
-                                try:
-                                    data_venc = datetime(yr, m, d).date()
-                                    if data_venc < hoje:
-                                        pode_atualizar = True
-                                    elif data_venc == hoje and passou_das_14h30:
-                                        pode_atualizar = True
-                                except: pass
-                        
-                        if pode_atualizar:
-                            status_booleano = mapa_cotacao_status[val_s]
-                            if isinstance(status_booleano, bool):
-                                novo_status = "RESPONDIDO" if status_booleano else "NÃO RESPONDIDO"
-                            else:
-                                novo_status = status_booleano
-                            if row.get(alvo_str) != novo_status:
-                                row[alvo_str] = novo_status
-                                salvou = True
-                                mudadas.append(f'{val_s}: {novo_status}')
-            
-            if salvou:
-                from eventos import registrar
-                try:
-                    self._salvar_arquivo(self.caminho_cotacoes, self.cotacoes)
-                    registrar('gerenciador', 'resposta', 'info', f'Status de resposta mudou em {len(mudadas)} cotação(ões)',
-                              ref=mudadas[0].split(':')[0], detalhe={'mudancas': mudadas[:20]})
-                    return True
-                except Exception as e:
-                    self.iniciado = False
-                    logger.exception('Falha ao salvar respostas; JSON anterior preservado.')
-                    registrar('gerenciador', 'base', 'erro', f'Falha ao salvar respostas; JSON anterior preservado ({e})')
-                    raise
-            return False
+                return []
+            mapa = {str(k).strip(): _quantidade(v) for k, v in mapa_cotacao_status.items()}
+
+            mudadas, transicoes = [], {}
+            for row in self.cotacoes.get("COTAÇÃO", []):
+                num = str(row.get(chave_str) or '').strip() if isinstance(row, dict) else ''
+                if num not in mapa:
+                    continue
+                antes = row.get(alvo_str)
+                depois = novo_status(antes, mapa[num], row.get(venc_str), agora)
+                if depois != antes:
+                    row[alvo_str] = depois
+                    mudadas.append(f'{num}: {depois}')
+                    chave = f"{status_atual(antes) or 'vazio'} → {depois}"
+                    transicoes[chave] = transicoes.get(chave, 0) + 1
+
+            if not mudadas:
+                return []
+            from eventos import registrar
+            try:
+                if len(mudadas) >= BACKUP_A_PARTIR_DE:
+                    backup = self.caminho_cotacoes[:-5] + agora.strftime(' antes-verificacao %Y%m%d-%H%M%S.json')
+                    shutil.copy2(self.caminho_cotacoes, backup)
+                    logger.info('Backup antes de mudar %s status: %s', len(mudadas), backup)
+                self._salvar_arquivo(self.caminho_cotacoes, self.cotacoes)
+                logger.info('Status de resposta: %s', ', '.join(f'{k}: {v}' for k, v in sorted(transicoes.items())))
+                registrar('gerenciador', 'resposta', 'info', f'Status de resposta mudou em {len(mudadas)} cotação(ões)',
+                          ref=mudadas[0].split(':')[0], detalhe={'mudancas': mudadas[:20]})
+                return mudadas
+            except Exception as e:
+                self.iniciado = False
+                logger.exception('Falha ao salvar respostas; JSON anterior preservado.')
+                registrar('gerenciador', 'base', 'erro', f'Falha ao salvar respostas; JSON anterior preservado ({e})')
+                raise
+
+    def marcar_rascunho(self, numero):
+        """O robô salvou o rascunho no portal (ainda não enviado): RASCUNHO, a não ser que já esteja RESPONDIDO."""
+        self.iniciar()
+        numero = str(numero).strip()
+        with self.lock:
+            linhas = [r for r in self.cotacoes.get("COTAÇÃO", []) if isinstance(r, dict)
+                      and str(r.get("COTAÇÃO") or '').strip() == numero and status_atual(r.get("RESPOSTA")) != RESPONDIDO]
+            if not any(r.get("RESPOSTA") != RASCUNHO for r in linhas):
+                return 0
+            for r in linhas:
+                r["RESPOSTA"] = RASCUNHO
+            try:
+                self._salvar_arquivo(self.caminho_cotacoes, self.cotacoes)
+            except Exception:
+                self.iniciado = False   # memória ficou diferente do arquivo: recarrega no próximo uso
+                raise
+            from eventos import registrar
+            registrar('gerenciador', 'resposta', 'info', f'Cotação {numero} com rascunho salvo pelo robô', ref=numero)
+            return len(linhas)
 
     def adicionar_linhas_pedidos(self, aba_nome_aproximado, lista_pedidos):
         self.iniciar()

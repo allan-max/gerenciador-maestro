@@ -16,8 +16,9 @@ from unittest.mock import patch
 tree = ast.parse(Path(__file__).with_name('planilha_manager.py').read_text(encoding='utf-8'))
 namespace = dict(json=json, logging=logging, os=os, tempfile=tempfile,
                  threading=threading, datetime=datetime, logger=logging.getLogger('teste-persistencia'))
-classe = next(n for n in tree.body if isinstance(n, ast.ClassDef))
-exec(compile(ast.Module(body=[classe], type_ignores=[]), '<PlanilhaManager>', 'exec'), namespace)
+definicoes = [n for n in tree.body if not (isinstance(n, ast.Assign) and any(
+    getattr(t, 'id', None) in ('logger', 'planilha_manager') for t in n.targets))]
+exec(compile(ast.Module(body=definicoes, type_ignores=[]), '<PlanilhaManager>', 'exec'), namespace)
 Manager = namespace['PlanilhaManager']
 
 
