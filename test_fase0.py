@@ -202,7 +202,7 @@ class ReabertosTest(unittest.TestCase):
             with self.subTest(caminho.name), tempfile.TemporaryDirectory() as tmp:
                 from datetime import datetime
                 m = carregar(caminho, {'salvar_evento_jsonl', 'carregar_banco_dados'}, classe,
-                             json=json, os=__import__('os'), datetime=datetime)
+                             json=json, os=__import__('os'), datetime=datetime, ambiente=__import__('ambiente'))
                 arq = Path(tmp) / 'eventos.jsonl'
                 arq.write_text(json.dumps({'titulo': '287782', 'respondido': True, 'vencimento_tabela': '21/10/2026'}) + '\n', encoding='utf-8')
                 bot = SimpleNamespace(ARQUIVO_JSONL=str(arq), db_eventos={})

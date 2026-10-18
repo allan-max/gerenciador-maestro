@@ -16,6 +16,7 @@ import tempfile
 import sys
 import threading
 import traceback
+import ambiente
 from datetime import datetime
 from typing import List, Dict, Optional
 from google import genai
@@ -152,6 +153,7 @@ class ValeScraper:
     def salvar_evento_jsonl(self, numero: str, respondido: bool = False, vencimento_tabela: str = ""):
         if numero:
             try:
+                ambiente.exigir_trava(self.ARQUIVO_JSONL)
                 # Guarda o vencimento_tabela no JSONL
                 novo = {
                     "titulo": numero, 

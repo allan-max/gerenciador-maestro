@@ -24,11 +24,11 @@ class AmbienteTest(unittest.TestCase):
         casos = {'http://127.0.0.1:8000': True, 'http://localhost:8000': True, 'http://localhost:3000/x': True,
                  'https://maestro.ventura.inf.br': False, '': False}
         for url, esperado in casos.items():
-            with self.subTest(url), patch.dict(os.environ, {'URL_SERVIDOR': url}, clear=False):
+            with self.subTest(url), patch.dict(os.environ, {'URL_SERVIDOR': url}, clear=False), patch.object(ambiente, '_modo', None):
                 os.environ.pop('MAESTRO_TESTE', None)
                 self.assertEqual(ambiente.modo_teste(), esperado)
                 self.assertEqual(ambiente.base_dir(), ambiente.BASE_TESTE if esperado else ambiente.BASE_PRODUCAO)
-        with patch.dict(os.environ, {'URL_SERVIDOR': 'https://maestro.ventura.inf.br', 'MAESTRO_TESTE': '1'}):
+        with patch.dict(os.environ, {'URL_SERVIDOR': 'https://maestro.ventura.inf.br', 'MAESTRO_TESTE': '1'}), patch.object(ambiente, '_modo', None):
             self.assertTrue(ambiente.modo_teste())
 
     def test_producao_so_grava_com_a_trava(self):
@@ -63,7 +63,7 @@ class GravacaoSemTravaTest(unittest.TestCase):
 
     def test_modo_teste_cria_base_vazia_fora_da_producao(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'MAESTRO_TESTE': '1'}), \
-                patch.object(ambiente, 'BASE_TESTE', tmp):
+                patch.object(ambiente, 'BASE_TESTE', tmp), patch.object(ambiente, '_modo', None):
             m = ns_manager['PlanilhaManager']()
             self.assertFalse(ambiente.eh_producao(m.caminho_cotacoes))
             self.assertEqual(json.loads(Path(m.caminho_cotacoes).read_text(encoding='utf-8')), {'COTAÇÃO': []})
@@ -84,6 +84,8 @@ class RecuperarPerdidasTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             for nome, linhas in (('eventos.jsonl', linhas_coupa), ('eventos_nimbi.jsonl', linhas_vale)):
                 Path(tmp, nome).write_text(''.join(json.dumps(l) + '\n' for l in linhas), encoding='utf-8')
+            with open(Path(tmp, 'eventos_nimbi.jsonl'), 'a', encoding='utf-8') as f:
+                f.write('linha quebrada\n5\n')   # não derrubam o script e continuam no arquivo
             antes = Path(tmp, 'eventos.jsonl').read_bytes()
             args = (tmp, {'292800'}, '2026-10-13', '2026-10-14')
             kw = dict(hoje=date(2026, 10, 18), pasta_relatorios=os.path.join(tmp, 'rel'))
@@ -96,7 +98,7 @@ class RecuperarPerdidasTest(unittest.TestCase):
             recuperar_perdidas.executar(*args, gravar=True, **kw)
             ficaram = [json.loads(l)['titulo'] for l in Path(tmp, 'eventos.jsonl').read_text(encoding='utf-8').splitlines()]
             self.assertEqual(ficaram, ['292770', '292800', '290000'])
-            self.assertEqual(Path(tmp, 'eventos_nimbi.jsonl').read_text(encoding='utf-8').strip(), '')
+            self.assertEqual(Path(tmp, 'eventos_nimbi.jsonl').read_text(encoding='utf-8').split(), ['linha', 'quebrada', '5'])
             self.assertEqual(len(list(Path(tmp).glob('eventos.jsonl.antes-recuperacao-*'))), 1)
             self.assertIn('292770', Path(relatorio).read_text(encoding='utf-8-sig'))
 
@@ -111,7 +113,7 @@ class RoboForaDoGerenciadorTest(unittest.TestCase):
                 bot = SimpleNamespace(sio=SimpleNamespace(emit=lambda e, d: emitidos.append(d)),
                                       verificar_acesso_pastas=lambda: self.fail('não devia preparar pastas'))
                 with patch.dict(os.environ, {'URL_SERVIDOR': 'https://maestro.ventura.inf.br'}), \
-                        patch.object(instancia_unica, '_ativa', None), patch.object(LOGGER, 'handle'):
+                        patch.object(instancia_unica, '_ativa', None), patch.object(LOGGER, 'handle'), patch.object(ambiente, '_modo', None):
                     os.environ.pop('MAESTRO_TESTE', None)
                     metodo(bot)
                 self.assertFalse(emitidos[0]['sucesso'])
@@ -121,7 +123,7 @@ class RoboForaDoGerenciadorTest(unittest.TestCase):
 class JsonlNaoRessuscitaTest(unittest.TestCase):
     def test_evento_removido_pelo_gerenciador_nao_volta(self):
         ns = carregar(RAIZ / 'bots/coupa/mixins/banco_dados.py', {'carregar_banco_dados', 'atualizar_status_respondido_jsonl'},
-                      'Banco_dadosMixin', json=json, os=os, tempfile=tempfile, datetime=datetime)
+                      'Banco_dadosMixin', json=json, os=os, tempfile=tempfile, datetime=datetime, ambiente=ambiente)
         with tempfile.TemporaryDirectory() as tmp:
             arq = Path(tmp, 'eventos.jsonl')
             linha = lambda n: json.dumps({'titulo': n, 'respondido': False}) + '\n'

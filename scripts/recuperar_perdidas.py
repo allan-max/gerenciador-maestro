@@ -41,15 +41,26 @@ def ler_jsonl(caminho):
         return [l for l in f.read().splitlines() if l.strip()]
 
 
+def registro(linha):
+    """dict da linha, ou None se a linha estiver quebrada (ela é mantida como está no arquivo)."""
+    try:
+        d = json.loads(linha)
+    except ValueError:
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def titulo(linha):
+    d = registro(linha)
+    return str(d.get('titulo') or '').strip() if d else None
+
+
 def perdidas(linhas, numeros_no_banco, de, ate):
     """Última linha de cada evento extraído no período que não está no COTAÇÕES.json."""
     ultimos = {}
     for linha in linhas:
-        try:
-            d = json.loads(linha)
-        except ValueError:
-            continue
-        if d.get('titulo'):
+        d = registro(linha)
+        if d and d.get('titulo'):
             ultimos[str(d['titulo']).strip()] = d
     return {n: d for n, d in ultimos.items()
             if de <= str(d.get('data', '')) <= ate and n not in numeros_no_banco}
@@ -78,7 +89,7 @@ def executar(pasta_database, numeros_no_banco, de, ate, gravar, hoje=None, pasta
         if gravar and abertas[portal]:
             shutil.copy2(caminho, caminho + datetime.now().strftime('.antes-recuperacao-%Y%m%d-%H%M%S'))
             remover = set(abertas[portal])
-            gravar_jsonl(caminho, [l for l in linhas if str(json.loads(l).get('titulo', '')).strip() not in remover])
+            gravar_jsonl(caminho, [l for l in linhas if titulo(l) not in remover])
     relatorio = None
     if vencidas:
         pasta = pasta_relatorios or os.path.join(RAIZ, 'relatorios')

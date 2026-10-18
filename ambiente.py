@@ -12,9 +12,15 @@ BASE_PRODUCAO = r"\\SERVIDOR2\Publico\ALLAN"
 BASE_TESTE = os.path.join(RAIZ, 'base_teste')
 
 
+_modo = None   # decidido uma vez: o gerenciador pergunta antes do load_dotenv e os robôs depois
+
+
 def modo_teste():
-    url = os.environ.get('URL_SERVIDOR', '')
-    return os.environ.get('MAESTRO_TESTE') == '1' or urlparse(url).hostname in ('localhost', '127.0.0.1')
+    global _modo
+    if _modo is None:
+        url = os.environ.get('URL_SERVIDOR', '')
+        _modo = os.environ.get('MAESTRO_TESTE') == '1' or urlparse(url).hostname in ('localhost', '127.0.0.1')
+    return _modo
 
 
 def base_dir():

@@ -11,6 +11,7 @@ import json
 import logging
 import shutil
 import tempfile
+import ambiente
 import sys
 import threading
 import random
@@ -124,6 +125,7 @@ class Banco_dadosMixin:
 
     def salvar_evento_jsonl(self, numero: str, respondido: bool = False, vencimento_tabela: str = ""):
         try:
+            ambiente.exigir_trava(self.ARQUIVO_JSONL)
             novo = {
                 "titulo": numero, 
                 "data": str(datetime.now().date()), 
@@ -142,6 +144,7 @@ class Banco_dadosMixin:
         if numero not in self.db_eventos: return
         self.db_eventos[numero]['respondido'] = True
         try:
+            ambiente.exigir_trava(self.ARQUIVO_JSONL)
             with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=os.path.dirname(self.ARQUIVO_JSONL),
                                              prefix='maestro-', suffix='.tmp', delete=False) as f:
                 for _, d in self.db_eventos.items(): f.write(json.dumps(d) + '\n')
