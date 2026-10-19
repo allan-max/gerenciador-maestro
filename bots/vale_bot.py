@@ -80,7 +80,7 @@ class ValeScraper:
         self.config = {}
         try:
             if os.path.exists('CONFIG.json'):
-                with open('CONFIG.json', 'r', encoding='utf-8') as f:
+                with open('CONFIG.json', 'r', encoding='utf-8-sig') as f:   # aceita BOM (Bloco de Notas)
                     self.config = json.load(f)
         except Exception:
             pass
