@@ -55,6 +55,15 @@ class NovoStatusTest(unittest.TestCase):
         self.assertEqual(novo_status('', 0, HOJE, datetime(2026, 10, 17, 14, 30)), 'NÃO RESPONDIDO')
 
 
+class DataVencimentoTest(unittest.TestCase):
+    def test_ano_com_2_digitos(self):
+        # a base de produção tem vencimentos como '19/10/26' (4 linhas em 19/10/2026)
+        data_vencimento = ns_manager['data_vencimento']
+        self.assertEqual(data_vencimento('19/10/26'), data_vencimento('19/10/2026'))
+        self.assertEqual(data_vencimento('12/23/2025').isoformat(), '2025-12-23')
+        self.assertEqual(novo_status('', 0, '10/10/26', AGORA), 'NÃO RESPONDIDO')
+
+
 class BaseTemporaria(unittest.TestCase):
     LINHAS = []
 
