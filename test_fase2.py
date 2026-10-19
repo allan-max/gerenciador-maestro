@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException
 from selenium.webdriver.common.by import By
 
 from test_fase0 import LOGGER, Relogio, carregar
@@ -154,7 +154,7 @@ class Linha:
 
     def find_element(self, por, valor):
         if self.num is None:
-            raise RuntimeError('stale element')
+            raise StaleElementReferenceException('stale element')
         if valor == 'a span.dt_open_link':
             return Celula(text=self.num)
         if self.qtd is None:
@@ -204,8 +204,8 @@ class VerificacaoTest(BaseTemporaria):
 
     def rodar(self, paginas, db=('100', '101', '102', '103', '104', '105'), portal=None):
         relatorios = self.dir / 'relatorios'
-        ns = carregar(RAIZ / 'bots/coupa/mixins/verificacao.py', {'MAX_PAGINAS_PADRAO', 'JANELA_NAO_RESPONDIDO_DIAS', 'VerificacaoMixin'},
-                      time=Relogio(), By=By, NoSuchElementException=NoSuchElementException, csv=csv, datetime=datetime, timedelta=timedelta,
+        ns = carregar(RAIZ / 'bots/coupa/mixins/verificacao.py', {'MAX_PAGINAS_PADRAO', 'JANELA_NAO_RESPONDIDO_DIAS', 'ESPERA_PAGINA_S', 'CLIQUES_POR_PAGINA', 'VerificacaoMixin'},
+                      time=Relogio(), By=By, NoSuchElementException=NoSuchElementException, StaleElementReferenceException=StaleElementReferenceException, csv=csv, datetime=datetime, timedelta=timedelta,
                       WebDriverWait=lambda d, t: SimpleNamespace(until=lambda c: True),
                       EC=SimpleNamespace(presence_of_element_located=lambda x: x), PASTA_RELATORIOS=relatorios)
         emitidos, jsonl = [], []
@@ -251,6 +251,19 @@ class VerificacaoTest(BaseTemporaria):
         _, emitidos, *_ = self.rodar(paginas, portal=PortalInstavel)
         self.assertFalse(emitidos[-1][1]['sucesso'])
         self.assertEqual(self.respostas()['100'], 'RESPONDIDO')
+
+    def test_lista_que_trava_nao_e_relida_ate_o_teto(self):
+        # produção 19/10: o "Próximo" parou de avançar na página ~11 e a mesma página foi lida até a 200
+        class PortalTravado(Portal):
+            def execute_script(self, script, *args):
+                if 'click' in script:
+                    self.cliques += 1
+                    self.atual = min(self.atual + 1, 1)
+        paginas = [[Linha('100', '1')], [Linha('101', '0')], [Linha('104', '0')]]
+        bot, emitidos, *_ = self.rodar(paginas, portal=PortalTravado)
+        self.assertEqual(bot.driver.cliques, 3)               # avançou 1, insistiu 2 vezes na página que não muda
+        self.assertIn('em 2 página(s)', emitidos[-2][1]['mensagem'])
+        self.assertTrue(emitidos[-1][1]['sucesso'])           # o que leu foi gravado
 
 
 if __name__ == '__main__':

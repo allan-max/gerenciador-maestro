@@ -32,7 +32,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import NoAlertPresentException, NoSuchElementException
+from selenium.common.exceptions import NoAlertPresentException, NoSuchElementException, StaleElementReferenceException
 from selenium.webdriver.common.action_chains import ActionChains
 
 from docx import Document
@@ -53,6 +53,8 @@ if not logger.handlers:
 MAX_PAGINAS_PADRAO = 60   # teto de segurança; CONFIG.json "verificacao_max_paginas" muda
 PASTA_RELATORIOS = Path(__file__).resolve().parents[3] / 'relatorios'
 JANELA_NAO_RESPONDIDO_DIAS = 7   # NÃO RESPONDIDO recente continua sendo conferido
+ESPERA_PAGINA_S = 20             # quanto esperar a lista trocar depois do clique em "Próximo"
+CLIQUES_POR_PAGINA = 2           # o Coupa às vezes ignora o clique: insiste uma vez antes de dar a lista por travada
 
 
 class VerificacaoMixin:
@@ -165,7 +167,38 @@ class VerificacaoMixin:
             w.writerows([r.get('COTAÇÃO'), r.get('VENCIMENTO'), r.get('RESPOSTA') or '', r.get('VENDEDOR')] for r in faltando)
         return str(caminho)
 
+    def _numeros_da_pagina(self):
+        """Números da lista na tela, para saber se a página trocou. None enquanto a tabela está sendo redesenhada."""
+        try:
+            return tuple(r.find_element(By.CSS_SELECTOR, "a span.dt_open_link").text.strip()
+                         for r in self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr"))
+        except (StaleElementReferenceException, NoSuchElementException):
+            return None   # sessão caída e outros erros sobem: a verificação termina com erro
+
+    def _esperar_pagina_mudar(self, antes):
+        fim = time.time() + ESPERA_PAGINA_S
+        while time.time() < fim:
+            time.sleep(1)
+            agora = self._numeros_da_pagina()
+            if agora and agora != antes:
+                time.sleep(1)   # deixa a tabela terminar de desenhar
+                return True
+        return False
+
     def _proxima_pagina(self):
+        """Avança e confirma que a lista mudou. Antes esperava 4 s fixos: quando o Coupa não trocava a página,
+        a mesma página era relida até o teto (19/10: 200 páginas, só 986 eventos diferentes)."""
+        antes = self._numeros_da_pagina()
+        for tentativa in range(1, CLIQUES_POR_PAGINA + 1):
+            if not self._clicar_proxima():
+                return False
+            if self._esperar_pagina_mudar(antes):
+                return True
+            logger.warning(f"    A lista não mudou depois do 'Próximo' (tentativa {tentativa}/{CLIQUES_POR_PAGINA}).")
+        logger.warning("    Paginação travada: o Coupa continua mostrando a mesma página. Encerrando a leitura com o que já foi lido.")
+        return False
+
+    def _clicar_proxima(self):
         try:
             next_btn = None
             seletores = [
@@ -195,7 +228,6 @@ class VerificacaoMixin:
             self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_btn)
             time.sleep(1)
             self.driver.execute_script("arguments[0].click();", next_btn)
-            time.sleep(4)
             return True
         except Exception as e:
             logger.error(f" Erro crítico na paginação da verificação: {e}")
