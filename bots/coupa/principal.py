@@ -67,16 +67,18 @@ class CoupaScraper(UtilitariosMixin, Banco_dadosMixin, PlanilhasMixin, Autentica
         self.config = {}
         try:
             if os.path.exists('CONFIG.json'):
-                with open('CONFIG.json', 'r', encoding='utf-8') as f:
+                with open('CONFIG.json', 'r', encoding='utf-8-sig') as f:   # aceita BOM (Bloco de Notas)
                     self.config = json.load(f)
         except Exception:
             pass
 
-        if os.environ.get("URL_SERVIDOR") == "http://localhost:8000":
-            base_test = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            self.config["caminho_excel"] = os.path.join(base_test, "teste.xlsx")
-            self.config["caminho_database_coupa"] = os.path.join(base_test, "banco_teste.jsonl")
-            self.config["caminho_pedidos_json"] = os.path.join(base_test, "pedidos_teste.json")
+        import ambiente
+        if ambiente.modo_teste():   # antes só "http://localhost:8000": o testar_local.bat (127.0.0.1) gravava na produção
+            self.config["BASE_DIR"] = ambiente.BASE_TESTE
+            self.config["pasta_coupa_vale"] = os.path.join(ambiente.BASE_TESTE, "eventos do coupa")
+            self.config["caminho_excel"] = os.path.join(ambiente.RAIZ, "teste.xlsx")
+            for chave in ("PASTA_DATABASE", "PASTA_BLOQUEADOS", "caminho_database_coupa", "caminho_pedidos_json"):
+                self.config.pop(chave, None)
 
         self.BASE_DIR = self.config.get("BASE_DIR", r"\\SERVIDOR2\Publico\ALLAN")
         self.PASTA_RELATORIOS = self.config.get("pasta_coupa_vale", os.path.join(self.BASE_DIR, "eventos do coupa"))

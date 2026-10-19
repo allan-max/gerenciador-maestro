@@ -45,6 +45,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--gravar', action='store_true', help='grava a correção (sem isto, só conta)')
     args = parser.parse_args()
+    import ambiente
+    if args.gravar and not ambiente.modo_teste():   # sem a trava, o planilha_manager recusa gravar na produção
+        from instancia_unica import JaRodando, instancia_unica
+        try:
+            _trava = instancia_unica(ambiente.pasta_banco())
+        except JaRodando as e:
+            raise SystemExit(f'Pare o gerenciador antes de gravar ({e}).')
     from planilha_manager import planilha_manager
     total = executar(planilha_manager, args.gravar)
     print(f"{total} linha(s) {'corrigida(s)' if args.gravar else 'seriam corrigidas; rode com --gravar'}")

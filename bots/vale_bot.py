@@ -16,6 +16,7 @@ import tempfile
 import sys
 import threading
 import traceback
+import ambiente
 from datetime import datetime
 from typing import List, Dict, Optional
 from google import genai
@@ -80,10 +81,18 @@ class ValeScraper:
         self.config = {}
         try:
             if os.path.exists('CONFIG.json'):
-                with open('CONFIG.json', 'r', encoding='utf-8') as f:
+                with open('CONFIG.json', 'r', encoding='utf-8-sig') as f:   # aceita BOM (Bloco de Notas)
                     self.config = json.load(f)
         except Exception:
             pass
+
+        import ambiente
+        if ambiente.modo_teste():   # testes não tocam a base de produção
+            self.config["BASE_DIR"] = ambiente.BASE_TESTE
+            self.config["pasta_coupa_vale"] = os.path.join(ambiente.BASE_TESTE, "eventos do coupa")
+            self.config["caminho_excel"] = os.path.join(ambiente.RAIZ, "teste.xlsx")
+            for chave in ("PASTA_DATABASE", "PASTA_BLOQUEADOS"):
+                self.config.pop(chave, None)
 
         # --- PASTAS ---
         self.BASE_DIR = self.config.get("BASE_DIR", r"\\SERVIDOR2\Publico\ALLAN")
@@ -144,6 +153,7 @@ class ValeScraper:
     def salvar_evento_jsonl(self, numero: str, respondido: bool = False, vencimento_tabela: str = ""):
         if numero:
             try:
+                ambiente.exigir_trava(self.ARQUIVO_JSONL)
                 # Guarda o vencimento_tabela no JSONL
                 novo = {
                     "titulo": numero, 
@@ -463,6 +473,13 @@ class ValeScraper:
         time.sleep(2)
 
     def iniciar_e_logar(self):
+        import ambiente, instancia_unica
+        if not ambiente.modo_teste() and not instancia_unica.trava_ativa():
+            # testar_coupa.py e afins rodavam o robô sozinho e gravavam na base de produção (13/10)
+            msg = "Robô recusado: fora do gerenciador ele só roda em modo teste (MAESTRO_TESTE=1)."
+            logger.error(msg)
+            self.sio.emit('tarefa_concluida', {'evento': 'Login do Robo', 'sucesso': False, 'erro': msg})
+            return
         logger.info(" INICIANDO ROBÃ” (FASE 1: PREPARAÃ‡ÃƒO E LOGIN)...")
         self.verificar_acesso_pastas()
         self.carregar_banco_dados()
