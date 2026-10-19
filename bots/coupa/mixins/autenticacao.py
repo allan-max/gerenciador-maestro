@@ -53,6 +53,15 @@ if not logger.handlers:
     logger.addHandler(console_handler)
 
 
+# Login: limite total e limite do captcha (antes o laço podia rodar para sempre)
+LOGIN_TIMEOUT_S = 600
+CAPTCHA_TIMEOUT_S = 300
+
+
+class LoginTimeout(Exception):
+    pass
+
+
 class AutenticacaoMixin:
     def setup_driver(self):
         logger.info("🚗 Configurando Navegador...")
@@ -70,11 +79,17 @@ class AutenticacaoMixin:
         self.driver.get(self.LOGIN_URL)
         ultimo_print = 0
         ultimo_clique_botao = 0 # <--- NOVO: Controle para evitar flood de cliques
+        inicio_captcha = None
+        limite_login = time.time() + LOGIN_TIMEOUT_S
+        ultimo_erro = None
         email = "VENDAS@VENTURAINFORMATICA.COM.BR"
         senha = os.environ.get("PORTAL_SENHA", os.environ.get("PORTAL_SENHA", "Ventura2025*"))
 
         while True:
             time.sleep(0.3)
+            if time.time() > limite_login:
+                self.solicitacao_parada = True   # quem engolir o erro ainda para o ciclo no próximo evento
+                raise LoginTimeout(f"LOGIN_TIMEOUT: login não concluiu em {LOGIN_TIMEOUT_S // 60} min")
             if len(self.driver.window_handles) > 1:
                 self.driver.switch_to.window(self.driver.window_handles[-1])
 
@@ -127,9 +142,9 @@ class AutenticacaoMixin:
                 if captcha_pendente:
                     if inicio_captcha is None:
                         inicio_captcha = time.time()
-                    elif time.time() - inicio_captcha > 300: # 5 minutos de timeout
+                    elif time.time() - inicio_captcha > CAPTCHA_TIMEOUT_S:
                         self.sio.emit('relatar_progresso_coupa', {'mensagem': '❌ CAPTCHA EXPIRADO! (5 min sem solução). Fechando o robô.'})
-                        raise Exception("CAPTCHA_TIMEOUT")
+                        raise LoginTimeout("CAPTCHA_TIMEOUT")
                         
                     elemento_alvo = iframe_desafio if (iframe_desafio and iframe_desafio.is_displayed()) else iframe_caixinha
                     if elemento_alvo:
@@ -253,7 +268,14 @@ class AutenticacaoMixin:
                             time.sleep(3.0)
                             break
 
-            except Exception: pass
+            except LoginTimeout:
+                self.solicitacao_parada = True
+                raise
+            except Exception as e:
+                # Elementos somem e recarregam o tempo todo no login: registra só quando o erro muda
+                if str(e) != ultimo_erro:
+                    ultimo_erro = str(e)
+                    logger.warning(f"Login: {type(e).__name__}: {ultimo_erro[:200]}")
 
     def garantir_logado(self, url_origem=None):
         try:

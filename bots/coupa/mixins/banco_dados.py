@@ -134,7 +134,7 @@ class Banco_dadosMixin:
             with open(self.ARQUIVO_JSONL, 'a', encoding='utf-8') as f: 
                 f.write(json.dumps(novo) + '\n')
             self.db_eventos[numero] = novo
-        except: pass
+        except Exception: logger.exception(f'Falha ao gravar o evento {numero} no JSONL')
 
     def atualizar_status_respondido_jsonl(self, numero: str):
         if numero not in self.db_eventos: return

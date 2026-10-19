@@ -157,8 +157,6 @@ Coupa Bot
                 server.quit()
             logger.info(f"Email de relatrio enviado com sucesso para {', '.join(destinatarios)}")
         except Exception as e:
-            try: planilha_manager.lock.release()
-            except: pass
             logger.error(f"Erro ao enviar email de relatrio: {e}")
 
     def buscar_vendedor_por_evento(self, nums_evento: list):
@@ -186,8 +184,6 @@ Coupa Bot
                             vendedor = vend
             wb.close()
         except Exception as e:
-            try: planilha_manager.lock.release()
-            except: pass
             pass
         return vendedor
 
@@ -374,7 +370,6 @@ Coupa Bot
                         p_titulo.add_run(f"ITEM {item['item_num']}: ").bold = True
                         p_titulo.add_run(f" {item['descricao']}")
                     
-                    import re
                     def _normalize(t):
                         return str(t).strip().lower() if t else ""
 
@@ -404,8 +399,6 @@ Coupa Bot
             doc.save(os.path.join(pasta, nome))
             logger.info(f"    Doc Salvo Compactado: {nome}")
         except Exception as e: 
-            try: planilha_manager.lock.release()
-            except: pass
             logger.error(f"Erro no Word: {e}")
 
 

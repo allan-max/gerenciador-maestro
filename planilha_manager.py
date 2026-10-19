@@ -272,22 +272,6 @@ class PlanilhaManager:
                     registrar('gerenciador', 'base', 'erro', f'Falha ao salvar respostas; JSON anterior preservado ({e})')
                     raise
             return False
-                
-            for row in lista:
-                val = row.get(chave_str)
-                if val is not None:
-                    val_s = str(val).strip()
-                    if val_s in mapa_cotacao_status:
-                        status_booleano = mapa_cotacao_status[val_s]
-                        if isinstance(status_booleano, bool):
-                            row[alvo_str] = "RESPONDIDO" if status_booleano else "NÃO RESPONDIDO"
-                        else:
-                            row[alvo_str] = status_booleano
-                        salvou = True
-                        
-            if salvou:
-                return self.salvar()
-            return False
 
     def adicionar_linhas_pedidos(self, aba_nome_aproximado, lista_pedidos):
         self.iniciar()

@@ -59,6 +59,15 @@ if not logger.handlers:
     logger.addHandler(ch)
     logger.addHandler(fh) # Adiciona o gravador de TXT
 
+# Login: limite total e limite do captcha (antes o laço podia rodar para sempre)
+LOGIN_TIMEOUT_S = 600
+CAPTCHA_TIMEOUT_S = 300
+
+
+class LoginTimeout(Exception):
+    pass
+
+
 class ValeScraper:
     def __init__(self, sio_instance, evento_clique, dict_coordenadas):
         # --- FERRAMENTAS DO MAESTRO ---
@@ -145,7 +154,7 @@ class ValeScraper:
                 with open(self.ARQUIVO_JSONL, 'a', encoding='utf-8') as f: 
                     f.write(json.dumps(novo) + '\n')
                 self.db_eventos[numero] = novo
-            except: pass
+            except Exception: logger.exception(f'Falha ao gravar o evento {numero} no JSONL')
 
     def evento_ja_processado(self, num: str) -> bool: 
         return num in self.db_eventos
@@ -199,11 +208,17 @@ class ValeScraper:
         self.driver.get(self.LOGIN_URL)
         ultimo_print = 0
         ultimo_clique_botao = 0 # <--- NOVO: Controle para evitar flood de cliques
+        inicio_captcha = None
+        limite_login = time.time() + LOGIN_TIMEOUT_S
+        ultimo_erro = None
         email = "VENDAS@VENTURAINFORMATICA.COM.BR"
         senha = os.environ.get("PORTAL_SENHA", os.environ.get("PORTAL_SENHA", "Ventura2025*"))
 
         while True:
             time.sleep(0.3)
+            if time.time() > limite_login:
+                self.solicitacao_parada = True   # quem engolir o erro ainda para o ciclo no próximo evento
+                raise LoginTimeout(f"LOGIN_TIMEOUT: login não concluiu em {LOGIN_TIMEOUT_S // 60} min")
             if len(self.driver.window_handles) > 1:
                 self.driver.switch_to.window(self.driver.window_handles[-1])
 
@@ -257,9 +272,9 @@ class ValeScraper:
                 if captcha_pendente:
                     if inicio_captcha is None:
                         inicio_captcha = time.time()
-                    elif time.time() - inicio_captcha > 300: # 5 minutos de timeout
+                    elif time.time() - inicio_captcha > CAPTCHA_TIMEOUT_S:
                         self.sio.emit('relatar_progresso_vale', {'mensagem': '❌ CAPTCHA EXPIRADO! (5 min sem solução). Fechando o robô.'})
-                        raise Exception("CAPTCHA_TIMEOUT")
+                        raise LoginTimeout("CAPTCHA_TIMEOUT")
                         
                     elemento_alvo = iframe_desafio if (iframe_desafio and iframe_desafio.is_displayed()) else iframe_caixinha
                     if elemento_alvo:
@@ -386,7 +401,14 @@ class ValeScraper:
                             time.sleep(3.0)
                             break
 
-            except Exception: pass
+            except LoginTimeout:
+                self.solicitacao_parada = True
+                raise
+            except Exception as e:
+                # Elementos somem e recarregam o tempo todo no login: registra só quando o erro muda
+                if str(e) != ultimo_erro:
+                    ultimo_erro = str(e)
+                    logger.warning(f"Login: {type(e).__name__}: {ultimo_erro[:200]}")
 
     def garantir_logado(self, url_origem=None):
         try:
@@ -592,10 +614,15 @@ class ValeScraper:
                     
                     res = self.extrair_dados_do_evento(t['url'], t['num'], re_extrair=t.get('re_extrair', False), venc_tabela=t.get('venc_tabela', ''))
                     
+                    if res == "ENCERRADO" and t.get('re_extrair'):
+                        # Reaberto que já encerrou: guarda a data nova, senão volta em todo ciclo (Oops/0 itens tentam de novo)
+                        anterior = self.db_eventos.get(t['num'], {})
+                        self.salvar_evento_jsonl(t['num'], anterior.get('respondido', True), t.get('venc_tabela', ''))
+
                     if res is None:
                         self.relatorio_email_stats['erros_extracao'].append(t['num'])
                     
-                    if res and res != "SKIPPED":
+                    if res and res not in ("SKIPPED", "ENCERRADO"):
                         res['vencimento_tabela'] = t.get('venc_tabela', "")
                         self.dados_processados_lote.append(res)
                         
@@ -968,7 +995,7 @@ Vale Bot
             except Exception: pass
 
             if self.driver.find_elements(By.XPATH, "//h1[contains(text(), 'já terminou')]"):
-                logger.warning("   âš ï¸ Evento encerrado."); self.driver.switch_to.default_content(); return "SKIPPED"
+                logger.warning("   âš ï¸ Evento encerrado."); self.driver.switch_to.default_content(); return "ENCERRADO"
 
             req = "N/A"
             try: 
@@ -1675,7 +1702,6 @@ Vale Bot
                 match_hist = self.encontrar_vendedor_similar(it, dados_ia)
                 if match_hist:
                     it['historico_match'] = match_hist
-                    import re
                     m = re.search(r'Ultimo Vendedor:\s*([^\(]+)', match_hist)
                     if m: vendedores_deste_evento.add(m.group(1).strip())
             
@@ -1842,7 +1868,6 @@ Vale Bot
                         p_titulo.add_run(f"ITEM {item['item_num']}: ").bold = True
                         p_titulo.add_run(f" {item['descricao']}")
                     
-                    import re
                     def _normalize(t):
                         return str(t).strip().lower() if t else ""
 
@@ -1977,7 +2002,6 @@ Vale Bot
         if not historico: return None
         
         import difflib
-        import re
         modelo_atual = dados_ia.get("modelo", "").strip().upper()
         marca_atual = dados_ia.get("marca", "").strip().upper()
         part_number = dados_ia.get("part_number", "").strip().upper()
