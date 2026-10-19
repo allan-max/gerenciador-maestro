@@ -28,10 +28,11 @@ def status_atual(valor):
 
 
 def data_vencimento(texto):
-    m = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', str(texto or ''))
+    m = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4}|\d{2})\b', str(texto or ''))
     if not m:
         return None
     p1, p2, ano = map(int, m.groups())
+    ano += 2000 if ano < 100 else 0   # '19/10/26' também aparece na base
     dia, mes = (p2, p1) if p2 > 12 else (p1, p2)   # DD/MM; MM/DD só quando o segundo não cabe em mês
     try:
         return date(ano, mes, dia)
