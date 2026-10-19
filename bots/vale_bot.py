@@ -2328,7 +2328,7 @@ Vale Bot
                 planilha_manager.iniciar(self.ARQUIVO_PLANILHA_CONTROLE)
                 
                 # Transforma status_eventos (str -> str de num_respostas) em str -> bool (respondido ou não)
-                mapa_status = { k: (v != "0") for k, v in status_eventos.items() }
+                mapa_status = {k: int(v) if str(v).strip().isdigit() else None for k, v in status_eventos.items()}   # célula vazia = não leu, não "respondido"
                 
                 planilha_manager.atualizar_status_respostas(self.NOME_ABA_ALVO, mapa_status, col_chave=1, col_status=9)
                 logger.info("✅ Planilha atualizada com o status dos eventos!")
