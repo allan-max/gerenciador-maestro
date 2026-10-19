@@ -4,6 +4,7 @@ import logging
 # Adiciona o caminho caso coupa_bot esteja na mesma pasta
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+os.environ.setdefault('MAESTRO_TESTE', '1')   # teste local nunca grava na base de produção
 
 try:
     from bots.coupa import CoupaScraper

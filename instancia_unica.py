@@ -10,6 +10,11 @@ import time
 
 ARQ_INSTANCIA = "gerenciador.instancia"
 POS_TRAVA = 1 << 20  # trava um byte longe do texto, que continua legível por quem é recusado
+_ativa = None        # arquivo travado por este processo (ambiente.exigir_trava consulta)
+
+
+def trava_ativa():
+    return _ativa is not None and not _ativa.closed
 
 
 class JaRodando(RuntimeError):
@@ -41,4 +46,6 @@ def instancia_unica(pasta):
     arq.truncate()
     arq.write(f"{socket.gethostname()}, PID {os.getpid()}, desde {time.strftime('%d/%m/%Y %H:%M')}")
     arq.flush()
+    global _ativa
+    _ativa = arq
     return arq

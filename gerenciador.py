@@ -82,14 +82,16 @@ def carregar_config():
 
 CONFIG_GLOBAL = carregar_config()
 
-# MODO DE TESTE LOCAL
-if os.environ.get("URL_SERVIDOR") == "http://localhost:8000":
-    CONFIG_GLOBAL["caminho_excel"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "teste.xlsx")
-    CONFIG_GLOBAL["caminho_database_coupa"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "banco_teste.jsonl")
-    CONFIG_GLOBAL["caminho_pedidos_json"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pedidos_teste.json")
-    CONFIG_GLOBAL["caminho_database_vale"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eventos_nimbi_teste.jsonl")
-    CONFIG_GLOBAL["caminho_banco_dados"] = os.path.dirname(os.path.abspath(__file__))
-    CONFIG_GLOBAL["caminho_backups"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backups_teste")
+# MODO DE TESTE LOCAL: ambiente.py decide (antes só "http://localhost:8000"; o testar_local.bat usa 127.0.0.1 e caía na produção)
+import ambiente
+if ambiente.modo_teste():
+    os.makedirs(ambiente.pasta_banco(), exist_ok=True)
+    CONFIG_GLOBAL["caminho_excel"] = os.path.join(ambiente.RAIZ, "teste.xlsx")
+    CONFIG_GLOBAL["caminho_database_coupa"] = os.path.join(ambiente.pasta_database(), "eventos.jsonl")
+    CONFIG_GLOBAL["caminho_pedidos_json"] = os.path.join(ambiente.pasta_database(), "pedidos.json")
+    CONFIG_GLOBAL["caminho_database_vale"] = os.path.join(ambiente.pasta_database(), "eventos_nimbi.jsonl")
+    CONFIG_GLOBAL["caminho_banco_dados"] = ambiente.pasta_banco()
+    CONFIG_GLOBAL["caminho_backups"] = os.path.join(ambiente.pasta_database(), "backups_excel")
 else:
     CONFIG_GLOBAL["caminho_banco_dados"] = r"\\SERVIDOR2\Publico\ALLAN\database\Banco-de-dados"
     CONFIG_GLOBAL["caminho_backups"] = r"\\SERVIDOR2\Publico\ALLAN\database\backups_excel"
@@ -1433,10 +1435,12 @@ def comando_registrar_vendedor_cotacao(dados):
 
                 def save_db(caminho, db_novo):
                     if not os.path.exists(os.path.dirname(caminho)): return
-                    with open(caminho + ".tmp", 'w', encoding='utf-8') as f:
+                    ambiente.exigir_trava(caminho)
+                    # temporário único + os.replace: dois salvamentos ao mesmo tempo não usam o mesmo .tmp
+                    with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=os.path.dirname(caminho),
+                                                     prefix='maestro-', suffix='.tmp', delete=False) as f:
                         for k, v in db_novo.items(): f.write(json.dumps(v) + '\n')
-                    import shutil
-                    shutil.move(caminho + ".tmp", caminho)
+                    os.replace(f.name, caminho)
 
                 if eventos_coupa: save_db(path_coupa_db, db_coupa)
                 if eventos_vale: save_db(path_vale_db, db_vale)

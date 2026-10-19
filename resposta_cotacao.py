@@ -13,6 +13,8 @@ def marcar_respondida(manager, identidade):
     if not identidade['COTAÇÃO'].strip() or not identidade['VENDEDOR'].strip():
         raise ValueError('Cotação e vendedor são obrigatórios.')
     caminho = Path(manager.caminho_cotacoes)
+    import ambiente
+    ambiente.exigir_trava(caminho)
     with manager.lock:
         original = caminho.read_bytes()
         banco = json.loads(original)

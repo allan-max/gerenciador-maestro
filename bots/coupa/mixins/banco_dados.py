@@ -11,6 +11,7 @@ import json
 import logging
 import shutil
 import tempfile
+import ambiente
 import sys
 import threading
 import random
@@ -124,6 +125,7 @@ class Banco_dadosMixin:
 
     def salvar_evento_jsonl(self, numero: str, respondido: bool = False, vencimento_tabela: str = ""):
         try:
+            ambiente.exigir_trava(self.ARQUIVO_JSONL)
             novo = {
                 "titulo": numero, 
                 "data": str(datetime.now().date()), 
@@ -137,14 +139,18 @@ class Banco_dadosMixin:
         except Exception: logger.exception(f'Falha ao gravar o evento {numero} no JSONL')
 
     def atualizar_status_respondido_jsonl(self, numero: str):
+        # Relê antes de regravar: senão eventos removidos pelo gerenciador ("não encontradas") voltam
+        self.carregar_banco_dados()
         if numero not in self.db_eventos: return
         self.db_eventos[numero]['respondido'] = True
         try:
-            temp = self.ARQUIVO_JSONL + ".tmp"
-            with open(temp, 'w', encoding='utf-8') as f:
+            ambiente.exigir_trava(self.ARQUIVO_JSONL)
+            with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=os.path.dirname(self.ARQUIVO_JSONL),
+                                             prefix='maestro-', suffix='.tmp', delete=False) as f:
                 for _, d in self.db_eventos.items(): f.write(json.dumps(d) + '\n')
-            shutil.move(temp, self.ARQUIVO_JSONL)
-        except: pass
+            os.replace(f.name, self.ARQUIVO_JSONL)
+        except Exception:
+            logger.exception(f'Falha ao marcar {numero} como respondido no JSONL')
 
     def evento_ja_processado(self, num: str) -> bool: return num in self.db_eventos
 
