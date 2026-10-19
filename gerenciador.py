@@ -77,7 +77,7 @@ def carregar_config():
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(default_config, f, indent=4, ensure_ascii=False)
         return default_config
-    with open(path, 'r', encoding='utf-8') as f:
+    with open(path, 'r', encoding='utf-8-sig') as f:   # Bloco de Notas salva com BOM
         return json.load(f)
 
 CONFIG_GLOBAL = carregar_config()
@@ -545,7 +545,7 @@ def monitorar_pasta_me():
 def carregar_usuarios():
     path = 'banco_usuarios.json'
     if not os.path.exists(path): return {}
-    with open(path, 'r', encoding='utf-8') as f: return json.load(f)
+    with open(path, 'r', encoding='utf-8-sig') as f: return json.load(f)
 
 @sio.on("validar_login")
 def validar_login(dados):
