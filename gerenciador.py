@@ -1790,7 +1790,16 @@ def enviar_email_erro(detalhes_erro):
     except Exception as e:
         logger.error(f"Erro ao enviar email de erro crtico: {e}")
 
+ultimo_dia_verificacao_vale = None
+
+
+def deve_verificar_vale(agora, ultimo_dia, hora=9):
+    """Uma verificação da Vale por dia, no primeiro ciclo a partir das 09:00 (ela pede o OTP a alguém no painel)."""
+    return agora.hour >= hora and ultimo_dia != agora.date()
+
+
 def loop_automacao():
+    global ultimo_dia_verificacao_vale
     logger.info("?? Iniciando Auto-Pilot (Coupa -> Verificao -> 1.5h -> Vale -> 1.5h)...")
     time.sleep(10)
 
@@ -1860,6 +1869,14 @@ def loop_automacao():
             time.sleep(10)
             while globals().get('bot_vale') and getattr(globals().get('bot_vale'), 'thread_atual', None) and globals().get('bot_vale').thread_atual.is_alive():
                 time.sleep(5)
+
+            if deve_verificar_vale(datetime.now(), ultimo_dia_verificacao_vale):
+                ultimo_dia_verificacao_vale = datetime.now().date()   # uma tentativa por dia, mesmo se o OTP não vier
+                sio.emit('relatar_progresso_vale', {'mensagem': 'Auto-Pilot: verificação diária da Vale (vai pedir o OTP no painel)...'})
+                sio.emit('comando_direto', {'modo': 'verificar', 'portal': 'vale'})
+                time.sleep(10)
+                while globals().get('bot_vale') and getattr(globals().get('bot_vale'), 'thread_atual', None) and globals().get('bot_vale').thread_atual.is_alive():
+                    time.sleep(5)
             eventos.registrar('vale', 'ciclo', 'ok', 'Ciclo automático da Vale terminou')
 
         except Exception as e_vale:

@@ -17,7 +17,8 @@ import sys
 import threading
 import traceback
 import ambiente
-from datetime import datetime
+import csv
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from google import genai
 from groq import Groq
@@ -67,6 +68,13 @@ CAPTCHA_TIMEOUT_S = 300
 
 class LoginTimeout(Exception):
     pass
+
+
+# Verificação (docs/melhorias-bots, fase 3)
+VALE_URL_VERIFICACAO_PADRAO = "https://valebasemetals.coupahost.com/quotes/external_responses/824e8a0982de566c7bebeb7315a6bd89b533033a175c5acddf970e59ccc1e3b7954b1ce5107982e6/terms?quote_request_id=6213&source=event_invitation"   # CONFIG.json "vale_url_verificacao" muda
+OTP_TIMEOUT_S = 180
+MAX_PAGINAS_VERIFICACAO = 60   # CONFIG.json "verificacao_max_paginas" muda
+JANELA_NAO_RESPONDIDO_DIAS = 7   # NÃO RESPONDIDO recente continua sendo conferido
 
 
 class ValeScraper:
@@ -187,8 +195,8 @@ class ValeScraper:
         
         @self.sio.on('receber_otp_frontend')
         def on_receber_otp(dados):
-            self.otp_atual = dados.get('otp')
-            logger.info(f" Código OTP recebido do Painel: {self.otp_atual}")
+            self.otp_atual = (str(dados.get('otp') or '')).strip() or None   # vazio não conta
+            logger.info(" Código OTP recebido do painel.")
 
     # ==========================================
 
@@ -1343,25 +1351,15 @@ Vale Bot
         lista_origens = dados.get('origens', [])
         lista_icms = dados.get('icms', [])
         
-        # --- DESCOMPACTAR OS ARQUIVOS BASE64 QUE VIERAM DA NUVEM ---
-        ds_paths = []
-        for f_data in dados.get('datasheets', []):
-            # Cria o arquivo fisicamente na pasta de arquivos temporários do Windows
-            caminho = os.path.join(tempfile.gettempdir(), f_data['name'])
-            with open(caminho, 'wb') as out:
-                out.write(base64.b64decode(f_data['data']))
-            ds_paths.append(caminho)
-            
-        dav_paths = []
-        for f_data in dados.get('davs', []):
-            caminho = os.path.join(tempfile.gettempdir(), f_data['name'])
-            with open(caminho, 'wb') as out:
-                out.write(base64.b64decode(f_data['data']))
-            dav_paths.append(caminho)
-            
+        pasta_anexos = tempfile.mkdtemp(prefix='maestro-resposta-')   # apagada no fim, com ou sem erro
+        falhas = []
+
         logger.info(f"🚀 Iniciando Resposta do Evento {evento}...")
         
         try:
+            ds_paths = [self._gravar_anexo(pasta_anexos, f) for f in dados.get('datasheets', [])]
+            dav_paths = [self._gravar_anexo(pasta_anexos, f) for f in dados.get('davs', [])]
+
             # ========================================================
             # 1. ROTA DIRETA PARA SOURCING (À PROVA DE FALHAS)
             # ========================================================
@@ -1633,6 +1631,7 @@ Vale Bot
                                     """, input_preco, preco_atual)
                                 logger.info(f"      ✅ Preço {preco_atual} inserido.")
                             except Exception as e:
+                                falhas.append(f"item {idx+1} (preço)")
                                 logger.warning(f"       Falha ao inserir preço: {e}")
 
                         if se_tem_prazo:
@@ -1667,28 +1666,34 @@ Vale Bot
                                     """, input_prazo, prazo_atual)
                                 logger.info(f"      ✅ Prazo {prazo_atual} inserido.")
                             except Exception as e:
+                                falhas.append(f"item {idx+1} (prazo)")
                                 logger.warning(f"       Falha ao inserir prazo: {e}")
                     else:
                         logger.info(f"    Item {idx+1} ignorado (Você deixou os campos vazios).")
                         
             except Exception as e:
+                falhas.append("preenchimento das linhas")
                 logger.error(f" Erro crítico no preenchimento das linhas: {e}")
 
-            # 8. Salvar Final
+            # 8. Salvar Final (só salva o rascunho; o envio ao cliente é feito por uma pessoa no portal)
             logger.info("✅ Finalizando salvamento do evento...")
             try:
                 btn_salvar = self.driver.find_element(By.CSS_SELECTOR, "button.s-save")
-                self.driver.execute_script("arguments[0].click();", btn_salvar)
-                time.sleep(4)
-            except: pass
+            except Exception:
+                raise Exception("Botão Salvar não encontrado: o rascunho não foi salvo.")
+            self.driver.execute_script("arguments[0].click();", btn_salvar)
+            time.sleep(4)
+            self._marcar_rascunho(evento)
+            if falhas:
+                raise Exception(f"Rascunho salvo, mas com falha em: {', '.join(falhas)}. Confira no portal antes de enviar.")
 
-            logger.info(f"🎉 Evento {evento} respondido com sucesso!")
+            logger.info(f"🎉 Rascunho do evento {evento} salvo. O envio ao cliente é manual.")
             self.sio.emit('tarefa_concluida', {'evento': f'Evento {evento}', 'sucesso': True})
-            
-            # --- FECHAR A ABA E VOLTAR PARA A PRINCIPAL ---
-            self.driver.close()
-            self.driver.switch_to.window(self.driver.window_handles[0])
-            
+
+            if len(self.driver.window_handles) > 1:
+                self.driver.close()
+                self.driver.switch_to.window(self.driver.window_handles[0])
+
         except Exception as e:
             logger.error(f" Erro ao responder evento: {e}")
             self.sio.emit('tarefa_concluida', {'evento': f'Evento {evento}', 'sucesso': False, 'erro': str(e)})
@@ -1697,6 +1702,31 @@ Vale Bot
             if len(self.driver.window_handles) > 1:
                 self.driver.close()
                 self.driver.switch_to.window(self.driver.window_handles[0])
+        finally:
+            shutil.rmtree(pasta_anexos, ignore_errors=True)
+
+    @staticmethod
+    def _gravar_anexo(pasta, f_data):
+        # basename: o nome vem do portal e não pode apontar para fora da pasta temporária
+        nome = os.path.basename(str(f_data.get('name') or '').replace('\\', '/'))
+        nome = re.sub(r'[<>:"|?*\x00-\x1f]', '_', nome).strip(' .')   # caracteres que o Windows recusa
+        caminho = os.path.join(pasta, nome or 'anexo.pdf')
+        n = 1
+        while os.path.exists(caminho):   # datasheet e DAV com o mesmo nome não se sobrescrevem
+            caminho = os.path.join(pasta, f"{n}_{nome or 'anexo.pdf'}")
+            n += 1
+        with open(caminho, 'wb') as out:
+            out.write(base64.b64decode(f_data['data']))
+        return caminho
+
+    def _marcar_rascunho(self, evento):
+        try:
+            from planilha_manager import planilha_manager
+            if planilha_manager.marcar_rascunho(evento):
+                logger.info(f"   📝 Cotação {evento} marcada como RASCUNHO no banco.")
+        except Exception:
+            logger.exception(f"Rascunho salvo no portal, mas não deu para marcar {evento} como RASCUNHO no banco")
+
 
     # ============================ 6. GERAÃ‡ÃƒO DE WORD / EXCEL ============================
     def gerar_word(self):
@@ -1819,7 +1849,7 @@ Vale Bot
                     novo = {
                         "titulo": d['numero_evento'], 
                         "data": str(datetime.now().date()), 
-                        "respondido": True, 
+                        "respondido": False, "extraido": True, 
                         "vencimento_tabela": venc_tab
                     }
                     with open(self.ARQUIVO_JSONL, 'a', encoding='utf-8') as f: 
@@ -2241,127 +2271,155 @@ Vale Bot
     # 8. VERIFICAÃ‡ÃƒO DE EVENTOS (COM GESTÃƒO DE NOVA ABA)
     # ========================================================
     def verificar_eventos(self):
-        logger.info("\n--- INICIANDO VERIFICAÃ‡ÃƒO DE EVENTOS VALE (NOVA ABA) ---")
+        """Lê a coluna de respostas enviadas (precisa do OTP) e aplica planilha_manager.novo_status nas cotações da Vale.
+        Sem OTP em OTP_TIMEOUT_S, pula e registra o motivo (não trava o ciclo)."""
+        logger.info("--- VERIFICAÇÃO DE EVENTOS VALE ---")
+        self.solicitacao_parada = False   # parada/login esgotado da extração anterior não cancela a verificação
         try:
-            # === 1. ABRIR NOVA ABA E MUDAR PARA ELA ===
             self.driver.execute_script("window.open('');")
             self.driver.switch_to.window(self.driver.window_handles[-1])
-            
-            link_verificacao = "https://valebasemetals.coupahost.com/quotes/external_responses/824e8a0982de566c7bebeb7315a6bd89b533033a175c5acddf970e59ccc1e3b7954b1ce5107982e6/terms?quote_request_id=6213&source=event_invitation"
-            self.driver.get(link_verificacao)
+            self.driver.get(self.config.get('vale_url_verificacao', VALE_URL_VERIFICACAO_PADRAO))
             time.sleep(3)
+            if not self._esperar_otp():
+                return
 
-            # === 2. PEDIR O OTP Ã€ NUVEM ===
-            self.otp_atual = None
-            self.sio.emit('pedir_otp_usuario')
-            
-            timeout = 180 # 3 minutos de limite
-            start_time = time.time()
-            logger.info("Robo pausado. Aguardando utilizador inserir o OTP no painel...")
-            
-            while self.otp_atual is None:
-                # Se clicar em "Parar RobÃ´" no site, aborta na hora!
-                if getattr(self, 'solicitacao_parada', False):
-                    raise Exception("Processo cancelado pelo utilizador durante a espera do OTP.")
-                if time.time() - start_time > timeout:
-                    raise Exception("Tempo esgotado! O código OTP não foi inserido.")
-                time.sleep(1)
-            
-            # === 3. INJETAR OTP ===
             logger.info(" OTP recebido. Injetando no portal...")
             campo_otp = self.wait.until(EC.presence_of_element_located((By.ID, "supplier_otp")))
             campo_otp.clear()
             campo_otp.send_keys(self.otp_atual)
             campo_otp.send_keys(Keys.RETURN)
             time.sleep(4)
-
-            # === 4. NAVEGAR PARA PÃGINA INICIAL ===
             self.wait.until(EC.element_to_be_clickable((By.ID, "home"))).click()
             time.sleep(4)
 
-            # === 5. MAPEAR A TABELA ===
-            logger.info(" Lendo status dos eventos na tabela...")
-            status_eventos = {}
-            
-            while True:
-                if getattr(self, 'solicitacao_parada', False):
-                    raise Exception("Processo cancelado pelo utilizador.")
+            pendentes = self._pendentes_vale()
+            logger.info(f" Verificando {len(pendentes)} cotações pendentes da Vale...")
+            lidos, ilegiveis, paginas, erro = self._ler_lista_vale(pendentes)
 
-                time.sleep(2)
-                linhas = self.driver.find_elements(By.XPATH, "//tr[contains(@class, 'coupa_datatable_row')]")
-                
-                for linha in linhas:
-                    try:
-                        id_evento = linha.find_element(By.XPATH, ".//span[@class='dt_open_link']").text.strip()
-                        num_respostas = linha.find_element(By.XPATH, ".//td[contains(@class, 's-datatable-cell-num_responses')]").text.strip()
-                        status_eventos[id_evento] = num_respostas
-                    except:
-                        continue 
+            # Só números deste robô: um número do Coupa igual ao de um evento da Vale não é tocado
+            vistos = {n: q for n, q in lidos.items() if n in self.db_eventos}
+            from planilha_manager import planilha_manager
+            mudancas = planilha_manager.atualizar_status_respostas(self.NOME_ABA_ALVO, vistos, 1, 9)
+            if erro:
+                raise erro   # o que foi lido já está gravado
 
-                # Paginação
-                try:
-                    botao_avancar = self.driver.find_element(By.XPATH, "//a[contains(@class, 'next_page') and contains(text(), 'Avançar')]")
-                    self.driver.execute_script("arguments[0].click();", botao_avancar)
-                    logger.info(" Avançando para a próxima página...")
-                    time.sleep(3) 
-                except:
-                    logger.info("✅ Fim das páginas atingido. Leitura concluída.")
-                    break
-
-            # === 6. PINTAR EXCEL ===
-            self._colorir_excel_verificacao(status_eventos)
+            achadas = sum(1 for n in pendentes if n in vistos)
+            relatorio = self._relatorio_nao_encontradas_vale(pendentes, vistos)
+            resumo = (f"Verificação Vale: {len(vistos)} eventos lidos em {paginas} página(s), {achadas}/{len(pendentes)} "
+                      f"pendentes encontradas, {len(mudancas)} status alterados, {ilegiveis} linhas ilegíveis")
+            logger.info(f"✅ {resumo}" + (f". Não encontradas: {relatorio}" if relatorio else ""))
+            self.sio.emit('relatar_progresso_vale', {'mensagem': f"✅ {resumo}"})
             self.sio.emit('tarefa_concluida', {'evento': 'Verificação Vale', 'sucesso': True})
 
         except Exception as e:
-            logger.error(f" Erro na verificação: {e}")
+            logger.exception(f" Erro na verificação: {e}")
             self.sio.emit('tarefa_concluida', {'evento': 'Verificação Vale', 'sucesso': False, 'erro': str(e)})
 
         finally:
-            # === 7. GESTÃƒO DE ABAS (Executado SEMPRE no final, dÃª erro ou não) ===
             try:
                 if len(self.driver.window_handles) > 1:
                     logger.info(" Fechando aba extra e retornando ao painel principal...")
-                    self.driver.close() # Fecha a aba que foi aberta para a verificação
-                    self.driver.switch_to.window(self.driver.window_handles[0]) # Volta para a primeira aba (Original)
+                    self.driver.close()
+                    self.driver.switch_to.window(self.driver.window_handles[0])
             except Exception as e:
                 logger.error(f"Erro ao tentar restaurar abas: {e}")
 
-    # ========================================================
-    # 7. PINTAR EXCEL APÃ“S VERIFICAÃ‡ÃƒO OTP
-    # ========================================================
-    def _colorir_excel_verificacao(self, status_eventos):
-        logger.info(" Atualizando cores na Planilha de Controle...")
-        
-        if os.path.exists(self.ARQUIVO_PLANILHA_CONTROLE):
-            try:
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                shutil.copy2(self.ARQUIVO_PLANILHA_CONTROLE, os.path.join(self.PASTA_BACKUPS, f"backup_cores_{ts}.xlsx"))
-            except: pass
-            
-        while True:
-            try:
-                if getattr(self, 'solicitacao_parada', False): return
-                from planilha_manager import planilha_manager
-                planilha_manager.iniciar(self.ARQUIVO_PLANILHA_CONTROLE)
-                
-                # Transforma status_eventos (str -> str de num_respostas) em str -> bool (respondido ou não)
-                mapa_status = {k: int(v) if str(v).strip().isdigit() else None for k, v in status_eventos.items()}   # célula vazia = não leu, não "respondido"
-                
-                planilha_manager.atualizar_status_respostas(self.NOME_ABA_ALVO, mapa_status, col_chave=1, col_status=9)
-                logger.info("✅ Planilha atualizada com o status dos eventos!")
-                break # Sucesso
-            except PermissionError:
-                if 'wb' in locals() and wb:
-                    try: wb.close()
-                    except: pass
-                logger.warning("⏳ Planilha em uso. Aguardando liberação para pintar as cores...")
-                if hasattr(self, 'sio'):
-                    self.sio.emit('relatar_progresso_vale', {'mensagem': "⚠️ PLANILHA EM USO! O robô ficará tentando salvar até a planilha ser fechada..."})
-                time.sleep(15)
-                continue
-            except Exception as e:
-                if 'wb' in locals() and wb:
-                    try: wb.close()
-                    except: pass
-                logger.error(f"Erro ao pintar Excel: {e}")
-                break
+    def _esperar_otp(self):
+        self.otp_atual = None
+        self.sio.emit('pedir_otp_usuario')
+        limite = time.time() + OTP_TIMEOUT_S
+        logger.info("Robô pausado. Aguardando o OTP no painel...")
+        while self.otp_atual is None:
+            if getattr(self, 'solicitacao_parada', False):
+                raise Exception("Processo cancelado pelo utilizador durante a espera do OTP.")
+            if time.time() > limite:
+                msg = f"Verificação da Vale pulada: OTP não informado em {OTP_TIMEOUT_S // 60} min."
+                logger.warning(msg)
+                try:
+                    import eventos
+                    eventos.registrar('vale', 'verificacao', 'aviso', msg)
+                except Exception:
+                    logger.exception('Falha ao registrar o evento da verificação pulada')
+                self.sio.emit('tarefa_concluida', {'evento': 'Verificação Vale', 'sucesso': False, 'erro': msg})
+                return False
+            time.sleep(1)
+        return True
+
+    def _pendentes_vale(self):
+        """Cotações deste robô (as do eventos_nimbi.jsonl) sem resposta confirmada: vazias, RASCUNHO e
+        NÃO RESPONDIDO que venceram há poucos dias."""
+        from planilha_manager import planilha_manager, status_atual, data_vencimento, RASCUNHO, NAO_RESPONDIDO
+        planilha_manager.iniciar()
+        limite = datetime.now().date() - timedelta(days=JANELA_NAO_RESPONDIDO_DIAS)
+
+        def alvo(r):
+            s = status_atual(r.get('RESPOSTA'))
+            d = data_vencimento(r.get('VENCIMENTO'))
+            return s in ('', RASCUNHO) or (s == NAO_RESPONDIDO and d is not None and d >= limite)
+        return {str(r.get('COTAÇÃO')).strip(): r for r in planilha_manager.cotacoes.get('COTAÇÃO', [])
+                if isinstance(r, dict) and str(r.get('COTAÇÃO') or '').strip() in self.db_eventos and alvo(r)}
+
+    def _ler_lista_vale(self, pendentes):
+        """{número: respostas} (None = célula ilegível). Se o portal falhar no meio, devolve o que já leu e o erro."""
+        vistos, ilegiveis, paginas = {}, 0, 0
+        ordem = lambda q: -1 if q is None else q   # número repetido: vale a maior quantidade lida
+        max_paginas = int(self.config.get('verificacao_max_paginas', MAX_PAGINAS_VERIFICACAO))
+        try:
+            while paginas < max_paginas:
+                if getattr(self, 'solicitacao_parada', False):
+                    raise Exception("Processo cancelado pelo utilizador.")
+                time.sleep(2)
+                # coupa_datatable_row é a tela antiga; a extração já usa coupaTable__row
+                linhas = self.driver.find_elements(By.XPATH, "//tr[contains(@class, 'coupa_datatable_row') or contains(@class, 'coupaTable__row')]")
+                for _ in range(3 if paginas == 0 else 0):   # primeira página lenta não é "lista vazia"
+                    if linhas:
+                        break
+                    time.sleep(5)
+                    linhas = self.driver.find_elements(By.XPATH, "//tr[contains(@class, 'coupa_datatable_row') or contains(@class, 'coupaTable__row')]")
+                if not linhas:
+                    if paginas == 0:
+                        raise Exception("A lista de eventos da Vale não carregou.")
+                    break
+                paginas += 1
+                for linha in linhas:
+                    try:
+                        num = linha.find_element(By.XPATH, ".//span[contains(@class, 'dt_open_link')]").text.strip()
+                    except Exception:
+                        ilegiveis += 1
+                        continue
+                    try:
+                        texto = linha.find_element(By.XPATH, ".//td[contains(@class, 's-datatable-cell-num_responses')]").text.strip()
+                        qtd = int(texto) if texto.isdigit() else None
+                    except Exception:
+                        qtd = None
+                    if num and (num not in vistos or ordem(qtd) > ordem(vistos[num])):
+                        vistos[num] = qtd
+                faltam = sum(1 for n in pendentes if n not in vistos)
+                logger.info(f"    Página {paginas}: {len(linhas)} linhas, faltam {faltam} pendentes.")
+                if not faltam:
+                    break
+                try:
+                    botao = self.driver.find_element(By.XPATH, "//a[contains(@class, 'next_page') and contains(text(), 'Avançar')]")
+                except Exception:
+                    logger.info("✅ Fim das páginas atingido.")
+                    break
+                self.driver.execute_script("arguments[0].click();", botao)
+                time.sleep(3)
+        except Exception as e:
+            logger.exception(f"Leitura interrompida na página {paginas}; gravando o que já foi lido.")
+            return vistos, ilegiveis, paginas, e
+        return vistos, ilegiveis, paginas, None
+
+    def _relatorio_nao_encontradas_vale(self, pendentes, vistos):
+        faltando = [r for n, r in pendentes.items() if n not in vistos]
+        if not faltando:
+            return None
+        pasta = os.path.join(ambiente.RAIZ, 'relatorios')
+        os.makedirs(pasta, exist_ok=True)
+        caminho = os.path.join(pasta, f"verificacao_vale_{datetime.now():%Y-%m-%d}.csv")
+        with open(caminho, 'w', newline='', encoding='utf-8-sig') as f:
+            w = csv.writer(f, delimiter=';')
+            w.writerow(['COTAÇÃO', 'VENCIMENTO', 'RESPOSTA', 'VENDEDOR'])
+            w.writerows([r.get('COTAÇÃO'), r.get('VENCIMENTO'), r.get('RESPOSTA') or '', r.get('VENDEDOR')] for r in faltando)
+        return caminho
+
