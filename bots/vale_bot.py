@@ -73,6 +73,7 @@ class LoginTimeout(Exception):
 # Verificação (docs/melhorias-bots, fase 3)
 VALE_URL_VERIFICACAO_PADRAO = "https://valebasemetals.coupahost.com/quotes/external_responses/824e8a0982de566c7bebeb7315a6bd89b533033a175c5acddf970e59ccc1e3b7954b1ce5107982e6/terms?quote_request_id=6213&source=event_invitation"   # CONFIG.json "vale_url_verificacao" muda
 OTP_TIMEOUT_S = 180
+OTP_EMAIL_INTERVALO_S = 10   # de quanto em quanto tempo procura o código na caixa (otp_email.py)
 MAX_PAGINAS_VERIFICACAO = 60   # CONFIG.json "verificacao_max_paginas" muda
 JANELA_NAO_RESPONDIDO_DIAS = 7   # NÃO RESPONDIDO recente continua sendo conferido
 
@@ -2324,12 +2325,32 @@ Vale Bot
             except Exception as e:
                 logger.error(f"Erro ao tentar restaurar abas: {e}")
 
+    def _otp_do_email(self, pedido, ja_avisou):
+        """(código, ja_avisou). O e-mail é só um atalho: se falhar, avisa uma vez e o painel continua valendo."""
+        try:
+            import otp_email
+            return otp_email.buscar_codigo(pedido), ja_avisou
+        except Exception as e:
+            if not ja_avisou:
+                logger.warning(f"Não deu para ler o OTP no e-mail ({type(e).__name__}: {e}). Digite o código no painel.")
+            return None, True
+
     def _esperar_otp(self):
         self.otp_atual = None
+        pedido = datetime.now().astimezone()   # só vale e-mail de código que chegou depois deste pedido
         self.sio.emit('pedir_otp_usuario')
         limite = time.time() + OTP_TIMEOUT_S
-        logger.info("Robô pausado. Aguardando o OTP no painel...")
+        proxima_leitura, email_falhou = time.time() + OTP_EMAIL_INTERVALO_S, False
+        logger.info("Robô pausado. Aguardando o OTP (no painel ou no e-mail)...")
         while self.otp_atual is None:
+            if time.time() >= proxima_leitura:
+                proxima_leitura = time.time() + OTP_EMAIL_INTERVALO_S
+                codigo, email_falhou = self._otp_do_email(pedido, email_falhou)
+                if codigo and self.otp_atual is None:
+                    self.otp_atual = codigo
+                    logger.info(" OTP lido do e-mail automaticamente.")
+                    self.sio.emit('relatar_progresso_vale', {'mensagem': "🔐 Código lido do e-mail automaticamente (pode fechar a janela do OTP)."})
+                    break
             if getattr(self, 'solicitacao_parada', False):
                 raise Exception("Processo cancelado pelo utilizador durante a espera do OTP.")
             if time.time() > limite:
