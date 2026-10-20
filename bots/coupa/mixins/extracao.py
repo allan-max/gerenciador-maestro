@@ -580,8 +580,7 @@ class ExtracaoMixin:
 
                 self.garantir_logado(self.EVENTS_URL)
                 logger.info(f" Analisando Página {curr}...")
-                if curr > 1: self.driver.get(f"{self.EVENTS_URL}?page={curr}")
-                else: self.driver.get(self.EVENTS_URL)
+                self.driver.get(f"{self.EVENTS_URL}?page={curr}")   # sem ?page= o Coupa reabre a última página visitada
                 
                 try: WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
                 except: break

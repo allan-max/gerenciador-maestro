@@ -163,34 +163,26 @@ class Linha:
 
 
 class Portal:
-    def __init__(self, paginas):
-        self.paginas, self.atual, self.cliques = paginas, 0, 0
-        proximo = self
-
-        class Botao:
-            def is_displayed(self):
-                return True
-
-            def get_attribute(self, nome):
-                return 'disabled' if proximo.atual == len(proximo.paginas) - 1 else ''
-
-            def find_element(self, por, valor):
-                return Celula(get_attribute=lambda n: '')
-        self.botao = Botao()
+    """Lista do Coupa: ?page=N abre a página N; sem ?page= reabre a última visitada (a extração para na 7 ou 8);
+    depois da última página o Coupa repete a última."""
+    def __init__(self, paginas, lembrada=0):
+        self.paginas, self.atual, self.lembrada, self.abertas = paginas, lembrada, lembrada, []
 
     def get(self, url):
-        self.atual = 0
+        if '?page=' in url:
+            n = int(url.split('?page=')[1])
+            self.abertas.append(n)
+            self.atual = self.lembrada = min(n, len(self.paginas)) - 1
+        else:
+            self.atual = self.lembrada
 
     def find_elements(self, por, valor):
         return self.paginas[self.atual]
 
     def find_element(self, por, valor):
-        return self.botao
-
-    def execute_script(self, script, *args):
-        if 'click' in script:
-            self.atual += 1
-            self.cliques += 1
+        if self.atual >= len(self.paginas) - 1:
+            raise NoSuchElementException('sem próxima')
+        return Celula()
 
 
 class VerificacaoTest(BaseTemporaria):
@@ -204,7 +196,7 @@ class VerificacaoTest(BaseTemporaria):
 
     def rodar(self, paginas, db=('100', '101', '102', '103', '104', '105'), portal=None):
         relatorios = self.dir / 'relatorios'
-        ns = carregar(RAIZ / 'bots/coupa/mixins/verificacao.py', {'MAX_PAGINAS_PADRAO', 'JANELA_NAO_RESPONDIDO_DIAS', 'ESPERA_PAGINA_S', 'CLIQUES_POR_PAGINA', 'VerificacaoMixin'},
+        ns = carregar(RAIZ / 'bots/coupa/mixins/verificacao.py', {'MAX_PAGINAS_PADRAO', 'JANELA_NAO_RESPONDIDO_DIAS', 'VerificacaoMixin'},
                       time=Relogio(), By=By, NoSuchElementException=NoSuchElementException, StaleElementReferenceException=StaleElementReferenceException, csv=csv, datetime=datetime, timedelta=timedelta,
                       WebDriverWait=lambda d, t: SimpleNamespace(until=lambda c: True),
                       EC=SimpleNamespace(presence_of_element_located=lambda x: x), PASTA_RELATORIOS=relatorios)
@@ -226,7 +218,7 @@ class VerificacaoTest(BaseTemporaria):
                    [Linha('998', '0'), Linha('105', '1')]]
         bot, emitidos, jsonl, relatorios = self.rodar(paginas)
         self.assertEqual(emitidos[-1], ('tarefa_concluida', {'evento': 'Verificação de Status', 'sucesso': True}))
-        self.assertEqual(bot.driver.cliques, 2)                                   # 104 nunca aparece: lê até a última
+        self.assertEqual(bot.driver.abertas, [1, 2, 3])                           # 104 nunca aparece: lê até a última
         self.assertEqual(self.respostas(), {'100': 'RESPONDIDO', '101#1': 'NÃO RESPONDIDO', '102#2': '',
                                             '103#3': 'RESPONDIDO', '104#4': '', '55000#5': '', '105#6': 'RESPONDIDO'})
         self.assertEqual(jsonl, ['100', '105'])          # só eventos deste robô
@@ -238,7 +230,7 @@ class VerificacaoTest(BaseTemporaria):
     def test_para_quando_acha_todas_as_pendentes(self):
         paginas = [[Linha('100', '0'), Linha('102', '1')], [Linha('101', '0')], [Linha('104', '0')]]
         bot, *_ = self.rodar(paginas, db=('100', '102'))
-        self.assertEqual(bot.driver.cliques, 0)
+        self.assertEqual(bot.driver.abertas, [1])
         self.assertEqual(self.respostas()['102#2'], 'RESPONDIDO')
 
     def test_portal_que_cai_no_meio_grava_o_que_ja_leu(self):
@@ -252,18 +244,24 @@ class VerificacaoTest(BaseTemporaria):
         self.assertFalse(emitidos[-1][1]['sucesso'])
         self.assertEqual(self.respostas()['100'], 'RESPONDIDO')
 
-    def test_lista_que_trava_nao_e_relida_ate_o_teto(self):
-        # produção 19/10: o "Próximo" parou de avançar na página ~11 e a mesma página foi lida até a 200
-        class PortalTravado(Portal):
-            def execute_script(self, script, *args):
-                if 'click' in script:
-                    self.cliques += 1
-                    self.atual = min(self.atual + 1, 1)
+    def test_comeca_da_primeira_pagina_mesmo_com_o_coupa_lembrando_outra(self):
+        # produção 20/10: a extração parou na página 7, a verificação abriu a lista sem ?page= e começou ali;
+        # as 399 cotações mais novas (páginas 1 a 6) ficaram como "não encontradas"
         paginas = [[Linha('100', '1')], [Linha('101', '0')], [Linha('104', '0')]]
-        bot, emitidos, *_ = self.rodar(paginas, portal=PortalTravado)
-        self.assertEqual(bot.driver.cliques, 3)               # avançou 1, insistiu 2 vezes na página que não muda
+        bot, *_ = self.rodar(paginas, portal=lambda p: Portal(p, lembrada=2))
+        self.assertEqual(bot.driver.abertas[0], 1)
+        self.assertEqual(self.respostas()['100'], 'RESPONDIDO')
+
+    def test_pagina_repetida_encerra_a_leitura(self):
+        # produção 19/10: o Coupa devolvia a mesma página e ela era relida até o teto (200 páginas, 986 eventos)
+        class PortalQueRepete(Portal):
+            def find_element(self, por, valor):
+                return Celula()                          # o "Próximo" nunca some
+        paginas = [[Linha('100', '1')], [Linha('101', '0')]]
+        bot, emitidos, *_ = self.rodar(paginas, db=('100', '101', '104'), portal=PortalQueRepete)
+        self.assertEqual(bot.driver.abertas, [1, 2, 3])          # a 3 veio igual à 2: para
         self.assertIn('em 2 página(s)', emitidos[-2][1]['mensagem'])
-        self.assertTrue(emitidos[-1][1]['sucesso'])           # o que leu foi gravado
+        self.assertTrue(emitidos[-1][1]['sucesso'])
 
 
 if __name__ == '__main__':

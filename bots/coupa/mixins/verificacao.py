@@ -53,8 +53,6 @@ if not logger.handlers:
 MAX_PAGINAS_PADRAO = 60   # teto de segurança; CONFIG.json "verificacao_max_paginas" muda
 PASTA_RELATORIOS = Path(__file__).resolve().parents[3] / 'relatorios'
 JANELA_NAO_RESPONDIDO_DIAS = 7   # NÃO RESPONDIDO recente continua sendo conferido
-ESPERA_PAGINA_S = 20             # quanto esperar a lista trocar depois do clique em "Próximo"
-CLIQUES_POR_PAGINA = 2           # o Coupa às vezes ignora o clique: insiste uma vez antes de dar a lista por travada
 
 
 class VerificacaoMixin:
@@ -64,9 +62,6 @@ class VerificacaoMixin:
         logger.info("--- FASE 2: VERIFICAÇÃO ---")
         try:
             self.garantir_logado(self.EVENTS_URL)
-            self.driver.get(self.EVENTS_URL)
-            time.sleep(3)
-
             pendentes = self._pendentes_coupa()
             max_paginas = int(getattr(self, 'config', {}).get('verificacao_max_paginas', MAX_PAGINAS_PADRAO))
             logger.info(f" Verificando {len(pendentes)} cotações pendentes (até {max_paginas} páginas)...")
@@ -96,10 +91,13 @@ class VerificacaoMixin:
 
     def _ler_lista(self, pendentes, max_paginas):
         """{número: respostas} da lista do portal. Se o portal falhar no meio, devolve o que já leu e o erro."""
-        vistos, ilegiveis, paginas = {}, 0, 0
+        vistos, ilegiveis, paginas, anterior = {}, 0, 0, None
         ordem = lambda q: -1 if q is None else q   # número repetido na lista: vale a maior quantidade lida
         try:
             while not self.solicitacao_parada and paginas < max_paginas:
+                # Página explícita, como na extração: sem ?page= o Coupa reabre a última página visitada (a extração
+                # para na 7 ou 8) e as cotações mais novas, das primeiras páginas, nunca eram lidas (20/10).
+                self.driver.get(f"{self.EVENTS_URL}?page={paginas + 1}")
                 try:
                     WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
                 except Exception:
@@ -108,6 +106,11 @@ class VerificacaoMixin:
                 rows = self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
                 if not rows:
                     break
+                numeros = self._numeros_da_pagina()
+                if numeros and numeros == anterior:
+                    logger.info(f"    Página {paginas + 1} igual à anterior: fim da lista.")
+                    break
+                anterior = numeros
                 paginas += 1
                 for r in rows:
                     try:
@@ -124,7 +127,8 @@ class VerificacaoMixin:
                 if not faltam:
                     logger.info("    Todas as pendentes encontradas.")
                     break
-                if not self._proxima_pagina():
+                if not self._tem_proxima():
+                    logger.info("    Fim da lista.")
                     break
         except Exception as e:
             logger.exception(f"Leitura interrompida na página {paginas}; gravando o que já foi lido.")
@@ -168,67 +172,15 @@ class VerificacaoMixin:
         return str(caminho)
 
     def _numeros_da_pagina(self):
-        """Números da lista na tela, para saber se a página trocou. None enquanto a tabela está sendo redesenhada."""
+        """Números da lista na tela: página igual à anterior = o Coupa repetiu a última (fim da lista)."""
         try:
             return tuple(r.find_element(By.CSS_SELECTOR, "a span.dt_open_link").text.strip()
                          for r in self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr"))
         except (StaleElementReferenceException, NoSuchElementException):
             return None   # sessão caída e outros erros sobem: a verificação termina com erro
 
-    def _esperar_pagina_mudar(self, antes):
-        fim = time.time() + ESPERA_PAGINA_S
-        while time.time() < fim:
-            time.sleep(1)
-            agora = self._numeros_da_pagina()
-            if agora and agora != antes:
-                time.sleep(1)   # deixa a tabela terminar de desenhar
-                return True
-        return False
-
-    def _proxima_pagina(self):
-        """Avança e confirma que a lista mudou. Antes esperava 4 s fixos: quando o Coupa não trocava a página,
-        a mesma página era relida até o teto (19/10: 200 páginas, só 986 eventos diferentes)."""
-        antes = self._numeros_da_pagina()
-        for tentativa in range(1, CLIQUES_POR_PAGINA + 1):
-            if not self._clicar_proxima():
-                return False
-            if self._esperar_pagina_mudar(antes):
-                return True
-            logger.warning(f"    A lista não mudou depois do 'Próximo' (tentativa {tentativa}/{CLIQUES_POR_PAGINA}).")
-        logger.warning("    Paginação travada: o Coupa continua mostrando a mesma página. Encerrando a leitura com o que já foi lido.")
-        return False
-
-    def _clicar_proxima(self):
+    def _tem_proxima(self):
         try:
-            next_btn = None
-            seletores = [
-                (By.CSS_SELECTOR, "a.next_page"),
-                (By.LINK_TEXT, "Próximo"),
-                (By.LINK_TEXT, "Next"),
-                (By.XPATH, "//a[contains(@class, 'next_page')]")
-            ]
-            for metodo, query in seletores:
-                try:
-                    el = self.driver.find_element(metodo, query)
-                    if el.is_displayed():
-                        next_btn = el; break
-                except Exception: continue
-
-            if not next_btn:
-                logger.info("    Fim da paginação (Botão não encontrado).")
-                return False
-
-            cls = next_btn.get_attribute("class") or ""
-            try: p_cls = next_btn.find_element(By.XPATH, "..").get_attribute("class") or ""
-            except Exception: p_cls = ""
-            if "disabled" in cls or "disabled" in p_cls:
-                logger.info("    Fim da paginação (Botão desabilitado).")
-                return False
-
-            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_btn)
-            time.sleep(1)
-            self.driver.execute_script("arguments[0].click();", next_btn)
-            return True
-        except Exception as e:
-            logger.error(f" Erro crítico na paginação da verificação: {e}")
+            return bool(self.driver.find_element(By.CSS_SELECTOR, "a.next_page:not(.disabled)"))
+        except NoSuchElementException:
             return False
