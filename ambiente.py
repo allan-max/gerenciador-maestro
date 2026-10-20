@@ -4,6 +4,7 @@ Antes cada arquivo comparava URL_SERVIDOR com "http://localhost:8000" e o testar
 127.0.0.1: o teste local gravava na base de produção. Teste = URL_SERVIDOR em localhost/127.0.0.1
 ou MAESTRO_TESTE=1; as bases de teste ficam em base_teste/, ao lado do código.
 """
+import json
 import os
 from urllib.parse import urlparse
 
@@ -37,6 +38,33 @@ def pasta_banco():
 
 def eh_producao(caminho):
     return os.path.normcase(str(caminho).replace('/', '\\')).startswith(os.path.normcase(BASE_PRODUCAO + '\\'))
+
+
+PAGINAS_VERIFICACAO_PADRAO = 60
+PAGINAS_VERIFICACAO_MAX = 500
+
+
+def ler_config():
+    """CONFIG.json como está agora (o painel admin pode ter acabado de salvar). {} se faltar ou estiver quebrado."""
+    try:
+        with open(os.path.join(RAIZ, 'CONFIG.json'), encoding='utf-8-sig') as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def paginas_verificacao(portal, config=None):
+    """Teto de páginas da verificação ('coupa' ou 'vale'). O painel salva como texto ("60"); inválido = padrão."""
+    cfg = ler_config() if config is None else config
+    valor = cfg.get(f'{portal}_verificacao_max_paginas')
+    if valor in (None, '') and portal == 'coupa':
+        valor = cfg.get('verificacao_max_paginas')   # nome antigo, de antes do painel
+    try:
+        n = int(str(valor).strip())
+    except (TypeError, ValueError):
+        return PAGINAS_VERIFICACAO_PADRAO
+    return min(max(n, 1), PAGINAS_VERIFICACAO_MAX)
 
 
 def exigir_trava(caminho):

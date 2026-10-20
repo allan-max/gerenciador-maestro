@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from selenium.webdriver.common.by import By
 
+import ambiente
 from test_fase0 import LOGGER, Relogio, carregar
 from test_fase2 import FUT_REAL, PAS_REAL, BaseTemporaria
 from test_planilha_persistencia import namespace as ns_manager
@@ -20,7 +21,7 @@ from test_planilha_persistencia import namespace as ns_manager
 RAIZ = Path(__file__).parent
 ARQ_VALE = RAIZ / 'bots/vale_bot.py'
 METODOS = {'verificar_eventos', '_esperar_otp', '_otp_do_email', '_pendentes_vale', '_ler_lista_vale', '_relatorio_nao_encontradas_vale'}
-CONSTANTES = {'VALE_URL_VERIFICACAO_PADRAO', 'OTP_TIMEOUT_S', 'OTP_EMAIL_INTERVALO_S', 'MAX_PAGINAS_VERIFICACAO', 'JANELA_NAO_RESPONDIDO_DIAS'}
+CONSTANTES = {'VALE_URL_VERIFICACAO_PADRAO', 'OTP_TIMEOUT_S', 'OTP_EMAIL_INTERVALO_S', 'JANELA_NAO_RESPONDIDO_DIAS'}
 
 
 class PilotoTest(unittest.TestCase):
@@ -92,7 +93,7 @@ class VerificacaoValeTest(BaseTemporaria):
               {'COTAÇÃO': '54268', 'VENCIMENTO': PAS_REAL, 'RESPOSTA': 'RASCUNHO', 'VENDEDOR': 'BIA'},
               {'COTAÇÃO': '290000', 'VENCIMENTO': PAS_REAL, 'RESPOSTA': ''}]          # do Coupa: não é alvo da Vale
 
-    def rodar(self, paginas, otp='123456', parada=False, email=None, config=None):
+    def rodar(self, paginas, otp='123456', parada=False, email=None, config=None, portal=None):
         relogio, emitidos = Relogio(), []
         ns = carregar(ARQ_VALE, CONSTANTES)
         ns = carregar(ARQ_VALE, METODOS, 'ValeScraper', time=relogio, By=By, csv=csv, os=os, datetime=datetime,
@@ -106,7 +107,7 @@ class VerificacaoValeTest(BaseTemporaria):
             emitidos.append((evento, dados))
             if evento == 'pedir_otp_usuario' and otp:
                 bot.otp_atual = otp          # alguém digitou o código no painel
-        bot.__dict__.update(driver=PortalVale(paginas), config=config or {}, NOME_ABA_ALVO='COTAÇÃO', solicitacao_parada=parada,
+        bot.__dict__.update(driver=(portal or PortalVale)(paginas), config={}, NOME_ABA_ALVO='COTAÇÃO', solicitacao_parada=parada,
                             db_eventos={n: {} for n in ('54328', '54291', '54268')}, sio=SimpleNamespace(emit=emit),
                             wait=SimpleNamespace(until=lambda cond: Celula()))
         modulo = SimpleNamespace(planilha_manager=self.manager,
@@ -117,7 +118,9 @@ class VerificacaoValeTest(BaseTemporaria):
                 raise email
             return email
         caixa = SimpleNamespace(buscar_codigo=buscar_codigo)
-        with patch.dict(sys.modules, planilha_manager=modulo, otp_email=caixa), patch.object(LOGGER, 'handle') as log,                 patch('eventos.registrar') as registrar:
+        with patch.dict(sys.modules, planilha_manager=modulo, otp_email=caixa), patch.object(LOGGER, 'handle') as log, \
+                patch('eventos.registrar') as registrar, \
+                patch.object(ambiente, 'ler_config', return_value=config or {}):
             bot.verificar_eventos()
         self.avisos = [c.args[0].getMessage() for c in log.call_args_list if c.args[0].levelname == 'WARNING']
         return bot, emitidos, registrar, relogio
@@ -154,13 +157,25 @@ class VerificacaoValeTest(BaseTemporaria):
         self.assertLess(relogio.agora - 1000, 200)            # 3 min, não trava
 
     def test_teto_de_paginas_proprio_da_vale(self):
-        # 20/10: 60 páginas de 15 linhas cortaram as 140 mais antigas; o teto do Coupa (90 linhas/página) não serve
-        self.assertGreaterEqual(carregar(ARQ_VALE, CONSTANTES)['MAX_PAGINAS_VERIFICACAO'], 200)
+        # 20/10: 60 páginas de 15 linhas cortaram as 140 mais antigas: teto próprio, editável no painel (padrão 60)
+        self.assertEqual(ambiente.paginas_verificacao('vale', {}), 60)
         paginas = [[LinhaVale('54328', '1')], [LinhaVale('54291', '1')]]
-        _, emitidos, _, _ = self.rodar(paginas, config={'verificacao_max_paginas': 1})       # chave do Coupa: ignorada
-        self.assertIn('em 2 página(s)', ' '.join(str(d) for _, d in emitidos))
-        _, emitidos, _, _ = self.rodar(paginas, config={'vale_verificacao_max_paginas': 1})
+        _, emitidos, _, _ = self.rodar(paginas, config={'coupa_verificacao_max_paginas': '1', 'verificacao_max_paginas': 1})
+        self.assertIn('em 2 página(s)', ' '.join(str(d) for _, d in emitidos))      # chaves do Coupa: ignoradas
+        _, emitidos, _, _ = self.rodar(paginas, config={'vale_verificacao_max_paginas': '1'})
         self.assertIn('em 1 página(s)', ' '.join(str(d) for _, d in emitidos))
+
+    def test_pagina_lenta_nao_e_fim_da_lista(self):
+        class PortalLento(PortalVale):
+            vazia_uma_vez = True
+            def find_elements(self, por, valor):
+                if self.atual == 1 and self.vazia_uma_vez:
+                    self.vazia_uma_vez = False
+                    return []                     # a página 2 ainda não desenhou
+                return super().find_elements(por, valor)
+        paginas = [[LinhaVale('54328', '1')], [LinhaVale('54291', '1')]]
+        _, emitidos, _, _ = self.rodar(paginas, portal=PortalLento)
+        self.assertIn('em 2 página(s)', ' '.join(str(d) for _, d in emitidos))
 
     def test_ninguem_no_painel_e_o_codigo_vem_do_email(self):
         bot, emitidos, registrar, relogio = self.rodar([[LinhaVale('54328', '1')]], otp=None, email='654321')

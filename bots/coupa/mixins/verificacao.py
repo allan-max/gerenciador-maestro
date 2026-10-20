@@ -50,7 +50,6 @@ if not logger.handlers:
     logger.addHandler(console_handler)
 
 
-MAX_PAGINAS_PADRAO = 60   # teto de segurança; CONFIG.json "verificacao_max_paginas" muda
 PASTA_RELATORIOS = Path(__file__).resolve().parents[3] / 'relatorios'
 JANELA_NAO_RESPONDIDO_DIAS = 7   # NÃO RESPONDIDO recente continua sendo conferido
 
@@ -63,7 +62,8 @@ class VerificacaoMixin:
         try:
             self.garantir_logado(self.EVENTS_URL)
             pendentes = self._pendentes_coupa()
-            max_paginas = int(getattr(self, 'config', {}).get('verificacao_max_paginas', MAX_PAGINAS_PADRAO))
+            import ambiente
+            max_paginas = ambiente.paginas_verificacao('coupa')   # CONFIG.json, editável no painel (padrão 60)
             logger.info(f" Verificando {len(pendentes)} cotações pendentes (até {max_paginas} páginas)...")
             lidos, ilegiveis, paginas, erro = self._ler_lista(pendentes, max_paginas)
 
@@ -98,10 +98,8 @@ class VerificacaoMixin:
                 # Página explícita, como na extração: sem ?page= o Coupa reabre a última página visitada (a extração
                 # para na 7 ou 8) e as cotações mais novas, das primeiras páginas, nunca eram lidas (20/10).
                 self.driver.get(f"{self.EVENTS_URL}?page={paginas + 1}")
-                try:
-                    WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
-                except Exception:
-                    logger.warning(f"    Página {paginas + 1}: tabela não carregou; encerrando a leitura.")
+                if not self._esperar_tabela(paginas + 1):
+                    logger.warning(f"    Página {paginas + 1}: tabela não carregou nem na segunda tentativa; encerrando a leitura.")
                     break
                 rows = self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
                 if not rows:
@@ -178,6 +176,18 @@ class VerificacaoMixin:
                          for r in self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr"))
         except (StaleElementReferenceException, NoSuchElementException):
             return None   # sessão caída e outros erros sobem: a verificação termina com erro
+
+    def _esperar_tabela(self, pagina):
+        """Coupa lento às vezes não entrega a página (20/10, página 27): recarrega uma vez antes de desistir."""
+        for tentativa in (1, 2):
+            try:
+                WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
+                return True
+            except Exception:
+                if tentativa == 1:
+                    logger.warning(f"    Página {pagina}: tabela não carregou; tentando de novo.")
+                    self.driver.get(f"{self.EVENTS_URL}?page={pagina}")
+        return False
 
     def _tem_proxima(self):
         try:
