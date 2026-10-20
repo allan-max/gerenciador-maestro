@@ -19,8 +19,8 @@ from test_planilha_persistencia import namespace as ns_manager
 
 RAIZ = Path(__file__).parent
 ARQ_VALE = RAIZ / 'bots/vale_bot.py'
-METODOS = {'verificar_eventos', '_esperar_otp', '_pendentes_vale', '_ler_lista_vale', '_relatorio_nao_encontradas_vale'}
-CONSTANTES = {'VALE_URL_VERIFICACAO_PADRAO', 'OTP_TIMEOUT_S', 'MAX_PAGINAS_VERIFICACAO', 'JANELA_NAO_RESPONDIDO_DIAS'}
+METODOS = {'verificar_eventos', '_esperar_otp', '_otp_do_email', '_pendentes_vale', '_ler_lista_vale', '_relatorio_nao_encontradas_vale'}
+CONSTANTES = {'VALE_URL_VERIFICACAO_PADRAO', 'OTP_TIMEOUT_S', 'OTP_EMAIL_INTERVALO_S', 'MAX_PAGINAS_VERIFICACAO', 'JANELA_NAO_RESPONDIDO_DIAS'}
 
 
 class PilotoTest(unittest.TestCase):
@@ -92,7 +92,7 @@ class VerificacaoValeTest(BaseTemporaria):
               {'COTAÇÃO': '54268', 'VENCIMENTO': PAS_REAL, 'RESPOSTA': 'RASCUNHO', 'VENDEDOR': 'BIA'},
               {'COTAÇÃO': '290000', 'VENCIMENTO': PAS_REAL, 'RESPOSTA': ''}]          # do Coupa: não é alvo da Vale
 
-    def rodar(self, paginas, otp='123456', parada=False):
+    def rodar(self, paginas, otp='123456', parada=False, email=None):
         relogio, emitidos = Relogio(), []
         ns = carregar(ARQ_VALE, CONSTANTES)
         ns = carregar(ARQ_VALE, METODOS, 'ValeScraper', time=relogio, By=By, csv=csv, os=os, datetime=datetime,
@@ -111,9 +111,15 @@ class VerificacaoValeTest(BaseTemporaria):
                             wait=SimpleNamespace(until=lambda cond: Celula()))
         modulo = SimpleNamespace(planilha_manager=self.manager,
                                  **{k: ns_manager[k] for k in ('status_atual', 'data_vencimento', 'RASCUNHO', 'NAO_RESPONDIDO')})
-        with patch.dict(sys.modules, planilha_manager=modulo), patch.object(LOGGER, 'handle'), \
-                patch('eventos.registrar') as registrar:
+        # email: código que "chega" na caixa (otp_email.py); uma exceção simula caixa fora do ar ou senha errada
+        def buscar_codigo(desde):
+            if isinstance(email, Exception):
+                raise email
+            return email
+        caixa = SimpleNamespace(buscar_codigo=buscar_codigo)
+        with patch.dict(sys.modules, planilha_manager=modulo, otp_email=caixa), patch.object(LOGGER, 'handle') as log,                 patch('eventos.registrar') as registrar:
             bot.verificar_eventos()
+        self.avisos = [c.args[0].getMessage() for c in log.call_args_list if c.args[0].levelname == 'WARNING']
         return bot, emitidos, registrar, relogio
 
     def test_aplica_as_regras_e_relata_as_nao_encontradas(self):
@@ -146,6 +152,19 @@ class VerificacaoValeTest(BaseTemporaria):
         registrar.assert_called_once()
         self.assertEqual(self.cota.read_bytes(), antes)
         self.assertLess(relogio.agora - 1000, 200)            # 3 min, não trava
+
+    def test_ninguem_no_painel_e_o_codigo_vem_do_email(self):
+        bot, emitidos, registrar, relogio = self.rodar([[LinhaVale('54328', '1')]], otp=None, email='654321')
+        self.assertTrue(emitidos[-1][1]['sucesso'])
+        self.assertEqual(bot.otp_atual, '654321')
+        self.assertLess(relogio.agora - 1000, 30)              # achou na primeira leitura (10 s)
+        self.assertIn('lido do e-mail', ' '.join(str(d) for _, d in emitidos))
+        self.assertNotIn('verificacao', [c.args[1] for c in registrar.call_args_list])   # não foi "pulada"
+
+    def test_email_fora_do_ar_avisa_uma_vez_e_o_painel_continua_valendo(self):
+        _, emitidos, _, _ = self.rodar([[LinhaVale('54328', '1')]], otp=None, email=OSError('imap fora'))
+        self.assertIn('OTP não informado', emitidos[-1][1]['erro'])   # ninguém digitou: pula como antes
+        self.assertEqual(sum('ler o OTP no e-mail' in a for a in self.avisos), 1)
 
 
 class FonteValeTest(unittest.TestCase):

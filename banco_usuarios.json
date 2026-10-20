@@ -15,7 +15,8 @@
         "token_recuperacao": null,
         "ultima_localizacao": "IP: 187.36.160.41, 172.71.146.140, 10.30.229.1 | Desconhecida",
         "ultimo_login": "06/04/2026 09:12:51",
-        "admin": false
+        "admin": false,
+        "vendedor": "MICHELI"
     },
     "vendas7@venturainformatica.com.br": {
         "senha": "ventura2026",
@@ -24,7 +25,8 @@
         "token_recuperacao": null,
         "ultima_localizacao": "IP: Desconhecida",
         "ultimo_login": "14/10/2026 10:05:40",
-        "admin": false
+        "admin": false,
+        "vendedor": "GUSTAVO"
     },
     "cadastro@venturainformatica.com.br": {
         "senha": "123456",

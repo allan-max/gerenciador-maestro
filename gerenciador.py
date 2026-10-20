@@ -330,6 +330,20 @@ def decifra_python(b64_texto, chave):
     except Exception:
         return None
 
+def _registrar_evento_linha_log(portal, linha_limpa):
+    """Analisa a linha do arquivo TXT com try/except para registrar erros ou fim de sessão no portal."""
+    try:
+        t = str(linha_limpa or '').strip()
+        if not t or 'Fechando modal' in t or 'Procurando bot' in t:
+            return
+        tl = t.lower()
+        if any(p in tl for p in ('[error]', '[critical]', 'traceback', 'exception', 'erro crítico', 'erro critico', 'erro na ', 'erro no ', 'erro ao ', 'falha:', 'falha no login', 'tempo esgotado!', 'invalid session id')):
+            eventos.registrar(portal, 'erro_log', 'erro', t[:200])
+        elif any(p in tl for p in ('sessão finalizada', 'sesso finalizada', 'aplicação finalizada', 'aplicao finalizada', 'extração concluída', 'extracao concluida', 'processamento concluído', 'processamento concluido')):
+            eventos.registrar(portal, 'sessao_finalizada', 'ok', t[:200])
+    except Exception as e:
+        logger.debug(f"Falha ao analisar linha de log ({portal}): {e}")
+
 def monitorar_log_me():
     global rodando_monitor_me, processo_me
     caminho_log = r"\\SERVIDOR2\Publico\ALLAN\Logs\mercadoeletronico.txt"
@@ -343,6 +357,7 @@ def monitorar_log_me():
 
                     # 1. Envia a linha para o mini-terminal do site
                     sio.emit('relatar_progresso_me', {'mensagem': linha_limpa})
+                    _registrar_evento_linha_log('me', linha_limpa)
 
                     # 2. Verifica se  a mensagem de finalizao
                     if "=== APLICAO FINALIZADA ===" in linha_limpa or "=== SESSO FINALIZADA ===" in linha_limpa:
@@ -387,6 +402,7 @@ def monitorar_log_findes():
 
                     # 1. Envia a linha normalmente para o mini-terminal do site
                     sio.emit('relatar_progresso_findes', {'mensagem': linha_limpa})
+                    _registrar_evento_linha_log('findes', linha_limpa)
 
                     # ========================================================
                     # 2. A MGICA DO COLECIONADOR: Filtra e junta os dados!
@@ -438,22 +454,27 @@ def monitorar_log_ariba():
                 linha = f.readline()
                 if linha and linha.strip():
                     sio.emit('relatar_progresso_ariba', {'mensagem': linha.strip()})
+                    _registrar_evento_linha_log('ariba', linha.strip())
                 else:
                     time.sleep(0.5)
     except Exception as e: 
         logger.error(f"Erro no monitor do Ariba: {e}")
 
+def _linha_do_robo(portal, linha):
+    """Linha nova do log do robo: vai para o painel preto e vira evento da Atividade quando for erro ou fim."""
+    sio.emit(f'relatar_progresso_{portal}', {'mensagem': linha})
+    _registrar_evento_linha_log(portal, linha)
+
 def monitorar_log_coupa():
     import log_robos
     log_robos.acompanhar(log_robos.caminho_log('log-coupa.txt'),
-                         lambda linha: sio.emit('relatar_progresso_coupa', {'mensagem': linha}),
+                         lambda linha: _linha_do_robo('coupa', linha),
                          lambda: rodando_monitor_coupa)
-
 
 def monitorar_log_vale():
     import log_robos
     log_robos.acompanhar(log_robos.caminho_log('log-vale.txt'),
-                         lambda linha: sio.emit('relatar_progresso_vale', {'mensagem': linha}),
+                         lambda linha: _linha_do_robo('vale', linha),
                          lambda: rodando_monitor_vale)
 
 def monitorar_pastas_impressao():
@@ -726,6 +747,7 @@ def comando_para_robo(dados):
     if portal == 'me':
         if modo == 'extrair':
             rodando_monitor_me = True
+            eventos.registrar('me', 'ciclo', 'info', 'Extração do Mercado Eletrônico iniciada')
             sio.emit('sincronizar_estado_me', {'status': 'extraindo'})
             threading.Thread(target=monitorar_log_me, daemon=True).start()
             caminho_bat = CONFIG_GLOBAL.get("caminho_bat_me", r"C:\Users\Administrator\Desktop\mercadoeletronico.bat")
@@ -742,6 +764,7 @@ def comando_para_robo(dados):
             prioridades_str = dados.get('prioridades', '').strip()
             if not prioridades_str: prioridades_str = "1" 
 
+            eventos.registrar('ariba', 'ciclo', 'info', f'Robô SAP Ariba iniciado (prioridades: {prioridades_str})')
             sio.emit('sincronizar_estado_ariba', {'status': 'logando'})
             sio.emit('relatar_progresso_ariba', {'mensagem': '?? Comando recebido! Preparando o Ariba...'})
 
@@ -813,6 +836,7 @@ WshShell.SendKeys "~"
                     bot_ariba.wait()
                 except Exception as e:
                     logger.error(f"Erro na execuo do Ariba: {e}")
+                    eventos.registrar('ariba', 'ciclo', 'erro', f'Erro na execução do SAP Ariba: {e}')
                     sio.emit('relatar_progresso_ariba', {'mensagem': f'Erro ao iniciar: {e}'})
                 finally:
                     rodando_monitor_ariba = False
@@ -993,6 +1017,7 @@ WshShell.SendKeys "~"
 
                     # O Python fica  espera que a janela feche
                     bot_findes.wait()
+                    eventos.registrar('findes', 'ciclo', 'ok', 'Módulo Findes concluído com sucesso', ref=eventos_str or None)
 
                 except Exception as e:
                     logger.error(f"Erro na execuo do Findes: {e}")
@@ -1654,6 +1679,82 @@ def comando_eventos(dados):
         sio.emit('retorno_eventos', {'sucesso': True, 'resultado': resultado, 'clientId': dados.get('clientId')})
     except Exception as e:
         sio.emit('retorno_eventos', {'sucesso': False, 'erro': str(e), 'clientId': dados.get('clientId')})
+
+MAPA_LOGS_TXT = {
+    'coupa': ('Robô Coupa', 'log-coupa.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\log-coupa.txt']),
+    'vale': ('Robô Vale', 'log-vale.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\log-vale.txt']),
+    'me': ('Mercado Eletrônico', 'mercadoeletronico.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\mercadoeletronico.txt']),
+    'ariba': ('Robô SAP Ariba', 'aribasourcing.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\aribasourcing.txt']),
+    'findes': ('Robô Findes', 'findes.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\findes.txt', r'\\SERVIDOR2\Publico\ALLAN\Logs\log-findes.txt']),
+    'gerenciador': ('Gerenciador Central', 'gerenciador.log', [os.path.join('logs', 'gerenciador.log'), r'\\SERVIDOR2\Publico\ALLAN\Logs\console-log.txt']),
+    'console_produtos': ('API Cadastro de Produtos', 'console-log.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\console-log.txt']),
+    'zapzap': ('Bot WhatsApp / Gateway', 'log_zapzap.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\log_zapzap.txt']),
+    'acessos': ('Registro de Acessos', 'registro_acessos.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\registro_acessos.txt']),
+}
+
+@sio.on('comando_ler_log_txt')
+def comando_ler_log_txt(dados):
+    r"""Lê as últimas linhas de um arquivo .txt em \\SERVIDOR2\Publico\ALLAN\Logs (só leitura)."""
+    dados = dados if isinstance(dados, dict) else {}
+    chave = str(dados.get('id') or dados.get('modulo') or '').strip().lower()
+    max_linhas = max(20, min(int(dados.get('linhas') or 400), 3000))
+    pasta_rede = r'\\SERVIDOR2\Publico\ALLAN\Logs'
+    info = MAPA_LOGS_TXT.get(chave)
+    if not info:
+        for k, v in MAPA_LOGS_TXT.items():
+            if v[1].lower() == chave:
+                chave, info = k, v
+                break
+    if not info and os.path.isdir(pasta_rede):
+        try:
+            for nome_arq in os.listdir(pasta_rede):
+                baixo = nome_arq.lower()
+                if not (baixo.endswith('.txt') or baixo.endswith('.log')):
+                    continue
+                sem_ext = os.path.splitext(baixo)[0]
+                slug = re.sub(r'[^a-z0-9]+', '_', re.sub(r'^(log[-_\s]*|robo[-_\s]*)', '', sem_ext)).strip('_')
+                if chave in (baixo, sem_ext, slug, f'robo_{slug}'):
+                    caminho_auto = os.path.join(pasta_rede, nome_arq)
+                    if os.path.isfile(caminho_auto):
+                        titulo = f"Robô {slug.replace('_', ' ').title()}" if slug else nome_arq
+                        info = (titulo, nome_arq, [caminho_auto])
+                        break
+        except Exception:
+            pass
+    if not info:
+        sio.emit('retorno_ler_log_txt', {'sucesso': False, 'erro': f'Log não mapeado: {chave}', 'clientId': dados.get('clientId'), 'requestId': dados.get('requestId')})
+        return
+    nome, arq_padrao, caminhos = info
+    caminho = next((c for c in caminhos if os.path.isfile(c)), None)
+    if not caminho:
+        sio.emit('retorno_ler_log_txt', {'sucesso': False, 'id': chave, 'nome': nome, 'arquivo': arq_padrao, 'caminho': caminhos[0], 'erro': f'Arquivo {arq_padrao} não encontrado em {caminhos[0]}', 'clientId': dados.get('clientId'), 'requestId': dados.get('requestId')})
+        return
+    try:
+        st = os.stat(caminho)
+        tam = st.st_size
+        ler_bytes = min(tam, max(32768, max_linhas * 350))
+        with open(caminho, 'rb') as f:
+            if tam > ler_bytes:
+                f.seek(tam - ler_bytes)
+            bloco = f.read(ler_bytes)
+        brutas = bloco.splitlines()
+        if tam > ler_bytes and len(brutas) > 1:
+            brutas = brutas[1:]
+        linhas = []
+        for b in brutas[-max_linhas:]:
+            try:
+                linhas.append(b.decode('utf-8'))
+            except UnicodeDecodeError:
+                linhas.append(b.decode('latin-1', errors='replace'))
+        sio.emit('retorno_ler_log_txt', {
+            'sucesso': True, 'id': chave, 'modulo': chave, 'nome': nome,
+            'arquivo': os.path.basename(caminho), 'caminho': caminho,
+            'tamanho': tam, 'modificado_em': datetime.fromtimestamp(st.st_mtime).isoformat(),
+            'truncado': tam > ler_bytes or len(brutas) > max_linhas, 'linhas': linhas,
+            'clientId': dados.get('clientId'), 'requestId': dados.get('requestId'),
+        })
+    except Exception as e:
+        sio.emit('retorno_ler_log_txt', {'sucesso': False, 'id': chave, 'nome': nome, 'arquivo': os.path.basename(caminho), 'caminho': caminho, 'erro': str(e), 'clientId': dados.get('clientId'), 'requestId': dados.get('requestId')})
 
 @sio.on('comando_apagar_linha')
 def comando_apagar_linha(dados):
