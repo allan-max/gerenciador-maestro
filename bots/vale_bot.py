@@ -74,7 +74,7 @@ class LoginTimeout(Exception):
 VALE_URL_VERIFICACAO_PADRAO = "https://valebasemetals.coupahost.com/quotes/external_responses/824e8a0982de566c7bebeb7315a6bd89b533033a175c5acddf970e59ccc1e3b7954b1ce5107982e6/terms?quote_request_id=6213&source=event_invitation"   # CONFIG.json "vale_url_verificacao" muda
 OTP_TIMEOUT_S = 180
 OTP_EMAIL_INTERVALO_S = 10   # de quanto em quanto tempo procura o código na caixa (otp_email.py)
-MAX_PAGINAS_VERIFICACAO = 60   # CONFIG.json "verificacao_max_paginas" muda
+MAX_PAGINAS_VERIFICACAO = 200  # 15 linhas por página: 60 cortava as mais antigas (20/10). CONFIG.json "vale_verificacao_max_paginas" muda
 JANELA_NAO_RESPONDIDO_DIAS = 7   # NÃO RESPONDIDO recente continua sendo conferido
 
 
@@ -2384,7 +2384,7 @@ Vale Bot
         """{número: respostas} (None = célula ilegível). Se o portal falhar no meio, devolve o que já leu e o erro."""
         vistos, ilegiveis, paginas = {}, 0, 0
         ordem = lambda q: -1 if q is None else q   # número repetido: vale a maior quantidade lida
-        max_paginas = int(self.config.get('verificacao_max_paginas', MAX_PAGINAS_VERIFICACAO))
+        max_paginas = int(self.config.get('vale_verificacao_max_paginas', MAX_PAGINAS_VERIFICACAO))   # a do Coupa não vale aqui
         try:
             while paginas < max_paginas:
                 if getattr(self, 'solicitacao_parada', False):

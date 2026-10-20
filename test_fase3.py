@@ -92,7 +92,7 @@ class VerificacaoValeTest(BaseTemporaria):
               {'COTAÇÃO': '54268', 'VENCIMENTO': PAS_REAL, 'RESPOSTA': 'RASCUNHO', 'VENDEDOR': 'BIA'},
               {'COTAÇÃO': '290000', 'VENCIMENTO': PAS_REAL, 'RESPOSTA': ''}]          # do Coupa: não é alvo da Vale
 
-    def rodar(self, paginas, otp='123456', parada=False, email=None):
+    def rodar(self, paginas, otp='123456', parada=False, email=None, config=None):
         relogio, emitidos = Relogio(), []
         ns = carregar(ARQ_VALE, CONSTANTES)
         ns = carregar(ARQ_VALE, METODOS, 'ValeScraper', time=relogio, By=By, csv=csv, os=os, datetime=datetime,
@@ -106,7 +106,7 @@ class VerificacaoValeTest(BaseTemporaria):
             emitidos.append((evento, dados))
             if evento == 'pedir_otp_usuario' and otp:
                 bot.otp_atual = otp          # alguém digitou o código no painel
-        bot.__dict__.update(driver=PortalVale(paginas), config={}, NOME_ABA_ALVO='COTAÇÃO', solicitacao_parada=parada,
+        bot.__dict__.update(driver=PortalVale(paginas), config=config or {}, NOME_ABA_ALVO='COTAÇÃO', solicitacao_parada=parada,
                             db_eventos={n: {} for n in ('54328', '54291', '54268')}, sio=SimpleNamespace(emit=emit),
                             wait=SimpleNamespace(until=lambda cond: Celula()))
         modulo = SimpleNamespace(planilha_manager=self.manager,
@@ -152,6 +152,15 @@ class VerificacaoValeTest(BaseTemporaria):
         registrar.assert_called_once()
         self.assertEqual(self.cota.read_bytes(), antes)
         self.assertLess(relogio.agora - 1000, 200)            # 3 min, não trava
+
+    def test_teto_de_paginas_proprio_da_vale(self):
+        # 20/10: 60 páginas de 15 linhas cortaram as 140 mais antigas; o teto do Coupa (90 linhas/página) não serve
+        self.assertGreaterEqual(carregar(ARQ_VALE, CONSTANTES)['MAX_PAGINAS_VERIFICACAO'], 200)
+        paginas = [[LinhaVale('54328', '1')], [LinhaVale('54291', '1')]]
+        _, emitidos, _, _ = self.rodar(paginas, config={'verificacao_max_paginas': 1})       # chave do Coupa: ignorada
+        self.assertIn('em 2 página(s)', ' '.join(str(d) for _, d in emitidos))
+        _, emitidos, _, _ = self.rodar(paginas, config={'vale_verificacao_max_paginas': 1})
+        self.assertIn('em 1 página(s)', ' '.join(str(d) for _, d in emitidos))
 
     def test_ninguem_no_painel_e_o_codigo_vem_do_email(self):
         bot, emitidos, registrar, relogio = self.rodar([[LinhaVale('54328', '1')]], otp=None, email='654321')
