@@ -23,7 +23,7 @@ ARQUIVO = None   # desligado até ativar(): os testes rodam na pasta de produç�
 DIAS = 7
 MAX_EVENTOS = 500
 TAM_RESUMO = 140
-SERVICOS = {'gerenciador', 'coupa', 'vale'}
+SERVICOS = {'gerenciador', 'coupa', 'vale', 'ariba', 'me', 'findes', 'impressao'}
 NIVEIS = {'ok', 'info', 'aviso', 'erro'}
 
 _trava = threading.Lock()
