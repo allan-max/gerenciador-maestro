@@ -82,6 +82,8 @@ class VerificacaoMixin:
             resumo = (f"Verificação: {len(vistos)} eventos lidos em {paginas} página(s), {achadas}/{len(pendentes)} pendentes encontradas, "
                       f"{len(mudancas)} status alterados, {ilegiveis} linhas ilegíveis")
             logger.info(f"✅ {resumo}" + (f". Não encontradas: {relatorio}" if relatorio else ""))
+            import eventos
+            eventos.registrar('coupa', 'verificacao_concluida', 'ok', resumo, detalhe={'encontradas': achadas, 'total': len(pendentes), 'mudancas': len(mudancas), 'paginas': paginas})
             self.sio.emit('relatar_progresso_coupa', {'mensagem': f"✅ {resumo}"})
             self.sio.emit('tarefa_concluida', {'evento': 'Verificação de Status', 'sucesso': True})
 

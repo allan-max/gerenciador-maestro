@@ -17,6 +17,7 @@ import sys
 import threading
 import traceback
 import ambiente
+import log_robos
 import csv
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
@@ -47,19 +48,7 @@ logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 
 # 👇 GARANTE A GRAVAÇÃO SEM APAGAR O HISTÓRICO 👇
-CAMINHO_LOG_VALE = r"\\SERVIDOR2\Publico\ALLAN\Logs\log-vale.txt"
-os.makedirs(os.path.dirname(CAMINHO_LOG_VALE), exist_ok=True) 
-
-# O mode='a' significa APPEND (Adicionar no fim, sem apagar o que já existe)
-fh = logging.FileHandler(CAMINHO_LOG_VALE, mode='a', encoding='utf-8')
-fh.setFormatter(formatter)
-
-ch = logging.StreamHandler(sys.stdout)
-ch.setFormatter(formatter)
-
-if not logger.handlers:
-    logger.addHandler(ch)
-    logger.addHandler(fh) # Adiciona o gravador de TXT
+log_robos.configurar(logger, 'log-vale.txt')   # data, máquina e rotação; sem o servidor, só console
 
 # Login: limite total e limite do captcha (antes o laço podia rodar para sempre)
 LOGIN_TIMEOUT_S = 600
@@ -505,6 +494,7 @@ class ValeScraper:
             logger.error(msg)
             self.sio.emit('tarefa_concluida', {'evento': 'Login do Robo', 'sucesso': False, 'erro': msg})
             return
+        log_robos.configurar(logger, 'log-vale.txt')   # o servidor podia estar fora quando o módulo foi importado
         logger.info(" INICIANDO ROBÃ” (FASE 1: PREPARAÃ‡ÃƒO E LOGIN)...")
         self.verificar_acesso_pastas()
         self.carregar_banco_dados()
@@ -2346,6 +2336,8 @@ Vale Bot
             resumo = (f"Verificação Vale: {len(vistos)} eventos lidos em {paginas} página(s), {achadas}/{len(pendentes)} "
                       f"pendentes encontradas, {len(mudancas)} status alterados, {ilegiveis} linhas ilegíveis")
             logger.info(f"✅ {resumo}" + (f". Não encontradas: {relatorio}" if relatorio else ""))
+            import eventos
+            eventos.registrar('vale', 'verificacao_concluida', 'ok', resumo, detalhe={'encontradas': achadas, 'total': len(pendentes), 'mudancas': len(mudancas), 'paginas': paginas})
             self.sio.emit('relatar_progresso_vale', {'mensagem': f"✅ {resumo}"})
             self.sio.emit('tarefa_concluida', {'evento': 'Verificação Vale', 'sucesso': True})
 
