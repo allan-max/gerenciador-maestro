@@ -97,6 +97,7 @@ class AutenticacaoMixin:
             time.sleep(0.3)
             if time.time() > limite_login:
                 self.solicitacao_parada = True   # quem engolir o erro ainda para o ciclo no próximo evento
+                self.motivo_abandono = 'Login não concluído (captcha ou portal fora do ar).'
                 raise LoginTimeout(f"LOGIN_TIMEOUT: login não concluiu em {LOGIN_TIMEOUT_S // 60} min")
             if len(self.driver.window_handles) > 1:
                 self.driver.switch_to.window(self.driver.window_handles[-1])
@@ -278,6 +279,7 @@ class AutenticacaoMixin:
 
             except LoginTimeout:
                 self.solicitacao_parada = True
+                self.motivo_abandono = 'Login não concluído (captcha ou portal fora do ar).'
                 raise
             except Exception as e:
                 # Elementos somem e recarregam o tempo todo no login: registra só quando o erro muda

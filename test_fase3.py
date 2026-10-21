@@ -36,7 +36,7 @@ class PilotoTest(unittest.TestCase):
     def test_ciclo_da_vale_chama_verificar(self):
         fonte = (RAIZ / 'gerenciador.py').read_text(encoding='utf-8')
         trecho = fonte[fonte.index('if deve_verificar_vale(datetime.now(), ultimo_dia_verificacao_vale):'):][:600]
-        self.assertIn("sio.emit('comando_direto', {'modo': 'verificar', 'portal': 'vale'})", trecho)
+        self.assertIn("executar_tarefa('vale', 'verificar')", trecho)
 
 
 class Celula(SimpleNamespace):

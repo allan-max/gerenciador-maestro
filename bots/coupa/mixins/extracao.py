@@ -48,6 +48,11 @@ if not logger.handlers:
     logger.addHandler(console_handler)
 
 
+# Portal instável (docs/melhorias-bots, fase 4): 3 'Oops' seguidos = pausa; depois de 3 pausas, abandona o ciclo
+OOPS_POR_PAUSA = 3
+PAUSA_OOPS_S = 600
+MAX_PAUSAS_OOPS = 3
+
 class ExtracaoMixin:
     def _obter_novo_link_evento(self, target_num):
         logger.info(f"🔍 Buscando novo link para o evento {target_num} no painel...")
@@ -101,6 +106,7 @@ class ExtracaoMixin:
                 
                 if self._verificar_tela_erro():
                     logger.warning(f"⚠️ Tela 'Oops!' detectada no evento {num}. Iniciando re-login forçado...")
+                    if self._pausa_por_oops(): return "SKIPPED"
                     
                     # 1. Volta ao link inicial e faz o login de novo
                     self.fazer_login_hibrido() 
@@ -119,6 +125,7 @@ class ExtracaoMixin:
                     # 4. O 'continue' faz o robô tentar o 'self.driver.get(url)' novamente (agora com o link novo se encontrado)
                     continue 
                 else:
+                    self.oops_seguidos = 0
                     sucesso_carregamento = True
                     break
                     
@@ -554,10 +561,28 @@ class ExtracaoMixin:
             except: pass
             return None
     
+    def _pausa_por_oops(self):
+        """Conta telas 'Oops' seguidas. A cada OOPS_POR_PAUSA pausa PAUSA_OOPS_S; passou de MAX_PAUSAS_OOPS,
+        abandona o ciclo (liga a parada e guarda o motivo). Devolve True quando é para parar de tentar."""
+        self.oops_seguidos = getattr(self, 'oops_seguidos', 0) + 1
+        if self.oops_seguidos % OOPS_POR_PAUSA:
+            return False
+        pausa = self.oops_seguidos // OOPS_POR_PAUSA
+        if pausa > MAX_PAUSAS_OOPS:
+            self.motivo_abandono = f"Portal instável: {self.oops_seguidos} telas 'Oops' seguidas; ciclo abandonado."
+            logger.error(self.motivo_abandono)
+            self.solicitacao_parada = True
+            return True
+        logger.warning(f"{self.oops_seguidos} telas 'Oops' seguidas: pausa de {PAUSA_OOPS_S // 60} min ({pausa}/{MAX_PAUSAS_OOPS}).")
+        fim = time.time() + PAUSA_OOPS_S
+        while time.time() < fim and not self.solicitacao_parada:
+            time.sleep(5)
+        return self.solicitacao_parada
+
     def varrer_painel_eventos(self):
         logger.info("\n--- INICIANDO VARREDURA DE EVENTOS ---")
         curr = 1
-        self.solicitacao_parada = False 
+        self.oops_seguidos = 0   # a parada é zerada ao iniciar a tarefa; aqui ela se perdia no aquecimento
         
         self.relatorio_email_stats = {
             'total_cotacoes': 0,
@@ -702,7 +727,8 @@ class ExtracaoMixin:
             
             logger.info("Paragem/Extração concluída! Ficheiros Word e Excel guardados com sucesso.")
             self.enviar_relatorio_email()
-            self.sio.emit('tarefa_concluida', {'evento': 'Lote de Extração', 'sucesso': True})
+            motivo = getattr(self, 'motivo_abandono', None)   # abandonado (Oops/login) não é sucesso
+            self.sio.emit('tarefa_concluida', {'evento': 'Lote de Extração', 'sucesso': not motivo, **({'erro': motivo} if motivo else {})})
 
         except Exception as e:
             logger.error(f" Erro Crítico na varredura: {e}")

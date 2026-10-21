@@ -123,6 +123,7 @@ class CoupaScraper(UtilitariosMixin, Banco_dadosMixin, PlanilhasMixin, Autentica
             return
         try:
             self.solicitacao_parada = False # Reset before ANY task starts!
+            self.motivo_abandono = None
             # 👇 2. FLUXO NORMAL DE TRABALHO 👇
             if modo not in ["responder", "extrair_pedidos"]:
                 self.navegacao_aquecimento()
