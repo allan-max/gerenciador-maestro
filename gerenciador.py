@@ -17,6 +17,8 @@ import uuid
 from datetime import datetime
 import subprocess
 import glob
+import html
+import re
 import shutil
 import unicodedata
 from dotenv import load_dotenv, dotenv_values
@@ -112,6 +114,7 @@ else:
     CONFIG_GLOBAL["caminho_backups"] = r"\\SERVIDOR2\Publico\ALLAN\database\backups_excel"
 
 import eventos
+import seguranca
 if __name__ == '__main__':
     eventos.ativar()   # só o gerenciador de verdade grava eventos; testes importam sem gravar
     # Dois gerenciadores na mesma base brigam pelos JSONs (13-14/10: 790 gravações recusadas)
@@ -314,19 +317,23 @@ def salvar_usuarios(usuarios):
 
 @sio.on('registrar_usuario')
 def registrar_usuario(dados):
-    email = dados.get('email', '').lower()
+    email = str(dados.get('email') or '').strip().lower()
     senha = dados.get('senha')
     ip_real = dados.get('ip_real', 'Desconhecida')
     client_id = dados.get('clientId')
 
-    # ?? REGRA: Apenas domnio especfico
-    if not email.endswith('@venturainformatica.com.br'):
+    # ?? REGRA: Apenas domnio especfico (um endereço só: "x@fora.com@venturainformatica.com.br" não passa)
+    if not seguranca.email_ventura(email):
         logger.warning(f"? Domnio invlido: {email}")
         sio.emit('resposta_cadastro', {
             'sucesso': False, 
             'erro': 'Utilize o seu e-mail @venturainformatica.com.br',
             'clientId': client_id
         })
+        return
+
+    if not seguranca.senha_valida(senha):
+        sio.emit('resposta_cadastro', {'sucesso': False, 'erro': f'A senha precisa ter pelo menos {seguranca.SENHA_MIN} caracteres.', 'clientId': client_id})
         return
 
     usuarios = carregar_usuarios()
@@ -336,7 +343,7 @@ def registrar_usuario(dados):
 
     token = str(uuid.uuid4())
     usuarios[email] = {
-        "senha": senha,
+        "senha": seguranca.gerar_hash(senha),
         "verificado": False, # ??? Fica False at clicar no link
         "token_verificacao": token,
         "token_recuperacao": None,
@@ -603,9 +610,16 @@ def carregar_usuarios():
 @sio.on("validar_login")
 def validar_login(dados):
     usuarios = carregar_usuarios()
-    email, senha, cid = dados.get('user'), dados.get('pass'), dados.get('clientId')
+    email, senha, cid = str(dados.get('user') or '').strip().lower(), dados.get('pass'), dados.get('clientId')
 
-    if email in usuarios and str(usuarios[email]['senha']) == str(senha):
+    if email in usuarios and seguranca.conferir_senha(usuarios[email].get('senha'), senha):
+        if not seguranca.eh_hash(usuarios[email].get('senha')):
+            # conta antiga com senha em texto puro: troca pelo hash no primeiro login certo
+            usuarios[email]['senha'] = seguranca.gerar_hash(senha)
+            try:
+                salvar_usuarios(usuarios)
+            except Exception as e:
+                logger.error(f"Falha ao gravar o hash da senha de {email}: {e}")
 
         # ?? TRAVA DE E-MAIL NO VERIFICADO
         if not usuarios[email].get('verificado', False):
@@ -637,7 +651,12 @@ def pedir_dados_dev_seguro(dados):
 
     # 1. Tenta abrir a caixa com a chave mestre (Se falhar, a senha que o Admin digitou estava errada)
     # IMPORTANTE: A chave mestre do desenvolvedor deve estar no seu .env ou ser uma constante
-    chave_dev = os.getenv("DEV_MASTER_TOKEN", "123456") 
+    chave_dev = os.getenv("DEV_MASTER_TOKEN") or ""
+    if not chave_dev:
+        # sem chave configurada o painel fica fechado (antes caía numa chave padrão conhecida)
+        logger.warning("Painel dev pedido, mas DEV_MASTER_TOKEN não está configurado no .env")
+        sio.emit('resposta_painel_dev_cifrado', {'payload': False, 'clientId': client_id})
+        return
 
     comando_json = decifra_python(payload_cifrado, chave_dev)
 
@@ -647,11 +666,8 @@ def pedir_dados_dev_seguro(dados):
         return
 
     # 2. A senha estava certa! Prepara a lista de usurios
-    usuarios = carregar_usuarios()
-
-    # Atualiza quem est online no momento
-    for email in usuarios:
-        usuarios[email]['online'] = (email in online_users)
+    # Senha e tokens nunca saem do servidor: o painel só mostra perfil, acesso e quem está online
+    usuarios = seguranca.usuarios_sem_segredos(carregar_usuarios(), online_users)
 
     # Prepara o pacote final
     pacote = {
@@ -748,11 +764,14 @@ def processar_nova_senha(dados):
     if not token or not nova_senha:
         sio.emit('resultado_nova_senha', {'sucesso': False, 'erro': 'Link invalido ou expirado.', 'clientId': client_id})
         return
+    if not seguranca.senha_valida(nova_senha):
+        sio.emit('resultado_nova_senha', {'sucesso': False, 'erro': f'A senha precisa ter pelo menos {seguranca.SENHA_MIN} caracteres.', 'clientId': client_id})
+        return
 
     sucesso = False
     for email, info in usuarios.items():
         if _token_recuperacao_valido(info, token):
-            info['senha'] = nova_senha
+            info['senha'] = seguranca.gerar_hash(nova_senha)
             info['token_recuperacao'] = None
             info.pop('token_recuperacao_expira', None)
             sucesso = True
@@ -826,8 +845,13 @@ def comando_para_robo(dados):
 
     elif portal == 'ariba':
         if modo == 'ligar_robo':
-            prioridades_str = dados.get('prioridades', '').strip()
-            if not prioridades_str: prioridades_str = "1" 
+            try:
+                # vai para o VBScript que digita na janela: só números (botões de empresa do portal)
+                prioridades_str = seguranca.prioridades_ariba(dados.get('prioridades'))
+            except ValueError as e:
+                sio.emit('relatar_progresso_ariba', {'mensagem': f'Comando recusado: {e}'})
+                sio.emit('sincronizar_estado_ariba', {'status': 'desligado'})
+                return
 
             eventos.registrar('ariba', 'ciclo', 'info', f'Robô SAP Ariba iniciado (prioridades: {prioridades_str})')
             sio.emit('sincronizar_estado_ariba', {'status': 'logando'})
@@ -1007,7 +1031,14 @@ WshShell.SendKeys "~"
     # ========================================================
     elif portal == 'findes':
         if modo == 'ligar_robo':
-            eventos_str = dados.get('evento', '')
+            try:
+                # vai para o VBScript que digita na janela: recusa o que poderia sair da string
+                eventos_lista = seguranca.eventos_findes(dados.get('evento'))
+                caminho_findes_vbs = seguranca.texto_vbs(CONFIG_GLOBAL.get("caminho_findes", r"C:\Users\Administrator\Desktop\FINDES"))
+            except ValueError as e:
+                sio.emit('relatar_progresso_findes', {'mensagem': f'Comando recusado: {e}', 'comando_interno': 'desligar_botoes'})
+                return
+            eventos_str = ', '.join(eventos_lista)
             sio.emit('relatar_progresso_findes', {'mensagem': f"?? Iniciando Mdulo .NET Findes para os eventos: {eventos_str}"})
 
             def run_findes():
@@ -1025,7 +1056,6 @@ WshShell.SendKeys "~"
                     sio.emit('relatar_progresso_findes', {'mensagem': '?? Fantasma assumiu o teclado! Preparando ambiente...'})
 
                     # ?? USANDO O SMBOLO '~' QUE  O 'ENTER' INFALVEL DO VBSCRIPT ??
-                    caminho_findes_local = CONFIG_GLOBAL.get("caminho_findes", r"C:\Users\Administrator\Desktop\FINDES")
                     vbs_code = f"""
 Set WshShell = WScript.CreateObject("WScript.Shell")
 WScript.Sleep 2000 
@@ -1039,7 +1069,7 @@ Next
 WScript.Sleep 800
 
 ' --- PASSO 1: ENTRAR NA PASTA ---
-WshShell.SendKeys "cd {caminho_findes_local}"
+WshShell.SendKeys "cd {caminho_findes_vbs}"
 WScript.Sleep 500
 WshShell.SendKeys "~"
 WScript.Sleep 1500
@@ -1059,9 +1089,7 @@ WshShell.SendKeys "~"
 WScript.Sleep 10000
 """
                     # --- PASSO 4: DIGITAR OS EVENTOS E SAIR ---
-                    if eventos_str:
-                        eventos_lista = [e.strip() for e in eventos_str.split(',') if e.strip()]
-
+                    if eventos_lista:
                         for evento in eventos_lista:
                             vbs_code += f"""
 WshShell.SendKeys "{evento}"
@@ -1205,12 +1233,21 @@ def connect():
 def comando_imprimir(dados):
     portal = dados.get('portal')
     impressora = dados.get('impressora')
+    try:
+        if portal not in ('me', 'coupa', 'vale', 'ariba'):
+            raise ValueError(f'Portal de impressão desconhecido: {portal}')
+        seguranca.nome_impressora(impressora)
+    except ValueError as e:
+        sio.emit('relatar_progresso', {'mensagem': f"Impressão recusada: {e}"})
+        sio.emit('tarefa_concluida', {'evento': 'Impresso Lote', 'sucesso': False, 'erro': str(e), 'portal': portal})
+        return
     sio.emit('relatar_progresso', {'mensagem': f"??? A preparar impressão no portal {portal.upper()}..."})
 
     def job_imprimir():
         try:
             # 1. Define a impressora padro do Windows
-            subprocess.run(f'RUNDLL32 PRINTUI.DLL,PrintUIEntry /y /n "{impressora}"', shell=True)
+            # lista de argumentos, sem shell: o nome da impressora nunca vira comando
+            subprocess.run(['RUNDLL32', 'PRINTUI.DLL,PrintUIEntry', '/y', '/n', impressora])
             time.sleep(2)
 
             arquivos_encontrados = []
@@ -1370,7 +1407,7 @@ def comando_ler_excel_dashboard(dados):
             try: data_fim = datetime.strptime(filtros['dataFim'], '%Y-%m-%d').replace(hour=23, minute=59, second=59)
             except: pass
 
-        from planilha_manager import planilha_manager
+        from planilha_manager import planilha_manager, data_vencimento
         planilha_manager.iniciar()
 
         hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1385,12 +1422,9 @@ def comando_ler_excel_dashboard(dados):
 
             vencimento = row.get("VENCIMENTO", "")
 
-            data_venc = None
-            if isinstance(vencimento, str):
-                try: data_venc = datetime.strptime(vencimento.strip(), '%m/%d/%Y')
-                except:
-                    try: data_venc = datetime.strptime(vencimento.strip(), '%d/%m/%Y')
-                    except: pass
+            # Os robôs gravam DD/MM/AAAA; antes tentava MM/DD primeiro e 03/04 virava 4 de março nos filtros
+            d = data_vencimento(vencimento)
+            data_venc = datetime(d.year, d.month, d.day) if d else None
 
             if data_venc:
                 if data_inicio and data_venc < data_inicio: continue
@@ -1464,11 +1498,12 @@ def comando_ler_excel_dashboard(dados):
 def comando_registrar_vendedor_cotacao(dados):
 
     client_id = dados.get('clientId')
+    audit_id = dados.get('audit_id')   # o portal fecha o registro da Auditoria com ele
     vendedor = dados.get('vendedor', '').strip()
     cotacoes_raw = dados.get('cotacoes', '')
 
     if not vendedor or not cotacoes_raw:
-        sio.emit('retorno_registro_vendedor_cotacao', {'sucesso': False, 'erro': 'Vendedor ou cotaes vazias', 'clientId': client_id})
+        sio.emit('retorno_registro_vendedor_cotacao', {'sucesso': False, 'erro': 'Vendedor ou cotaes vazias', 'clientId': client_id, 'audit_id': audit_id})
         return
 
     import re
@@ -1476,7 +1511,7 @@ def comando_registrar_vendedor_cotacao(dados):
     lista_cotacoes = [c.strip() for c in re.split(r'[,\s]+', cotacoes_raw) if c.strip()]
 
     if not lista_cotacoes:
-        sio.emit('retorno_registro_vendedor_cotacao', {'sucesso': False, 'erro': 'Nenhuma cotação vlida encontrada', 'clientId': client_id})
+        sio.emit('retorno_registro_vendedor_cotacao', {'sucesso': False, 'erro': 'Nenhuma cotação vlida encontrada', 'clientId': client_id, 'audit_id': audit_id})
         return
 
     caminho_excel = CONFIG_GLOBAL.get("caminho_excel", r"\\SERVIDOR2\Publico\PLANILHA DE CONTROLE VALE - ESTAGIARIOS (copia 1).xlsx")
@@ -1565,39 +1600,40 @@ def comando_registrar_vendedor_cotacao(dados):
                         pass
 
             if encontradas_set:
-                msg = f"Vendedor {vendedor} registrado em {len(encontradas_set)} cotação(es) com sucesso!"
+                msg = f"Vendedor {html.escape(vendedor)} registrado em {len(encontradas_set)} cotação(es) com sucesso!"
                 if eventos_banco:
-                    msg += f"<br><br><span style='color: #eab308;'><i class='fa-solid fa-broom'></i> <b>ATENO:</b> As cotaes <b>{', '.join(eventos_banco)}</b> no esto na planilha. Elas foram apagadas da memria do rob para serem extradas novamente na prxima rodada automtica.</span>"
+                    msg += f"<br><br><span style='color: #eab308;'><i class='fa-solid fa-broom'></i> <b>ATENO:</b> As cotaes <b>{html.escape(', '.join(eventos_banco))}</b> no esto na planilha. Elas foram apagadas da memria do rob para serem extradas novamente na prxima rodada automtica.</span>"
                 if eventos_invalidos:
-                    msg += f"<br><br><span style='color: #f87171;'><i class='fa-solid fa-triangle-exclamation'></i> <b>ERRO:</b> As cotaes <b>{', '.join(eventos_invalidos)}</b> no constam nem na planilha nem na memria do rob.</span>"
+                    msg += f"<br><br><span style='color: #f87171;'><i class='fa-solid fa-triangle-exclamation'></i> <b>ERRO:</b> As cotaes <b>{html.escape(', '.join(eventos_invalidos))}</b> no constam nem na planilha nem na memria do rob.</span>"
 
                 sio.emit('retorno_registro_vendedor_cotacao', {
                     'sucesso': True, 
                     'mensagem': msg, 
-                    'clientId': client_id
+                    'clientId': client_id, 'audit_id': audit_id
                 })
             else:
-                msg = f"Nenhuma das cotaes informadas foi encontrada na planilha.<br><br>Cotações procuradas: {', '.join(lista_cotacoes)}"
+                msg = f"Nenhuma das cotaes informadas foi encontrada na planilha.<br><br>Cotações procuradas: {html.escape(', '.join(lista_cotacoes))}"
                 if eventos_banco:
-                    msg += f"<br><br><span style='color: #3b82f6;'><i class='fa-solid fa-broom'></i> <b>LIMPEZA:</b> As cotaes <b>{', '.join(eventos_banco)}</b> foram apagadas da memria para serem re-extradas na prxima rodada.</span>"
+                    msg += f"<br><br><span style='color: #3b82f6;'><i class='fa-solid fa-broom'></i> <b>LIMPEZA:</b> As cotaes <b>{html.escape(', '.join(eventos_banco))}</b> foram apagadas da memria para serem re-extradas na prxima rodada.</span>"
                 if eventos_invalidos:
-                    msg += f"<br><br><span style='color: #f87171;'><i class='fa-solid fa-triangle-exclamation'></i> <b>ERRO:</b> As cotaes <b>{', '.join(eventos_invalidos)}</b> no constam nem na planilha nem na memria do rob.</span>"
+                    msg += f"<br><br><span style='color: #f87171;'><i class='fa-solid fa-triangle-exclamation'></i> <b>ERRO:</b> As cotaes <b>{html.escape(', '.join(eventos_invalidos))}</b> no constam nem na planilha nem na memria do rob.</span>"
 
                 sio.emit('retorno_registro_vendedor_cotacao', {
                     'sucesso': True,
                     'mensagem': msg,
-                    'clientId': client_id
+                    'clientId': client_id, 'audit_id': audit_id
                 })
     except Exception as e:
-        sio.emit('retorno_registro_vendedor_cotacao', {'sucesso': False, 'erro': str(e), 'clientId': client_id})
+        sio.emit('retorno_registro_vendedor_cotacao', {'sucesso': False, 'erro': str(e), 'clientId': client_id, 'audit_id': audit_id})
 
 @sio.on('comando_registrar_cotacao_manual')
 def comando_registrar_cotacao_manual(dados):
     client_id = dados.get('clientId')
+    audit_id = dados.get('audit_id')   # o portal fecha o registro da Auditoria com ele
     cotacoes = dados.get('cotacoes', [])
 
     if not cotacoes:
-        sio.emit('retorno_registro_cotacao_manual', {'sucesso': False, 'erro': 'Nenhuma cotação recebida', 'clientId': client_id})
+        sio.emit('retorno_registro_cotacao_manual', {'sucesso': False, 'erro': 'Nenhuma cotação recebida', 'clientId': client_id, 'audit_id': audit_id})
         return
 
     caminho_excel = CONFIG_GLOBAL.get("caminho_excel", r"\\SERVIDOR2\Publico\PLANILHA DE CONTROLE VALE - ESTAGIARIOS (copia 1).xlsx")
@@ -1624,18 +1660,19 @@ def comando_registrar_cotacao_manual(dados):
         eventos.registrar('gerenciador', 'cotacao_nova', 'ok', f'{len(numeros)} cotação(ões) cadastrada(s) à mão no portal',
                           ref=numeros[0], detalhe={'cotacoes': numeros[:20]})
 
-        sio.emit('retorno_registro_cotacao_manual', {'sucesso': True, 'mensagem': f'{len(cotacoes)} cotaes registradas com sucesso!', 'clientId': client_id})
+        sio.emit('retorno_registro_cotacao_manual', {'sucesso': True, 'mensagem': f'{len(cotacoes)} cotaes registradas com sucesso!', 'clientId': client_id, 'audit_id': audit_id})
 
     except Exception as e:
-        sio.emit('retorno_registro_cotacao_manual', {'sucesso': False, 'erro': str(e), 'clientId': client_id})
+        sio.emit('retorno_registro_cotacao_manual', {'sucesso': False, 'erro': str(e), 'clientId': client_id, 'audit_id': audit_id})
 
 @sio.on('solicitar_registro_pedido_manual')
 def comando_registrar_pedido_manual(dados):
     client_id = dados.get('clientId')
+    audit_id = dados.get('audit_id')   # o portal fecha o registro da Auditoria com ele
     pedidos = dados.get('pedidos', [])
 
     if not pedidos:
-        sio.emit('resposta_registro_pedido_manual', {'sucesso': False, 'erro': 'Nenhum pedido enviado.', 'clientId': client_id})
+        sio.emit('resposta_registro_pedido_manual', {'sucesso': False, 'erro': 'Nenhum pedido enviado.', 'clientId': client_id, 'audit_id': audit_id})
         return
 
     try:
@@ -1646,12 +1683,12 @@ def comando_registrar_pedido_manual(dados):
 
         sucesso = planilha_manager.adicionar_linhas_pedidos("PEDIDO", pedidos)
         if sucesso:
-            sio.emit('resposta_registro_pedido_manual', {'sucesso': True, 'mensagem': f'{len(pedidos)} pedidos registrados com sucesso!', 'clientId': client_id})
+            sio.emit('resposta_registro_pedido_manual', {'sucesso': True, 'mensagem': f'{len(pedidos)} pedidos registrados com sucesso!', 'clientId': client_id, 'audit_id': audit_id})
         else:
-            sio.emit('resposta_registro_pedido_manual', {'sucesso': False, 'erro': 'Aba de Pedidos no encontrada ou erro ao gravar.', 'clientId': client_id})
+            sio.emit('resposta_registro_pedido_manual', {'sucesso': False, 'erro': 'Aba de Pedidos no encontrada ou erro ao gravar.', 'clientId': client_id, 'audit_id': audit_id})
     except Exception as e:
         logger.error(f"Erro ao registrar pedido manual: {e}")
-        sio.emit('resposta_registro_pedido_manual', {'sucesso': False, 'erro': str(e), 'clientId': client_id})
+        sio.emit('resposta_registro_pedido_manual', {'sucesso': False, 'erro': str(e), 'clientId': client_id, 'audit_id': audit_id})
 
 @sio.on('obter_fila_extracao')
 def obter_fila_extracao(dados):
@@ -1868,9 +1905,40 @@ def comando_ler_log_txt(dados):
     except Exception as e:
         sio.emit('retorno_ler_log_txt', {'sucesso': False, 'id': chave, 'nome': nome, 'arquivo': os.path.basename(caminho), 'caminho': caminho, 'erro': str(e), 'clientId': dados.get('clientId'), 'requestId': dados.get('requestId')})
 
+def _achar_linha(manager, tipo, chave):
+    """(lista, índice) da linha com essa chave. Chave que não existe é erro: antes a tela dizia "apagada com sucesso"."""
+    if tipo not in ('cotacoes', 'pedidos'):
+        raise ValueError('Tipo de linha inválido.')
+    lista = manager.cotacoes["COTAÇÃO"] if tipo == 'cotacoes' else manager.pedidos["PEDIDOS"]
+    chave_busca = "COTAÇÃO" if tipo == 'cotacoes' else "PEDIDO"
+    alvo = str(chave if chave is not None else '').strip()
+    if not alvo:
+        raise ValueError('Linha não informada.')
+    for i, item in enumerate(lista):
+        if isinstance(item, dict) and str(item.get(chave_busca, "")).strip() == alvo:
+            return lista, i
+    raise ValueError(f'{chave_busca} {alvo} não encontrada. Atualize a tela.')
+
+
+def _conferir_edicao(lista, novos_dados):
+    """Só colunas que a base já tem e valores simples (texto, número): a edição não cria campos nem estruturas."""
+    if not isinstance(novos_dados, dict) or not novos_dados:
+        raise ValueError('Nada para alterar.')
+    colunas = set()
+    for item in lista:
+        if isinstance(item, dict):
+            colunas.update(item)
+    for k, v in novos_dados.items():
+        if k not in colunas:
+            raise ValueError(f'Coluna desconhecida: {k}')
+        if not (v is None or isinstance(v, (str, int, float, bool))) or (isinstance(v, str) and len(v) > 50000):
+            raise ValueError(f'Valor inválido em {k}.')
+
+
 @sio.on('comando_apagar_linha')
 def comando_apagar_linha(dados):
     client_id = dados.get('clientId')
+    audit_id = dados.get('audit_id')   # o portal fecha o registro da Auditoria com ele
     tipo = dados.get('tipo')
     chave = dados.get('chave')
 
@@ -1879,27 +1947,23 @@ def comando_apagar_linha(dados):
         planilha_manager.iniciar()
 
         with planilha_manager.lock:
-            lista = planilha_manager.cotacoes["COTAÇÃO"] if tipo == 'cotacoes' else planilha_manager.pedidos["PEDIDOS"]
-            chave_busca = "COTAÇÃO" if tipo == 'cotacoes' else "PEDIDO"
-
-            # Find and remove
-            for i, item in enumerate(lista):
-                if item is None: continue
-                if str(item.get(chave_busca, "")).strip() == str(chave).strip():
-                    del lista[i]
-                    break
+            lista, i = _achar_linha(planilha_manager, tipo, chave)
+            linha_apagada = dict(lista[i])
+            del lista[i]
 
             if not planilha_manager.salvar():
                 raise RuntimeError("Falha ao salvar a base; consulte logs/gerenciador.log.")
 
-        sio.emit('resposta_acao_linha', {'sucesso': True, 'mensagem': 'Linha apagada com sucesso!', 'clientId': client_id})
+        sio.emit('resposta_acao_linha', {'sucesso': True, 'mensagem': 'Linha apagada com sucesso!', 'linha_apagada': linha_apagada,
+                                         'clientId': client_id, 'audit_id': audit_id})
     except Exception as e:
-        sio.emit('resposta_acao_linha', {'sucesso': False, 'erro': str(e), 'clientId': client_id})
+        sio.emit('resposta_acao_linha', {'sucesso': False, 'erro': str(e), 'clientId': client_id, 'audit_id': audit_id})
 
 @sio.on('comando_editar_linha')
 @sio.on('comando_marcar_cotacao_respondida')
 def comando_editar_linha(dados):
     client_id = dados.get('clientId')
+    audit_id = dados.get('audit_id')   # o portal fecha o registro da Auditoria com ele
     tipo = dados.get('tipo')
     chave = dados.get('chave')
     novos_dados = dados.get('novos_dados', {})
@@ -1911,29 +1975,23 @@ def comando_editar_linha(dados):
                 raise ValueError('Alteração de resposta inválida.')
             from resposta_cotacao import marcar_respondida
             marcar_respondida(planilha_manager, dados['identidade'])
-            sio.emit('resposta_acao_linha', {'sucesso': True, 'mensagem': 'Resposta salva no JSON.', 'clientId': client_id})
+            sio.emit('resposta_acao_linha', {'sucesso': True, 'mensagem': 'Resposta salva no JSON.', 'clientId': client_id, 'audit_id': audit_id})
             return
         planilha_manager.iniciar()
 
         with planilha_manager.lock:
-            lista = planilha_manager.cotacoes["COTAÇÃO"] if tipo == 'cotacoes' else planilha_manager.pedidos["PEDIDOS"]
-            chave_busca = "COTAÇÃO" if tipo == 'cotacoes' else "PEDIDO"
-
-            # Find and update
-            for i, item in enumerate(lista):
-                if item is None: continue
-                if str(item.get(chave_busca, "")).strip() == str(chave).strip():
-                    # Update all keys provided
-                    for k, v in novos_dados.items():
-                        lista[i][k] = v
-                    break
+            lista, i = _achar_linha(planilha_manager, tipo, chave)
+            _conferir_edicao(lista, novos_dados)
+            antes = {k: lista[i].get(k) for k in novos_dados}
+            lista[i].update(novos_dados)
 
             if not planilha_manager.salvar():
                 raise RuntimeError("Falha ao salvar a base; consulte logs/gerenciador.log.")
 
-        sio.emit('resposta_acao_linha', {'sucesso': True, 'mensagem': 'Linha atualizada com sucesso!', 'clientId': client_id})
+        sio.emit('resposta_acao_linha', {'sucesso': True, 'mensagem': 'Linha atualizada com sucesso!', 'antes': antes,
+                                         'clientId': client_id, 'audit_id': audit_id})
     except Exception as e:
-        sio.emit('resposta_acao_linha', {'sucesso': False, 'erro': str(e), 'clientId': client_id})
+        sio.emit('resposta_acao_linha', {'sucesso': False, 'erro': str(e), 'clientId': client_id, 'audit_id': audit_id})
 
 # --- ROTINA DE BACKUP AUTOMATIZADO ---
 import shutil
