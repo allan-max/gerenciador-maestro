@@ -1951,8 +1951,16 @@ import time
 import threading
 from datetime import datetime
 
+_trava_backup = threading.Lock()   # clique duplo / botão no minuto das 07:00: um copia depois do outro
+
+
 def rotina_backup(manual=False, por=None):
     """Devolve os nomes copiados, ou None se falhou. Nunca levanta: roda dentro do schedule."""
+    with _trava_backup:
+        return _fazer_backup(manual, por)
+
+
+def _fazer_backup(manual, por):
     detalhe = {'manual': manual, 'por': por}
     try:
         from planilha_manager import planilha_manager
@@ -2165,13 +2173,22 @@ def rodar_ciclo(portal, manual=False, por=None):
         sio.emit(canal, {'mensagem': f'Erro no ciclo {nome}: {e}'})
         return False, str(e)
     finally:
-        ciclo_em_andamento = None
         sio.emit('planilha_atualizada')
         avisar(f'desligando o robô {portal.capitalize()}...')
         try:
             comandar('desligar_robo', portal)
+            esperar_robo_desligado(portal)
         except Exception:
             logger.exception(f'Falha ao desligar o robô {portal} no fim do ciclo')
+        ciclo_em_andamento = None
+
+
+def esperar_robo_desligado(portal, espera_s=60):
+    """O desligar roda no handler do socket (2 s + driver.quit()) e só depois zera o bot_<portal>. Soltar a trava
+    antes deixava o ciclo seguinte (piloto logo depois do manual) achar o robô ligado e usar um navegador fechando."""
+    limite = time.time() + espera_s
+    while globals().get('bot_' + portal) is not None and time.time() < limite:
+        time.sleep(1)
 
 
 def loop_automacao():
@@ -2229,12 +2246,17 @@ def comando_sincronizacao(dados):
     if not _trava_ciclo.acquire(blocking=False):
         rodando = f' ({ciclo_em_andamento})' if ciclo_em_andamento else ''
         return _responder_sincronizacao(dados, False, f'Já tem um ciclo rodando{rodando}. Tente de novo quando terminar.')
-    ocupados = [p for p in robos_ocupados() if p in ('coupa', 'vale')]
-    if ocupados:
+    # Fora de um ciclo os dois ficam desligados: ligado = alguém usando pela tela (logando, parado ou com tarefa)
+    ligados = [p for p in ('coupa', 'vale') if globals().get('bot_' + p) is not None]
+    if ligados:
         _trava_ciclo.release()
-        return _responder_sincronizacao(dados, False, f'O robô {ocupados[0]} está trabalhando agora (tarefa pela tela). '
-                                                      'Tente de novo quando terminar.')
-    threading.Thread(target=_ciclo_manual, args=(portal, dados), daemon=True).start()
+        return _responder_sincronizacao(dados, False, f'O robô {ligados[0]} está ligado (alguém usando pela tela). '
+                                                      'Desligue pela tela dele ou espere terminar.')
+    try:
+        threading.Thread(target=_ciclo_manual, args=(portal, dados), daemon=True).start()
+    except Exception:
+        _trava_ciclo.release()
+        raise
 
 
 def estado_sincronizacao(lista):

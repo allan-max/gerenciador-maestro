@@ -15,7 +15,8 @@ from test_fase0 import LOGGER, carregar
 GER = Path(__file__).parent / 'gerenciador.py'
 FUNCOES = {'rodar_ciclo', 'loop_automacao', 'comando_sincronizacao', 'comando_sincronizacao_estado', '_ciclo_manual',
            '_backup_manual', '_responder_sincronizacao', 'estado_sincronizacao', 'rotina_backup', 'deve_verificar_vale',
-           '_trava_ciclo', 'ciclo_em_andamento', 'CICLOS_MANUAIS', 'ULTIMAS_SINCRONIZACAO', 'ultimo_dia_verificacao_vale'}
+           '_trava_ciclo', 'ciclo_em_andamento', 'CICLOS_MANUAIS', 'ULTIMAS_SINCRONIZACAO', 'ultimo_dia_verificacao_vale',
+           'esperar_robo_desligado', '_trava_backup', '_fazer_backup'}
 
 
 class ThreadNaHora:
@@ -40,7 +41,7 @@ def gerenciador(hora=10, **globais):
                   threading=SimpleNamespace(Lock=threading.Lock, Thread=ThreadNaHora), datetime=relogio_em(hora),
                   comandar=MagicMock(), esperar_robo_pronto=MagicMock(), executar_tarefa=MagicMock(),
                   extracao_ok=MagicMock(), checar_inatividade=MagicMock(), enviar_email_erro=MagicMock(),
-                  robos_ocupados=MagicMock(return_value=[]), CONFIG_GLOBAL={}, os=__import__('os'),
+                  time=SimpleNamespace(time=lambda: 0, sleep=lambda s: None), CONFIG_GLOBAL={}, os=__import__('os'),
                   shutil=__import__('shutil'))
     return carregar(GER, FUNCOES, **{**padrao, **globais})
 
@@ -78,11 +79,35 @@ class CicloManualTest(unittest.TestCase):
         ns['comandar'].assert_not_called()
         self.assertTrue(ns['_trava_ciclo'].locked())     # a trava continua de quem já estava rodando
 
-    def test_recusa_se_o_robo_esta_trabalhando_pela_tela(self):
-        ns = gerenciador(robos_ocupados=MagicMock(return_value=['me', 'vale']))
+    def test_recusa_se_um_robo_esta_ligado_pela_tela_mesmo_parado(self):
+        ns = gerenciador()
+        ns['bot_vale'] = SimpleNamespace(is_ready=True, thread_atual=None)   # logado e sem tarefa: alguém usando
         ns['comando_sincronizacao']({'servico': 'ciclo_coupa'})
         self.assertIn('vale', retornos(ns)[0]['erro'])
         ns['comandar'].assert_not_called()
+        self.assertFalse(ns['_trava_ciclo'].locked())
+
+    def test_so_solta_a_trava_depois_do_robo_desligar_de_verdade(self):
+        ns = gerenciador()
+        ns['bot_coupa'] = object()
+        dormidas = []
+
+        def dormir(s):   # o handler do desligar zera o bot_coupa só depois de uns segundos
+            dormidas.append(s)
+            if len(dormidas) == 3:
+                ns['bot_coupa'] = None
+        ns['time'] = SimpleNamespace(time=lambda: 0, sleep=dormir)
+        with patch.object(LOGGER, 'handle'):
+            ns['rodar_ciclo']('coupa', manual=True)
+        self.assertEqual(len(dormidas), 3)
+        self.assertIsNone(ns['ciclo_em_andamento'])
+
+    def test_falha_ao_criar_a_thread_nao_prende_a_trava(self):
+        def quebrar(*a, **k):
+            raise RuntimeError("can't start new thread")
+        ns = gerenciador(threading=SimpleNamespace(Lock=threading.Lock, Thread=quebrar))
+        with self.assertRaises(RuntimeError):
+            ns['comando_sincronizacao']({'servico': 'ciclo_coupa'})
         self.assertFalse(ns['_trava_ciclo'].locked())
 
     def test_servico_desconhecido(self):
