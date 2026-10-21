@@ -974,6 +974,7 @@ WshShell.SendKeys "~"
             bot_alvo = bot_coupa if portal == 'coupa' else bot_vale
             if bot_alvo:
                 anterior = getattr(bot_alvo, 'thread_atual', None)
+                pedido = dict(dados)
 
                 def rodar(bot=bot_alvo, anterior=anterior):
                     # Uma tarefa por vez no mesmo navegador: a nova espera a anterior terminar
@@ -984,7 +985,15 @@ WshShell.SendKeys "~"
                         logger.warning(f"{portal}: '{modo}' descartado: o robô foi desligado enquanto esperava")
                         return
                     bot.iniciar_tarefa(modo, dados)
+
+                if pedido_repetido(anterior, pedido):
+                    # Clique duplo ou ordem igual à última da fila (21/10: duas verificações da Vale): não roda de novo.
+                    # A thread só acompanha a que já existe, para o piloto (executar_tarefa) ver o comando chegar.
+                    logger.info(f"{portal}: '{modo}' igual ao último pedido da fila; não será repetido")
+                    sio.emit(f'relatar_progresso_{portal}', {'mensagem': f"⏳ '{modo}' já está em andamento ou na fila; pedido repetido ignorado."})
+                    rodar = anterior.join
                 th = threading.Thread(target=rodar, daemon=True)
+                th.pedido = pedido
                 th.start()
                 bot_alvo.thread_atual = th   # depois do start: quem espera nunca vê uma thread ainda não iniciada
             else:
@@ -2041,6 +2050,12 @@ def esperar_robo_pronto(portal, timeout=120):
         if time.time() > limite:
             raise Exception(f"Timeout ao ligar o robô {portal} (captcha ou bloqueio?)")
         time.sleep(2)
+
+
+def pedido_repetido(anterior, pedido):
+    """A última tarefa da fila ainda viva e com o mesmo pedido. Só a última: ignorar uma do meio deixaria o
+    thread_atual terminar antes das outras (o atualizador e a próxima tarefa achariam o robô livre)."""
+    return anterior is not None and anterior.is_alive() and getattr(anterior, 'pedido', None) == pedido
 
 
 def executar_tarefa(portal, modo, timeout_inicio=60):
