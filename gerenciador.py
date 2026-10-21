@@ -74,11 +74,25 @@ def carregar_config():
             "caminho_findes": r"C:\Users\Administrator\Desktop\FINDES",
             "emails_relatorio": os.environ.get("EMAILS_RELATORIO", "")
         }
+        default_config = com_padroes(default_config)
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(default_config, f, indent=4, ensure_ascii=False)
         return default_config
     with open(path, 'r', encoding='utf-8-sig') as f:   # Bloco de Notas salva com BOM
-        return json.load(f)
+        config = json.load(f)
+    completa = com_padroes(config)
+    if completa != config:   # grava as chaves novas para elas aparecerem no painel (Configurações do dashboard2)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(completa, f, indent=4, ensure_ascii=False)
+    return completa
+
+
+# Chaves que o painel sempre mostra; o valor salvo lá vale na próxima verificação (ambiente.paginas_verificacao)
+PADROES_CONFIG = {'coupa_verificacao_max_paginas': 60, 'vale_verificacao_max_paginas': 60}
+
+
+def com_padroes(config):
+    return {**config, **{k: v for k, v in PADROES_CONFIG.items() if config.get(k) in (None, '')}}
 
 CONFIG_GLOBAL = carregar_config()
 
@@ -1041,6 +1055,12 @@ def salvar_config_admin(dados):
     global CONFIG_GLOBAL, SMTP_USER, SMTP_PASSWORD
     client_id = dados.get('clientId')
     nova_config = dados.get('config')
+    if not isinstance(nova_config, dict) or not nova_config:
+        # painel sem dados (ex.: gerenciador reconectando) apagaria o CONFIG.json inteiro
+        sio.emit('receber_config_admin', {'config': CONFIG_GLOBAL, 'clientId': client_id, 'sucesso': False,
+                                          'erro': 'Configuração vazia: nada foi salvo.'})
+        return
+    nova_config = com_padroes(nova_config)
     salvar_config(nova_config)
     CONFIG_GLOBAL = nova_config
     SMTP_USER = CONFIG_GLOBAL.get("SMTP_USER", os.environ.get("SMTP_USER", ""))

@@ -74,7 +74,6 @@ class LoginTimeout(Exception):
 VALE_URL_VERIFICACAO_PADRAO = "https://valebasemetals.coupahost.com/quotes/external_responses/824e8a0982de566c7bebeb7315a6bd89b533033a175c5acddf970e59ccc1e3b7954b1ce5107982e6/terms?quote_request_id=6213&source=event_invitation"   # CONFIG.json "vale_url_verificacao" muda
 OTP_TIMEOUT_S = 180
 OTP_EMAIL_INTERVALO_S = 10   # de quanto em quanto tempo procura o código na caixa (otp_email.py)
-MAX_PAGINAS_VERIFICACAO = 60   # CONFIG.json "verificacao_max_paginas" muda
 JANELA_NAO_RESPONDIDO_DIAS = 7   # NÃO RESPONDIDO recente continua sendo conferido
 
 
@@ -184,6 +183,14 @@ class ValeScraper:
         ops.add_argument("--no-sandbox")
         ops.add_argument("--disable-dev-shm-usage")
         ops.add_argument("--window-size=1920,1080")
+        anterior = getattr(self, 'driver', None)
+        if anterior is not None:   # religar o mesmo robô: fecha o navegador dele antes de abrir outro
+            try:
+                anterior.quit()
+            except Exception:
+                pass
+        import navegador
+        ops.add_argument(f"--user-data-dir={navegador.preparar('vale')}")   # fecha Chrome que sobrou deste robô
         self.driver = webdriver.Chrome(options=ops)
         self.driver.set_page_load_timeout(60)
         self.wait = WebDriverWait(self.driver, 40)
@@ -2384,7 +2391,8 @@ Vale Bot
         """{número: respostas} (None = célula ilegível). Se o portal falhar no meio, devolve o que já leu e o erro."""
         vistos, ilegiveis, paginas = {}, 0, 0
         ordem = lambda q: -1 if q is None else q   # número repetido: vale a maior quantidade lida
-        max_paginas = int(self.config.get('verificacao_max_paginas', MAX_PAGINAS_VERIFICACAO))
+        from ambiente import paginas_verificacao
+        max_paginas = paginas_verificacao('vale')   # CONFIG.json, editável no painel (padrão 60; 15 linhas por página)
         try:
             while paginas < max_paginas:
                 if getattr(self, 'solicitacao_parada', False):
@@ -2392,7 +2400,7 @@ Vale Bot
                 time.sleep(2)
                 # coupa_datatable_row é a tela antiga; a extração já usa coupaTable__row
                 linhas = self.driver.find_elements(By.XPATH, "//tr[contains(@class, 'coupa_datatable_row') or contains(@class, 'coupaTable__row')]")
-                for _ in range(3 if paginas == 0 else 0):   # primeira página lenta não é "lista vazia"
+                for _ in range(3 if paginas == 0 else 1):   # página lenta não é "fim da lista": espera de novo antes de desistir
                     if linhas:
                         break
                     time.sleep(5)

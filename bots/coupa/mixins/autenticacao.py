@@ -70,6 +70,14 @@ class AutenticacaoMixin:
         ops.add_argument("--disable-dev-shm-usage")
         ops.add_argument("--window-size=1920,1080")
         ops.add_argument("--start-maximized")
+        anterior = getattr(self, 'driver', None)
+        if anterior is not None:   # religar o mesmo robô: fecha o navegador dele antes de abrir outro
+            try:
+                anterior.quit()
+            except Exception:
+                pass
+        import navegador
+        ops.add_argument(f"--user-data-dir={navegador.preparar('coupa')}")   # fecha Chrome que sobrou deste robô
         self.driver = webdriver.Chrome(options=ops)
         self.driver.set_page_load_timeout(60)
         self.wait = WebDriverWait(self.driver, 40)

@@ -12,7 +12,7 @@ RAIZ = Path(__file__).parent
 
 class ConfigComBomTest(unittest.TestCase):
     def test_gerenciador_le_config_e_usuarios_com_bom(self):
-        ns = carregar(RAIZ / 'gerenciador.py', {'carregar_config', 'carregar_usuarios'}, os=os, json=json)
+        ns = carregar(RAIZ / 'gerenciador.py', {'carregar_config', 'carregar_usuarios', 'com_padroes', 'PADROES_CONFIG'}, os=os, json=json)
         anterior = os.getcwd()
         with tempfile.TemporaryDirectory() as tmp:
             os.chdir(tmp)

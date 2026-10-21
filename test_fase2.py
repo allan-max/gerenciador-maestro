@@ -16,6 +16,7 @@ from unittest.mock import patch
 from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException
 from selenium.webdriver.common.by import By
 
+import ambiente
 from test_fase0 import LOGGER, Relogio, carregar
 from test_planilha_persistencia import Manager, namespace as ns_manager
 
@@ -179,6 +180,9 @@ class Portal:
     def find_elements(self, por, valor):
         return self.paginas[self.atual]
 
+    def tabela_ok(self):
+        return True
+
     def find_element(self, por, valor):
         if self.atual >= len(self.paginas) - 1:
             raise NoSuchElementException('sem próxima')
@@ -194,11 +198,11 @@ class VerificacaoTest(BaseTemporaria):
               {'COTAÇÃO': '55000', 'VENCIMENTO': PAS_REAL, 'RESPOSTA': ''},          # da Vale: não é alvo do Coupa
               {'COTAÇÃO': '105', 'VENCIMENTO': PAS_REAL, 'RESPOSTA': 'NÃO RESPONDIDO'}]   # venceu há 5 dias: ainda conferida
 
-    def rodar(self, paginas, db=('100', '101', '102', '103', '104', '105'), portal=None):
+    def rodar(self, paginas, db=('100', '101', '102', '103', '104', '105'), portal=None, config=None):
         relatorios = self.dir / 'relatorios'
-        ns = carregar(RAIZ / 'bots/coupa/mixins/verificacao.py', {'MAX_PAGINAS_PADRAO', 'JANELA_NAO_RESPONDIDO_DIAS', 'VerificacaoMixin'},
+        ns = carregar(RAIZ / 'bots/coupa/mixins/verificacao.py', {'JANELA_NAO_RESPONDIDO_DIAS', 'VerificacaoMixin'},
                       time=Relogio(), By=By, NoSuchElementException=NoSuchElementException, StaleElementReferenceException=StaleElementReferenceException, csv=csv, datetime=datetime, timedelta=timedelta,
-                      WebDriverWait=lambda d, t: SimpleNamespace(until=lambda c: True),
+                      WebDriverWait=lambda d, t: SimpleNamespace(until=lambda c: d.tabela_ok() or (_ for _ in ()).throw(TimeoutError('tabela'))),
                       EC=SimpleNamespace(presence_of_element_located=lambda x: x), PASTA_RELATORIOS=relatorios)
         emitidos, jsonl = [], []
         bot = type('Bot', (ns['VerificacaoMixin'],), {})()
@@ -208,7 +212,8 @@ class VerificacaoTest(BaseTemporaria):
                             sio=SimpleNamespace(emit=lambda e, d: emitidos.append((e, d))))
         modulo = SimpleNamespace(planilha_manager=self.manager,
                                  **{k: ns_manager[k] for k in ('status_atual', 'data_vencimento', 'RASCUNHO', 'NAO_RESPONDIDO')})
-        with patch.dict(sys.modules, planilha_manager=modulo), patch.object(LOGGER, 'handle'):
+        with patch.dict(sys.modules, planilha_manager=modulo), patch.object(LOGGER, 'handle'), \
+                patch.object(ambiente, 'ler_config', return_value=config or {}):
             bot.fase_verificacao()
         return bot, emitidos, jsonl, relatorios
 
@@ -251,6 +256,25 @@ class VerificacaoTest(BaseTemporaria):
         bot, *_ = self.rodar(paginas, portal=lambda p: Portal(p, lembrada=2))
         self.assertEqual(bot.driver.abertas[0], 1)
         self.assertEqual(self.respostas()['100'], 'RESPONDIDO')
+
+    def test_pagina_que_nao_carrega_e_recarregada_uma_vez(self):
+        # 20/10: a página 27 não carregou em 20 s e a leitura parou ali
+        class PortalLento(Portal):
+            falhas = 0
+            def tabela_ok(self):
+                if self.atual == 1 and not self.falhas:
+                    self.falhas += 1
+                    return False
+                return True
+        paginas = [[Linha('100', '1')], [Linha('101', '0')], [Linha('104', '0')]]
+        bot, emitidos, *_ = self.rodar(paginas, portal=PortalLento)
+        self.assertEqual(bot.driver.abertas, [1, 2, 2, 3])          # a 2 foi aberta de novo
+        self.assertIn('em 3 página(s)', emitidos[-2][1]['mensagem'])
+
+    def test_teto_vem_do_config_editavel_no_painel(self):
+        paginas = [[Linha('100', '1')], [Linha('101', '0')], [Linha('104', '0')]]
+        bot, emitidos, *_ = self.rodar(paginas, config={'coupa_verificacao_max_paginas': '1'})   # o painel salva texto
+        self.assertIn('em 1 página(s)', emitidos[-2][1]['mensagem'])
 
     def test_pagina_repetida_encerra_a_leitura(self):
         # produção 19/10: o Coupa devolvia a mesma página e ela era relida até o teto (200 páginas, 986 eventos)

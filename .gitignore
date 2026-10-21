@@ -18,3 +18,4 @@ gerenciador.instancia
 # Bases do modo teste e relatórios gerados (docs/melhorias-bots)
 base_teste/
 relatorios/
+perfis_chrome/
