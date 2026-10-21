@@ -1560,35 +1560,37 @@ def comando_registrar_vendedor_cotacao(dados):
                                     except: pass
                     return db
 
-                db_coupa = load_db(path_coupa_db)
-                db_vale = load_db(path_vale_db)
+                # mesma trava dos robôs: linha acrescentada durante a limpeza não se perde
+                with ambiente.TRAVA_JSONL:
+                    db_coupa = load_db(path_coupa_db)
+                    db_vale = load_db(path_vale_db)
 
-                eventos_coupa = []
-                eventos_vale = []
+                    eventos_coupa = []
+                    eventos_vale = []
 
-                for evento in nao_encontradas:
-                    if evento in db_coupa:
-                        del db_coupa[evento]
-                        eventos_coupa.append(evento)
-                        eventos_banco.append(evento)
-                    elif evento in db_vale:
-                        del db_vale[evento]
-                        eventos_vale.append(evento)
-                        eventos_banco.append(evento)
-                    else:
-                        eventos_invalidos.append(evento)
+                    for evento in nao_encontradas:
+                        if evento in db_coupa:
+                            del db_coupa[evento]
+                            eventos_coupa.append(evento)
+                            eventos_banco.append(evento)
+                        elif evento in db_vale:
+                            del db_vale[evento]
+                            eventos_vale.append(evento)
+                            eventos_banco.append(evento)
+                        else:
+                            eventos_invalidos.append(evento)
 
-                def save_db(caminho, db_novo):
-                    if not os.path.exists(os.path.dirname(caminho)): return
-                    ambiente.exigir_trava(caminho)
-                    # temporário único + os.replace: dois salvamentos ao mesmo tempo não usam o mesmo .tmp
-                    with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=os.path.dirname(caminho),
-                                                     prefix='maestro-', suffix='.tmp', delete=False) as f:
-                        for k, v in db_novo.items(): f.write(json.dumps(v) + '\n')
-                    os.replace(f.name, caminho)
+                    def save_db(caminho, db_novo):
+                        if not os.path.exists(os.path.dirname(caminho)): return
+                        ambiente.exigir_trava(caminho)
+                        # temporário único + os.replace: dois salvamentos ao mesmo tempo não usam o mesmo .tmp
+                        with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=os.path.dirname(caminho),
+                                                         prefix='maestro-', suffix='.tmp', delete=False) as f:
+                            for k, v in db_novo.items(): f.write(json.dumps(v) + '\n')
+                        os.replace(f.name, caminho)
 
-                if eventos_coupa: save_db(path_coupa_db, db_coupa)
-                if eventos_vale: save_db(path_vale_db, db_vale)
+                    if eventos_coupa: save_db(path_coupa_db, db_coupa)
+                    if eventos_vale: save_db(path_vale_db, db_vale)
                 # Ocultar painel da fila se houver algum
                 sio.emit('atualizar_fila_extracao', {'fila': []})
 

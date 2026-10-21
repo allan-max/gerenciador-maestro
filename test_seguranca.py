@@ -273,5 +273,28 @@ class ContratoComPortalTest(unittest.TestCase):
                 self.assertTrue(expr.startswith('html.escape('), linha)
 
 
+class TravaJsonlTest(unittest.TestCase):
+    def test_linha_acrescentada_espera_a_regravacao_terminar(self):
+        import ambiente
+        with tempfile.TemporaryDirectory() as tmp:
+            arq = os.path.join(tmp, 'eventos.jsonl')
+            Path(arq).write_text('{"titulo": "1"}\n', encoding='utf-8')
+            th = threading.Thread(target=ambiente.acrescentar_jsonl, args=(arq, {'titulo': '2'}))
+            with ambiente.TRAVA_JSONL:   # como a limpeza do gerenciador: lê, regrava e troca o arquivo
+                linhas = Path(arq).read_text(encoding='utf-8')
+                th.start()
+                th.join(0.2)
+                self.assertTrue(th.is_alive())
+                Path(arq).write_text(linhas, encoding='utf-8')
+            th.join(5)
+            self.assertEqual([json.loads(l)['titulo'] for l in Path(arq).read_text(encoding='utf-8').splitlines()], ['1', '2'])
+
+    def test_robos_e_gerenciador_usam_a_trava_ao_gravar_o_jsonl(self):
+        for arquivo in ('bots/vale_bot.py', 'bots/coupa/mixins/planilhas.py', 'bots/coupa/mixins/banco_dados.py'):
+            texto = (RAIZ / arquivo).read_text(encoding='utf-8')
+            self.assertNotIn("open(self.ARQUIVO_JSONL, 'a'", texto, arquivo)
+        self.assertIn('with ambiente.TRAVA_JSONL:', GERENCIADOR.read_text(encoding='utf-8'))
+
+
 if __name__ == '__main__':
     unittest.main()

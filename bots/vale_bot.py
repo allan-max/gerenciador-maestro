@@ -163,8 +163,7 @@ class ValeScraper:
                     "respondido": respondido,
                     "vencimento_tabela": vencimento_tabela
                 }
-                with open(self.ARQUIVO_JSONL, 'a', encoding='utf-8') as f: 
-                    f.write(json.dumps(novo) + '\n')
+                ambiente.acrescentar_jsonl(self.ARQUIVO_JSONL, novo)
                 self.db_eventos[numero] = novo
             except Exception: logger.exception(f'Falha ao gravar o evento {numero} no JSONL')
 
@@ -1882,8 +1881,7 @@ Vale Bot
                         "respondido": False, "extraido": True, 
                         "vencimento_tabela": venc_tab
                     }
-                    with open(self.ARQUIVO_JSONL, 'a', encoding='utf-8') as f: 
-                        f.write(json.dumps(novo) + '\n')
+                    ambiente.acrescentar_jsonl(self.ARQUIVO_JSONL, novo)
                     self.db_eventos[d['numero_evento']] = novo
                 except: pass
             
