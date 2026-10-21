@@ -2180,6 +2180,8 @@ def backup_inicial():
     except Exception:
         logger.exception('Falha no backup inicial')
 
+RECONECTAR_S = 10
+
 if __name__ == '__main__':
     # Threads só no gerenciador de verdade: importar este arquivo (testes, bots) não liga o piloto
     threading.Thread(target=loop_automacao, daemon=True).start()
@@ -2187,11 +2189,16 @@ if __name__ == '__main__':
     threading.Thread(target=loop_agendamento, daemon=True).start()
     threading.Thread(target=loop_metricas_servidor, daemon=True).start()
     backup_inicial()
-    try:
-        logger.info(f"Conectando ao servidor: {URL_DO_SERVIDOR} ...")
-        sio.connect(URL_DO_SERVIDOR, auth={"robo_secret": ROBO_SECRET})
-        sio.wait()
-    except Exception as e:
-        logger.error(f"Erro ao conectar com o servidor: {e}")
+    # Portal fora do ar na partida (reinício do Site-Maestro, reboot) não fecha o gerenciador: tenta até conectar.
+    # Depois de conectado, quedas são reconectadas pelo próprio socketio.
+    while True:
+        try:
+            logger.info(f"Conectando ao servidor: {URL_DO_SERVIDOR} ...")
+            sio.connect(URL_DO_SERVIDOR, auth={"robo_secret": ROBO_SECRET})
+            break
+        except Exception as e:
+            logger.error(f"Erro ao conectar com o servidor: {e}. Nova tentativa em {RECONECTAR_S} s.")
+            time.sleep(RECONECTAR_S)
+    sio.wait()
 
 
