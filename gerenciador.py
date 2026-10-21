@@ -312,8 +312,18 @@ coordenadas_clique = {'x': 0, 'y': 0}
 
 # 1. FUNO PARA SALVAR NO MESMO FORMATO
 def salvar_usuarios(usuarios):
-    with open('banco_usuarios.json', 'w', encoding='utf-8') as f:
-        json.dump(usuarios, f, indent=4, ensure_ascii=False)
+    # temporário + os.replace: fechar a janela no meio da gravação não deixa o banco de contas pela metade
+    f = tempfile.NamedTemporaryFile('w', encoding='utf-8', dir='.', prefix='banco_usuarios-', suffix='.tmp', delete=False)
+    try:
+        with f:
+            json.dump(usuarios, f, indent=4, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(f.name, 'banco_usuarios.json')
+    except BaseException:
+        try: os.unlink(f.name)
+        except OSError: pass
+        raise
 
 @sio.on('registrar_usuario')
 def registrar_usuario(dados):

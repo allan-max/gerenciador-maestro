@@ -152,6 +152,21 @@ class ContasTest(unittest.TestCase):
         self.assertEqual(pacote['usuarios'], {'a@x': {'admin': True, 'online': True}})
 
 
+    def test_banco_de_contas_e_gravado_inteiro_ou_nada(self):
+        ns = carregar(GERENCIADOR, {'salvar_usuarios', 'carregar_usuarios'}, os=os, json=json, tempfile=tempfile)
+        anterior = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                ns['salvar_usuarios']({'a@x': {'senha': 'h'}})
+                with patch('json.dump', side_effect=OSError('disco cheio')), self.assertRaises(OSError):
+                    ns['salvar_usuarios']({'b@x': {}})
+                self.assertEqual(ns['carregar_usuarios'](), {'a@x': {'senha': 'h'}})
+                self.assertEqual(os.listdir(tmp), ['banco_usuarios.json'])   # sem temporário largado
+            finally:
+                os.chdir(anterior)
+
+
 class ComandosTest(unittest.TestCase):
     def comandos(self, **globais):
         sio = SioFalso()

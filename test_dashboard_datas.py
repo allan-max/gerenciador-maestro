@@ -5,11 +5,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import planilha_manager as pm
+import re
+from datetime import date
+
 from test_fase0 import carregar
 from test_seguranca import Manager, SioFalso
 
 GERENCIADOR = Path(__file__).with_name('gerenciador.py')
+# só a função: importar planilha_manager monta o gerenciador da base
+data_vencimento = carregar(Path(__file__).with_name('planilha_manager.py'), {'data_vencimento'}, re=re, date=date)['data_vencimento']
 
 
 class DatasDoDashboardTest(unittest.TestCase):
@@ -17,7 +21,7 @@ class DatasDoDashboardTest(unittest.TestCase):
         sio = SioFalso()
         ns = carregar(GERENCIADOR, {'comando_ler_excel_dashboard', 'classificar_resposta', 'sem_acento'},
                       sio=sio, unicodedata=__import__('unicodedata'))
-        modulo = SimpleNamespace(planilha_manager=Manager(linhas), data_vencimento=pm.data_vencimento)
+        modulo = SimpleNamespace(planilha_manager=Manager(linhas), data_vencimento=data_vencimento)
         with patch.dict(sys.modules, {'planilha_manager': modulo}):
             ns['comando_ler_excel_dashboard']({'clientId': 'c', 'filtros': filtros})
         return sio.ultimo('retorno_dados_dashboard')['totais']
