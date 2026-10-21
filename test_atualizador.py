@@ -41,7 +41,8 @@ class Repos(unittest.TestCase):
 
     def criar(self, nome, arquivos):
         origem, dev = self.tmp / f'{nome}.git', self.tmp / f'{nome}-dev'
-        git(self.tmp, 'init', '-q', '--bare', '-b', 'main', str(origem))
+        git(self.tmp, 'init', '-q', '--bare', str(origem))
+        git(origem, 'symbolic-ref', 'HEAD', 'refs/heads/main')   # 'init -b' não existe no git do servidor (< 2.28)
         git(self.tmp, 'clone', '-q', str(origem), str(dev))
         git(dev, 'checkout', '-q', '-b', 'main')
         self.commit(dev, arquivos, 'inicial')
