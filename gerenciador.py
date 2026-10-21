@@ -74,11 +74,26 @@ def carregar_config():
             "caminho_findes": r"C:\Users\Administrator\Desktop\FINDES",
             "emails_relatorio": os.environ.get("EMAILS_RELATORIO", "")
         }
+        default_config = com_padroes(default_config)
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(default_config, f, indent=4, ensure_ascii=False)
         return default_config
     with open(path, 'r', encoding='utf-8-sig') as f:   # Bloco de Notas salva com BOM
-        return json.load(f)
+        config = json.load(f)
+    completa = com_padroes(config)
+    if completa != config:   # grava as chaves novas para elas aparecerem no painel (Configurações do dashboard2)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(completa, f, indent=4, ensure_ascii=False)
+    return completa
+
+
+# Chaves que o painel sempre mostra; o valor salvo lá vale na próxima verificação (ambiente.paginas_verificacao)
+PADROES_CONFIG = {'coupa_verificacao_max_paginas': 60, 'vale_verificacao_max_paginas': 60,
+                  'atualizacao_automatica': 'sim'}   # scripts/atualizador.py; 'não' desliga
+
+
+def com_padroes(config):
+    return {**config, **{k: v for k, v in PADROES_CONFIG.items() if config.get(k) in (None, '')}}
 
 CONFIG_GLOBAL = carregar_config()
 
@@ -118,6 +133,56 @@ planilha_manager.iniciar(CONFIG_GLOBAL["caminho_excel"])
 def salvar_config(novas_config):
     with open('CONFIG.json', 'w', encoding='utf-8') as f:
         json.dump(novas_config, f, indent=4, ensure_ascii=False)
+
+
+# Estado para o atualizador automático (scripts/atualizador.py): ele só reinicia com a lista "ocupados" vazia
+ARQ_ESTADO = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gerenciador.estado')
+ESTADO_INTERVALO_S = 20
+
+
+def versao_do_codigo():
+    """Commit com que este processo subiu: diferente do que está no disco = falta reiniciar."""
+    try:
+        return subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=os.path.dirname(os.path.abspath(__file__)),
+                              capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception:
+        return ''
+
+
+VERSAO = versao_do_codigo()
+
+
+def robos_ocupados():
+    ocupados = []
+    for nome in ('coupa', 'vale'):
+        bot = globals().get(f'bot_{nome}')
+        th = getattr(bot, 'thread_atual', None) if bot else None
+        if th is not None and th.is_alive():
+            ocupados.append(nome)
+    for nome, var in (('me', 'processo_me'), ('ariba', 'bot_ariba'), ('findes', 'bot_findes')):
+        proc = globals().get(var)
+        if proc is not None and proc.poll() is None:
+            ocupados.append(nome)
+    return ocupados
+
+
+def gravar_estado():
+    tmp = ARQ_ESTADO + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump({'pid': os.getpid(), 'em': time.time(), 'versao': VERSAO, 'ocupados': robos_ocupados()}, f)
+    os.replace(tmp, ARQ_ESTADO)
+
+
+def loop_estado():
+    while True:
+        try:
+            gravar_estado()
+        except Exception:
+            logger.exception('Falha ao gravar gerenciador.estado')
+        time.sleep(ESTADO_INTERVALO_S)
+
+if __name__ == '__main__':   # só o processo do gerenciador; import nos testes não liga
+    threading.Thread(target=loop_estado, daemon=True).start()
 
 # CREDENCIAIS DA LOCAWEB
 SMTP_USER = CONFIG_GLOBAL.get("SMTP_USER", os.environ.get("SMTP_USER", ""))
@@ -1057,6 +1122,12 @@ def salvar_config_admin(dados):
     global CONFIG_GLOBAL, SMTP_USER, SMTP_PASSWORD
     client_id = dados.get('clientId')
     nova_config = dados.get('config')
+    if not isinstance(nova_config, dict) or not nova_config:
+        # painel sem dados (ex.: gerenciador reconectando) apagaria o CONFIG.json inteiro
+        sio.emit('receber_config_admin', {'config': CONFIG_GLOBAL, 'clientId': client_id, 'sucesso': False,
+                                          'erro': 'Configuração vazia: nada foi salvo.'})
+        return
+    nova_config = com_padroes(nova_config)
     salvar_config(nova_config)
     CONFIG_GLOBAL = nova_config
     SMTP_USER = CONFIG_GLOBAL.get("SMTP_USER", os.environ.get("SMTP_USER", ""))
@@ -1680,6 +1751,42 @@ def comando_eventos(dados):
     except Exception as e:
         sio.emit('retorno_eventos', {'sucesso': False, 'erro': str(e), 'clientId': dados.get('clientId')})
 
+# --- Monitoramento do servidor (CPU/RAM/GPU/VRAM) via winserver.py -----------------------------
+HISTORICO_SERVIDOR = []          # amostras {t, cpu, ram, gpu, vram}; ~1h a cada 5 s
+_LIM_HISTORICO_SERVIDOR = 720
+_ultima_metrica_servidor = {}
+
+def loop_metricas_servidor():
+    """Amostra o hardware do servidor em segundo plano para o painel servidor.html."""
+    global _ultima_metrica_servidor
+    try:
+        import winserver
+    except Exception as e:
+        logger.warning(f'winserver indisponível (instale psutil/pynvml): {e}')
+        return
+    while True:
+        try:
+            m = winserver.coletar_metricas()
+            _ultima_metrica_servidor = m
+            HISTORICO_SERVIDOR.append({'t': datetime.now().isoformat(timespec='seconds'),
+                                       'cpu': m['cpu'], 'ram': m['ram'], 'gpu': m['gpu'], 'vram': m['vram']})
+            del HISTORICO_SERVIDOR[:-_LIM_HISTORICO_SERVIDOR]
+        except Exception:
+            logger.exception('Falha ao coletar métricas do servidor')
+        time.sleep(4.5)
+
+@sio.on('comando_servidor_metricas')
+def comando_servidor_metricas(dados):
+    """Dashboard Servidor: consumo atual e histórico recente (só leitura)."""
+    dados = dados if isinstance(dados, dict) else {}
+    cid = dados.get('clientId')
+    if not _ultima_metrica_servidor:
+        sio.emit('retorno_servidor_metricas', {'sucesso': False, 'clientId': cid,
+                 'erro': 'Métricas indisponíveis: winserver.py não está coletando (verifique psutil/pynvml).'})
+        return
+    sio.emit('retorno_servidor_metricas', {'sucesso': True, 'clientId': cid,
+             'metricas': {'atual': _ultima_metrica_servidor, 'historico': list(HISTORICO_SERVIDOR)}})
+
 MAPA_LOGS_TXT = {
     'coupa': ('Robô Coupa', 'log-coupa.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\log-coupa.txt']),
     'vale': ('Robô Vale', 'log-vale.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\log-vale.txt']),
@@ -2073,6 +2180,7 @@ if __name__ == '__main__':
     threading.Thread(target=loop_automacao, daemon=True).start()
     threading.Thread(target=monitorar_pastas_impressao, daemon=True).start()
     threading.Thread(target=loop_agendamento, daemon=True).start()
+    threading.Thread(target=loop_metricas_servidor, daemon=True).start()
     backup_inicial()
     try:
         logger.info(f"Conectando ao servidor: {URL_DO_SERVIDOR} ...")

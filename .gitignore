@@ -14,7 +14,10 @@ banco_ips_bloqueados.json
 banco_teste.jsonl
 teste.xlsx
 gerenciador.instancia
+gerenciador.estado
+gerenciador.estado.tmp
 
 # Bases do modo teste e relatórios gerados (docs/melhorias-bots)
 base_teste/
 relatorios/
+perfis_chrome/
