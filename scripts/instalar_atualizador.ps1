@@ -4,15 +4,16 @@
 # Desinstalar:  schtasks /Delete /TN "Maestro Atualizador" /F
 $ErrorActionPreference = 'Stop'
 
-$python = (Get-Command python.exe).Source
+$python = (Get-Command python.exe).Definition    # .Source so existe no PowerShell 5+
 $pythonw = Join-Path (Split-Path $python) 'pythonw.exe'    # sem janela piscando a cada 5 min
 if (-not (Test-Path $pythonw)) { $pythonw = $python }
-$script = Join-Path $PSScriptRoot 'atualizador.py'
+$pasta = Split-Path -Parent $MyInvocation.MyCommand.Path    # $PSScriptRoot nao existe no PowerShell 2
+$script = Join-Path $pasta 'atualizador.py'
 
 schtasks /Create /TN "Maestro Atualizador" /SC MINUTE /MO 5 /TR "`"$pythonw`" `"$script`"" /RL HIGHEST /IT /F
 if ($LASTEXITCODE -ne 0) { throw "Nao foi possivel criar a tarefa agendada." }
 
 Write-Host ""
 Write-Host "Tarefa 'Maestro Atualizador' criada: $pythonw $script"
-Write-Host "Log: $(Join-Path (Split-Path $PSScriptRoot) 'logs\atualizador\atualizador.log')"
+Write-Host "Log: $(Join-Path (Split-Path $pasta) 'logs\atualizador\atualizador.log')"
 Write-Host "Liga/desliga: 'atualizacao_automatica' (sim/nao) em Configuracoes do dashboard2."
