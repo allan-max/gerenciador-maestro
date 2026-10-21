@@ -1788,24 +1788,29 @@ def comando_eventos(dados):
 HISTORICO_SERVIDOR = []          # amostras {t, cpu, ram, gpu, vram}; ~1h a cada 5 s
 _LIM_HISTORICO_SERVIDOR = 720
 _ultima_metrica_servidor = {}
+_erro_metrica_servidor = None
 
 def loop_metricas_servidor():
     """Amostra o hardware do servidor em segundo plano para o painel servidor.html."""
-    global _ultima_metrica_servidor
-    try:
-        import winserver
-    except Exception as e:
-        logger.warning(f'winserver indisponível (instale psutil/pynvml): {e}')
-        return
+    global _ultima_metrica_servidor, _erro_metrica_servidor
+    winserver = None
     while True:
         try:
+            if winserver is None:
+                import winserver   # tenta de novo a cada ciclo: basta instalar/copiar o que faltou
             m = winserver.coletar_metricas()
+            _erro_metrica_servidor = None
             _ultima_metrica_servidor = m
             HISTORICO_SERVIDOR.append({'t': datetime.now().isoformat(timespec='seconds'),
                                        'cpu': m['cpu'], 'ram': m['ram'], 'gpu': m['gpu'], 'vram': m['vram']})
             del HISTORICO_SERVIDOR[:-_LIM_HISTORICO_SERVIDOR]
-        except Exception:
-            logger.exception('Falha ao coletar métricas do servidor')
+        except Exception as e:
+            msg = f'{type(e).__name__}: {e}'
+            if msg != _erro_metrica_servidor:
+                logger.warning(f'Métricas do servidor indisponíveis: {msg}')
+            _erro_metrica_servidor = msg
+            winserver = None
+            time.sleep(25)
         time.sleep(4.5)
 
 @sio.on('comando_servidor_metricas')
@@ -1815,7 +1820,7 @@ def comando_servidor_metricas(dados):
     cid = dados.get('clientId')
     if not _ultima_metrica_servidor:
         sio.emit('retorno_servidor_metricas', {'sucesso': False, 'clientId': cid,
-                 'erro': 'Métricas indisponíveis: winserver.py não está coletando (verifique psutil/pynvml).'})
+                 'erro': 'Métricas indisponíveis no gerenciador' + (f': {_erro_metrica_servidor}' if _erro_metrica_servidor else ' (ainda coletando a primeira leitura).')})
         return
     sio.emit('retorno_servidor_metricas', {'sucesso': True, 'clientId': cid,
              'metricas': {'atual': _ultima_metrica_servidor, 'historico': list(HISTORICO_SERVIDOR)}})
