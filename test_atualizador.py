@@ -34,7 +34,10 @@ class Repos(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         self.eventos = []
+        logs = self.tmp / 'logs'
+        logs.mkdir()
         for alvo in (patch.object(atualizador.eventos, 'registrar', lambda *a, **k: self.eventos.append(a)),
+                     patch.object(atualizador, 'pasta', lambda: str(logs)),   # 21/10: os testes escreviam no atualizador.log de produção
                      patch.object(atualizador, 'enviar_email', lambda msg: None)):
             alvo.start()
             self.addCleanup(alvo.stop)
