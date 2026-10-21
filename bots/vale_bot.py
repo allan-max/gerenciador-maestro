@@ -664,10 +664,11 @@ class ValeScraper:
                     
                     res = self.extrair_dados_do_evento(t['url'], t['num'], re_extrair=t.get('re_extrair', False), venc_tabela=t.get('venc_tabela', ''))
                     
-                    if res == "ENCERRADO" and t.get('re_extrair'):
-                        # Reaberto que já encerrou: guarda a data nova, senão volta em todo ciclo (Oops/0 itens tentam de novo)
+                    if res == "ENCERRADO":
+                        # "Já terminou" é definitivo: grava (novo ou reaberto) com a data da tabela, senão volta em todo
+                        # ciclo. Se reabrir de novo, a data muda e ele volta como REABERTO. Oops/0 itens tentam de novo.
                         anterior = self.db_eventos.get(t['num'], {})
-                        self.salvar_evento_jsonl(t['num'], anterior.get('respondido', True), t.get('venc_tabela', ''))
+                        self.salvar_evento_jsonl(t['num'], anterior.get('respondido', bool(t.get('re_extrair'))), t.get('venc_tabela', ''))
 
                     if res is None:
                         self.relatorio_email_stats['erros_extracao'].append(t['num'])
