@@ -60,10 +60,32 @@ class ConfigDoGerenciadorTest(unittest.TestCase):
     def test_salvar_pelo_painel_mantem_as_chaves_e_recusa_config_vazia(self):
         Path('CONFIG.json').write_text(json.dumps({'SMTP_USER': 'x'}), encoding='utf-8')
         self.ns['salvar_config_admin']({'clientId': 'c', 'config': {'SMTP_USER': 'y', 'vale_verificacao_max_paginas': '200'}})
-        self.assertEqual(self.ler(), {'SMTP_USER': 'y', 'vale_verificacao_max_paginas': '200', 'coupa_verificacao_max_paginas': 60})
+        self.assertEqual(self.ler(), {'SMTP_USER': 'y', 'vale_verificacao_max_paginas': '200', 'coupa_verificacao_max_paginas': 60,
+                                      'atualizacao_automatica': 'sim'})
         self.ns['salvar_config_admin']({'clientId': 'c', 'config': {}})
         self.assertEqual(self.ler()['SMTP_USER'], 'y')                                  # não apagou o arquivo
         self.assertFalse(self.sio.emit.call_args[0][1]['sucesso'])
+
+
+class EstadoDoGerenciadorTest(unittest.TestCase):
+    """gerenciador.estado: o atualizador automático só reinicia com a lista "ocupados" vazia."""
+
+    def test_tarefa_ou_processo_aberto_e_ocupado(self):
+        import threading
+        trabalhando = threading.Event()
+        th = threading.Thread(target=trabalhando.wait, daemon=True)
+        th.start()
+        self.addCleanup(trabalhando.set)
+        aberto, fechado = SimpleNamespace(poll=lambda: None), SimpleNamespace(poll=lambda: 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            arq = os.path.join(tmp, 'gerenciador.estado')
+            ns = carregar(RAIZ / 'gerenciador.py', {'robos_ocupados', 'gravar_estado'}, os=os, json=json, time=__import__('time'),
+                          ARQ_ESTADO=arq, VERSAO='abc123', bot_coupa=SimpleNamespace(thread_atual=th),
+                          bot_vale=SimpleNamespace(thread_atual=None), processo_me=aberto, bot_ariba=fechado, bot_findes=None)
+            self.assertEqual(ns['robos_ocupados'](), ['coupa', 'me'])
+            ns['gravar_estado']()
+            estado = json.loads(Path(arq).read_text(encoding='utf-8'))
+        self.assertEqual((estado['pid'], estado['versao'], estado['ocupados']), (os.getpid(), 'abc123', ['coupa', 'me']))
 
 
 class NavegadorTest(unittest.TestCase):
