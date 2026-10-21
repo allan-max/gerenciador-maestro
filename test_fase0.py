@@ -180,7 +180,7 @@ class NormalizarRespostasTest(unittest.TestCase):
 class ReabertosTest(unittest.TestCase):
     CHAMADA = "res = self.extrair_dados_do_evento(t['url'], t['num']"
 
-    def test_so_o_reaberto_encerrado_guarda_a_data_nova_nos_dois_robos(self):
+    def test_encerrado_novo_ou_reaberto_e_gravado_nos_dois_robos(self):
         # Oops e 0 itens são passageiros e continuam devolvendo SKIPPED (tentam de novo); só "encerrado" é definitivo
         for arquivo, classe in (('bots/coupa/mixins/extracao.py', 'ExtracaoMixin'), ('bots/vale_bot.py', 'ValeScraper')):
             with self.subTest(arquivo):
@@ -192,8 +192,9 @@ class ReabertosTest(unittest.TestCase):
                 self.assertIn('SKIPPED', retornos)
                 fonte = (RAIZ / arquivo).read_text(encoding='utf-8')
                 depois = fonte[fonte.index(self.CHAMADA):][:900]
-                self.assertIn('if res == "ENCERRADO" and t.get(\'re_extrair\'):', depois)
-                self.assertIn("self.salvar_evento_jsonl(t['num'], anterior.get('respondido', True), t.get('venc_tabela', ''))", depois)
+                # 21/10: 292770 e 292832 (fora do JSONL e já encerradas) voltavam em todo ciclo
+                self.assertIn('if res == "ENCERRADO":', depois)
+                self.assertIn("self.salvar_evento_jsonl(t['num'], anterior.get('respondido', bool(t.get('re_extrair'))), t.get('venc_tabela', ''))", depois)
                 self.assertIn('if res and res not in ("SKIPPED", "ENCERRADO"):', depois)   # encerrado não vira dado extraído
 
     def test_jsonl_com_a_data_nova_nao_e_mais_reaberto(self):
