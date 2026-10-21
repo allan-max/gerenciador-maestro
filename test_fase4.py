@@ -119,7 +119,7 @@ class InatividadeTest(unittest.TestCase):
 class ComandoParaRoboTest(unittest.TestCase):
     def ns(self, **globais):
         base = dict(threading=threading, logger=LOGGER, bot_coupa=None, bot_vale=None)
-        return gerenciador(extras={'comando_para_robo'}, **{**base, **globais})
+        return gerenciador(extras={'comando_para_robo', 'pedido_repetido'}, **{**base, **globais})
 
     def test_segundo_ligar_nao_cria_outro_navegador(self):
         existente = SimpleNamespace(is_ready=True)
@@ -149,6 +149,34 @@ class ComandoParaRoboTest(unittest.TestCase):
             bot.thread_atual.join(5)
         self.assertIsNot(bot.thread_atual, primeira)
         self.assertEqual(ordem, ['início extrair', 'fim extrair', 'início responder', 'fim responder'])
+
+    def rodar_pedidos(self, modos):
+        rodou, liberar = [], threading.Event()
+        bot = SimpleNamespace(thread_atual=None, iniciar_tarefa=lambda modo, d: (rodou.append(modo), liberar.wait(5)))
+        ns = self.ns(bot_coupa=bot)
+        threads = []
+        with patch.object(LOGGER, 'handle'):
+            for modo in modos:
+                ns['comando_para_robo']({'modo': modo, 'portal': 'coupa'})
+                threads.append(bot.thread_atual)
+            time_real.sleep(0.2)
+            vivas = [th.is_alive() for th in threads]
+            liberar.set()
+            for th in threads:
+                th.join(5)
+        return rodou, threads, vivas, ns
+
+    def test_pedido_repetido_nao_roda_de_novo_e_o_piloto_ve_o_comando_chegar(self):
+        # 21/10: o "verificar" da Vale chegou duas vezes e rodou duas verificações
+        rodou, threads, vivas, ns = self.rodar_pedidos(['verificar', 'verificar'])
+        self.assertEqual(rodou, ['verificar'])
+        self.assertIsNot(threads[1], threads[0])            # executar_tarefa espera o thread_atual mudar
+        self.assertEqual(vivas, [True, True])               # e a cópia fica viva enquanto a original roda (robô ocupado)
+        self.assertIn("pedido repetido ignorado", str(ns['sio'].emit.call_args_list))
+
+    def test_igual_a_um_pedido_do_meio_da_fila_roda_normalmente(self):
+        rodou, *_ = self.rodar_pedidos(['verificar', 'extrair', 'verificar'])
+        self.assertEqual(rodou, ['verificar', 'extrair', 'verificar'])
 
     def test_tarefa_na_fila_e_descartada_se_o_robo_foi_desligado(self):
         rodou, liberar = [], threading.Event()
