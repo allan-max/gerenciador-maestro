@@ -1784,6 +1784,42 @@ def comando_eventos(dados):
     except Exception as e:
         sio.emit('retorno_eventos', {'sucesso': False, 'erro': str(e), 'clientId': dados.get('clientId')})
 
+# --- Monitoramento do servidor (CPU/RAM/GPU/VRAM) via winserver.py -----------------------------
+HISTORICO_SERVIDOR = []          # amostras {t, cpu, ram, gpu, vram}; ~1h a cada 5 s
+_LIM_HISTORICO_SERVIDOR = 720
+_ultima_metrica_servidor = {}
+
+def loop_metricas_servidor():
+    """Amostra o hardware do servidor em segundo plano para o painel servidor.html."""
+    global _ultima_metrica_servidor
+    try:
+        import winserver
+    except Exception as e:
+        logger.warning(f'winserver indisponível (instale psutil/pynvml): {e}')
+        return
+    while True:
+        try:
+            m = winserver.coletar_metricas()
+            _ultima_metrica_servidor = m
+            HISTORICO_SERVIDOR.append({'t': datetime.now().isoformat(timespec='seconds'),
+                                       'cpu': m['cpu'], 'ram': m['ram'], 'gpu': m['gpu'], 'vram': m['vram']})
+            del HISTORICO_SERVIDOR[:-_LIM_HISTORICO_SERVIDOR]
+        except Exception:
+            logger.exception('Falha ao coletar métricas do servidor')
+        time.sleep(4.5)
+
+@sio.on('comando_servidor_metricas')
+def comando_servidor_metricas(dados):
+    """Dashboard Servidor: consumo atual e histórico recente (só leitura)."""
+    dados = dados if isinstance(dados, dict) else {}
+    cid = dados.get('clientId')
+    if not _ultima_metrica_servidor:
+        sio.emit('retorno_servidor_metricas', {'sucesso': False, 'clientId': cid,
+                 'erro': 'Métricas indisponíveis: winserver.py não está coletando (verifique psutil/pynvml).'})
+        return
+    sio.emit('retorno_servidor_metricas', {'sucesso': True, 'clientId': cid,
+             'metricas': {'atual': _ultima_metrica_servidor, 'historico': list(HISTORICO_SERVIDOR)}})
+
 MAPA_LOGS_TXT = {
     'coupa': ('Robô Coupa', 'log-coupa.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\log-coupa.txt']),
     'vale': ('Robô Vale', 'log-vale.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\log-vale.txt']),
@@ -2177,6 +2213,7 @@ if __name__ == '__main__':
     threading.Thread(target=loop_automacao, daemon=True).start()
     threading.Thread(target=monitorar_pastas_impressao, daemon=True).start()
     threading.Thread(target=loop_agendamento, daemon=True).start()
+    threading.Thread(target=loop_metricas_servidor, daemon=True).start()
     backup_inicial()
     try:
         logger.info(f"Conectando ao servidor: {URL_DO_SERVIDOR} ...")
