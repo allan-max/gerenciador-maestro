@@ -10,7 +10,8 @@ if (-not (Test-Path $pythonw)) { $pythonw = $python }
 $pasta = Split-Path -Parent $MyInvocation.MyCommand.Path    # $PSScriptRoot nao existe no PowerShell 2
 $script = Join-Path $pasta 'atualizador.py'
 
-schtasks /Create /TN "Maestro Atualizador" /SC MINUTE /MO 5 /TR "`"$pythonw`" `"$script`"" /RL HIGHEST /IT /F
+# \" : o PowerShell (ate o 5.1) nao repassa aspas internas para programas externos
+schtasks /Create /TN "Maestro Atualizador" /SC MINUTE /MO 5 /TR "\`"$pythonw\`" \`"$script\`"" /RL HIGHEST /IT /F
 if ($LASTEXITCODE -ne 0) { throw "Nao foi possivel criar a tarefa agendada." }
 
 Write-Host ""
