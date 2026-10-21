@@ -134,6 +134,56 @@ def salvar_config(novas_config):
     with open('CONFIG.json', 'w', encoding='utf-8') as f:
         json.dump(novas_config, f, indent=4, ensure_ascii=False)
 
+
+# Estado para o atualizador automático (scripts/atualizador.py): ele só reinicia com a lista "ocupados" vazia
+ARQ_ESTADO = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gerenciador.estado')
+ESTADO_INTERVALO_S = 20
+
+
+def versao_do_codigo():
+    """Commit com que este processo subiu: diferente do que está no disco = falta reiniciar."""
+    try:
+        return subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=os.path.dirname(os.path.abspath(__file__)),
+                              capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception:
+        return ''
+
+
+VERSAO = versao_do_codigo()
+
+
+def robos_ocupados():
+    ocupados = []
+    for nome in ('coupa', 'vale'):
+        bot = globals().get(f'bot_{nome}')
+        th = getattr(bot, 'thread_atual', None) if bot else None
+        if th is not None and th.is_alive():
+            ocupados.append(nome)
+    for nome, var in (('me', 'processo_me'), ('ariba', 'bot_ariba'), ('findes', 'bot_findes')):
+        proc = globals().get(var)
+        if proc is not None and proc.poll() is None:
+            ocupados.append(nome)
+    return ocupados
+
+
+def gravar_estado():
+    tmp = ARQ_ESTADO + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump({'pid': os.getpid(), 'em': time.time(), 'versao': VERSAO, 'ocupados': robos_ocupados()}, f)
+    os.replace(tmp, ARQ_ESTADO)
+
+
+def loop_estado():
+    while True:
+        try:
+            gravar_estado()
+        except Exception:
+            logger.exception('Falha ao gravar gerenciador.estado')
+        time.sleep(ESTADO_INTERVALO_S)
+
+if __name__ == '__main__':   # só o processo do gerenciador; import nos testes não liga
+    threading.Thread(target=loop_estado, daemon=True).start()
+
 # CREDENCIAIS DA LOCAWEB
 SMTP_USER = CONFIG_GLOBAL.get("SMTP_USER", os.environ.get("SMTP_USER", ""))
 SMTP_PASSWORD = CONFIG_GLOBAL.get("SMTP_PASSWORD", os.environ.get("SMTP_PASSWORD", ""))
@@ -2026,52 +2076,6 @@ def loop_agendamento():
 
 threading.Thread(target=loop_agendamento, daemon=True).start()
 
-# Estado para o atualizador automático (scripts/atualizador.py): ele só reinicia com a lista "ocupados" vazia
-ARQ_ESTADO = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gerenciador.estado')
-ESTADO_INTERVALO_S = 20
-
-
-def versao_do_codigo():
-    """Commit com que este processo subiu: diferente do que está no disco = falta reiniciar."""
-    try:
-        return subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=os.path.dirname(os.path.abspath(__file__)),
-                              capture_output=True, text=True, timeout=10).stdout.strip()
-    except Exception:
-        return ''
-
-
-VERSAO = versao_do_codigo()
-
-
-def robos_ocupados():
-    ocupados = []
-    for nome in ('coupa', 'vale'):
-        bot = globals().get(f'bot_{nome}')
-        th = getattr(bot, 'thread_atual', None) if bot else None
-        if th is not None and th.is_alive():
-            ocupados.append(nome)
-    for nome, var in (('me', 'processo_me'), ('ariba', 'bot_ariba'), ('findes', 'bot_findes')):
-        proc = globals().get(var)
-        if proc is not None and proc.poll() is None:
-            ocupados.append(nome)
-    return ocupados
-
-
-def gravar_estado():
-    tmp = ARQ_ESTADO + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump({'pid': os.getpid(), 'em': time.time(), 'versao': VERSAO, 'ocupados': robos_ocupados()}, f)
-    os.replace(tmp, ARQ_ESTADO)
-
-
-def loop_estado():
-    while True:
-        try:
-            gravar_estado()
-        except Exception:
-            logger.exception('Falha ao gravar gerenciador.estado')
-        time.sleep(ESTADO_INTERVALO_S)
-
 # Forcar um backup logo ao ligar, se nao existir backup de hoje
 try:
     caminho_backup_dir = CONFIG_GLOBAL.get("caminho_backups", "backups")
@@ -2083,7 +2087,6 @@ try:
 except: pass
 
 if __name__ == '__main__':
-    threading.Thread(target=loop_estado, daemon=True).start()
     try:
         logger.info(f"Conectando ao servidor: {URL_DO_SERVIDOR} ...")
         sio.connect(URL_DO_SERVIDOR, auth={"robo_secret": ROBO_SECRET})
