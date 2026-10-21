@@ -159,10 +159,11 @@ class VerificacaoMixin:
 
     def _relatorio_nao_encontradas(self, pendentes, vistos):
         faltando = [r for n, r in pendentes.items() if n not in vistos]
+        caminho = PASTA_RELATORIOS / f"verificacao_coupa_{datetime.now():%Y-%m-%d}.csv"
         if not faltando:
+            caminho.unlink(missing_ok=True)   # relatório de uma rodada anterior do dia não vale mais
             return None
         PASTA_RELATORIOS.mkdir(exist_ok=True)
-        caminho = PASTA_RELATORIOS / f"verificacao_coupa_{datetime.now():%Y-%m-%d}.csv"
         with open(caminho, 'w', newline='', encoding='utf-8-sig') as f:
             w = csv.writer(f, delimiter=';')
             w.writerow(['COTAÇÃO', 'VENCIMENTO', 'RESPOSTA', 'VENDEDOR'])

@@ -234,8 +234,12 @@ class VerificacaoTest(BaseTemporaria):
 
     def test_para_quando_acha_todas_as_pendentes(self):
         paginas = [[Linha('100', '0'), Linha('102', '1')], [Linha('101', '0')], [Linha('104', '0')]]
+        velho = self.dir / 'relatorios' / f'verificacao_coupa_{datetime.now():%Y-%m-%d}.csv'
+        velho.parent.mkdir()
+        velho.write_text('rodada anterior do dia')
         bot, *_ = self.rodar(paginas, db=('100', '102'))
         self.assertEqual(bot.driver.abertas, [1])
+        self.assertFalse(velho.exists())                 # nada faltou: o relatório velho não fica enganando
         self.assertEqual(self.respostas()['102#2'], 'RESPONDIDO')
 
     def test_portal_que_cai_no_meio_grava_o_que_ja_leu(self):

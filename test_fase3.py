@@ -133,6 +133,9 @@ class VerificacaoValeTest(BaseTemporaria):
         self.assertEqual(bot.driver.abas, ['principal'])      # fechou a aba da verificação
         with open(self.dir / 'relatorios' / f'verificacao_vale_{datetime.now():%Y-%m-%d}.csv', encoding='utf-8-sig') as f:
             self.assertEqual(list(csv.reader(f, delimiter=';'))[1], ['54268', PAS_REAL, 'RASCUNHO', 'BIA'])
+        # 21/10: a segunda rodada do dia achou todas, mas o CSV da primeira ficou na pasta
+        self.rodar([[LinhaVale('54291', '0'), LinhaVale('54268', '1')]])
+        self.assertFalse((self.dir / 'relatorios' / f'verificacao_vale_{datetime.now():%Y-%m-%d}.csv').exists())
 
     def test_lista_que_nao_carrega_e_erro_e_nao_lista_vazia(self):
         antes = self.cota.read_bytes()

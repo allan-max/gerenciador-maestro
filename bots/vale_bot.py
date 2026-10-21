@@ -2441,11 +2441,13 @@ Vale Bot
 
     def _relatorio_nao_encontradas_vale(self, pendentes, vistos):
         faltando = [r for n, r in pendentes.items() if n not in vistos]
-        if not faltando:
-            return None
         pasta = os.path.join(ambiente.RAIZ, 'relatorios')
-        os.makedirs(pasta, exist_ok=True)
         caminho = os.path.join(pasta, f"verificacao_vale_{datetime.now():%Y-%m-%d}.csv")
+        if not faltando:
+            if os.path.exists(caminho):
+                os.remove(caminho)   # relatório de uma rodada anterior do dia não vale mais
+            return None
+        os.makedirs(pasta, exist_ok=True)
         with open(caminho, 'w', newline='', encoding='utf-8-sig') as f:
             w = csv.writer(f, delimiter=';')
             w.writerow(['COTAÇÃO', 'VENCIMENTO', 'RESPOSTA', 'VENDEDOR'])
