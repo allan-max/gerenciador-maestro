@@ -620,7 +620,9 @@ def carregar_usuarios():
 @sio.on("validar_login")
 def validar_login(dados):
     usuarios = carregar_usuarios()
-    email, senha, cid = str(dados.get('user') or '').strip().lower(), dados.get('pass'), dados.get('clientId')
+    digitado, senha, cid = str(dados.get('user') or '').strip(), dados.get('pass'), dados.get('clientId')
+    # e-mail sem diferença de maiúscula, mas usando a chave como está no banco (contas antigas criadas à mão)
+    email = digitado if digitado in usuarios else next((k for k in usuarios if k.lower() == digitado.lower()), digitado)
 
     if email in usuarios and seguranca.conferir_senha(usuarios[email].get('senha'), senha):
         if not seguranca.eh_hash(usuarios[email].get('senha')):

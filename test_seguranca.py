@@ -68,9 +68,10 @@ class EntradaDoPortalTest(unittest.TestCase):
                 seguranca.prioridades_ariba(ruim)
 
     def test_eventos_do_findes(self):
-        self.assertEqual(seguranca.eventos_findes('123/2026, PE-45 ,, a_b.1'), ['123/2026', 'PE-45', 'a_b.1'])
+        self.assertEqual(seguranca.eventos_findes('123/2026, PE-45 ,, a_b.1, PE 045, Licitação 7'),
+                         ['123/2026', 'PE-45', 'a_b.1', 'PE 045', 'Licitação 7'])
         self.assertEqual(seguranca.eventos_findes(''), [])
-        for ruim in ('1"', '1\nsair', '{ENTER}', '1 2'):
+        for ruim in ('1"', '1\nsair', '{ENTER}', '1+2', '%{F4}', '(x)'):
             with self.assertRaises(ValueError):
                 seguranca.eventos_findes(ruim)
 
@@ -80,9 +81,9 @@ class EntradaDoPortalTest(unittest.TestCase):
             seguranca.texto_vbs('a\r\nb')
 
     def test_nome_de_impressora(self):
-        for bom in ('SAMSUNGCOM', 'HP LaserJet P205X series PCL6 Class Driver', r'\\SERVIDOR2\HP (1)'):
+        for bom in ('SAMSUNGCOM', 'HP LaserJet P205X series PCL6 Class Driver', r'\\SERVIDOR2\HP (1)', 'Impressora Térreo #2'):
             self.assertEqual(seguranca.nome_impressora(bom), bom)
-        for ruim in ('HP" & calc & "', 'a|b', 'a\nb', '', None, 'x' * 101):
+        for ruim in ('HP" & calc & "', 'a|b', 'a\nb', 'HP\n', '', None, 'x' * 101):
             with self.assertRaises(ValueError):
                 seguranca.nome_impressora(ruim)
 
@@ -107,6 +108,14 @@ class ContasTest(unittest.TestCase):
         guardada = salvos[-1]['ana@venturainformatica.com.br']['senha']
         self.assertTrue(seguranca.eh_hash(guardada))
         self.assertTrue(seguranca.conferir_senha(guardada, 'antiga'))
+
+    def test_conta_antiga_com_maiuscula_no_banco_ainda_entra(self):
+        usuarios = {'Ana@venturainformatica.com.br': {'senha': seguranca.gerar_hash('certa'), 'verificado': True}}
+        ns, sio, _ = contas(carregar_usuarios=lambda: usuarios)
+        ns['validar_login']({'user': 'ana@venturainformatica.com.br', 'pass': 'certa', 'clientId': 'c1'})
+        resposta = sio.ultimo('resultado_login')
+        self.assertTrue(resposta['sucesso'])
+        self.assertEqual(resposta['user'], 'Ana@venturainformatica.com.br')
 
     def test_login_errado_nao_grava(self):
         usuarios = {'ana@venturainformatica.com.br': {'senha': seguranca.gerar_hash('certa'), 'verificado': True}}

@@ -46,7 +46,7 @@ EMAIL_VENTURA = re.compile(r'^[a-z0-9._%+-]+@venturainformatica\.com\.br$')
 
 
 def email_ventura(email):
-    return bool(EMAIL_VENTURA.match(email or ''))
+    return bool(EMAIL_VENTURA.fullmatch(email or ''))
 
 
 # Painel dev: tudo menos senha e tokens
@@ -61,22 +61,23 @@ def usuarios_sem_segredos(usuarios, online=()):
 
 # Ariba: botões de empresa do portal mandam "1 2 3"
 PRIORIDADES_ARIBA = re.compile(r'^[0-9]+([ ,][0-9]+)*$')
-# Findes: números de evento digitados à mão ("123/2026", "PE-45")
-EVENTO_FINDES = re.compile(r'^[A-Za-z0-9._/-]{1,60}$')
+# Findes: números de evento digitados à mão ("123/2026", "PE-45", "PE 045"). Letras com acento passam;
+# aspas, quebra de linha e os comandos do SendKeys (+ ^ % ~ ( ) { } [ ]) não.
+EVENTO_FINDES = re.compile(r'^[\w ./-]{1,60}$')
 
 
 def prioridades_ariba(texto):
     texto = ' '.join(str(texto or '').split()) or '1'
-    if len(texto) > 60 or not PRIORIDADES_ARIBA.match(texto):
+    if len(texto) > 60 or not PRIORIDADES_ARIBA.fullmatch(texto):
         raise ValueError('Prioridades inválidas: use só números separados por espaço.')
     return texto
 
 
 def eventos_findes(texto):
     eventos = [e.strip() for e in str(texto or '').split(',') if e.strip()]
-    invalidos = [e for e in eventos if not EVENTO_FINDES.match(e)]
+    invalidos = [e for e in eventos if not EVENTO_FINDES.fullmatch(e)]
     if invalidos:
-        raise ValueError('Evento inválido: use letras, números, ".", "/", "-" ou "_".')
+        raise ValueError('Evento inválido: use letras, números, espaço, ".", "/", "-" ou "_".')
     return eventos
 
 
@@ -88,10 +89,10 @@ def texto_vbs(texto):
     return texto.replace('"', '""')
 
 
-NOME_IMPRESSORA = re.compile(r'^[A-Za-z0-9 ._()\\-]{1,100}$')
+NOME_IMPRESSORA = re.compile(r'^[\w ._()#,\\-]{1,100}$')   # sem aspas nem símbolos de linha de comando
 
 
 def nome_impressora(nome):
-    if not isinstance(nome, str) or not NOME_IMPRESSORA.match(nome):
+    if not isinstance(nome, str) or not NOME_IMPRESSORA.fullmatch(nome):
         raise ValueError('Nome de impressora inválido.')
     return nome
