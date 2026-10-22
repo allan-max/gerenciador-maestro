@@ -6,6 +6,7 @@ Autor: Allan Simão
 """
 import os
 from dotenv import load_dotenv
+import ambiente
 load_dotenv()
 import re
 import time
@@ -307,8 +308,7 @@ Coupa Bot
                         "respondido": True, 
                         "vencimento_tabela": venc_tab
                     }
-                    with open(self.ARQUIVO_JSONL, 'a', encoding='utf-8') as f: 
-                        f.write(json.dumps(novo) + '\n')
+                    ambiente.acrescentar_jsonl(self.ARQUIVO_JSONL, novo)
                     self.db_eventos[d['numero_evento']] = novo
                 except: pass
             

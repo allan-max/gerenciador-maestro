@@ -91,7 +91,9 @@ class AutenticacaoMixin:
         limite_login = time.time() + LOGIN_TIMEOUT_S
         ultimo_erro = None
         email = "VENDAS@VENTURAINFORMATICA.COM.BR"
-        senha = os.environ.get("PORTAL_SENHA", os.environ.get("PORTAL_SENHA", "Ventura2025*"))
+        senha = os.environ.get("PORTAL_SENHA") or ""   # só do .env: senha no código fica pública no GitHub
+        if not senha:
+            raise RuntimeError("PORTAL_SENHA não configurada no .env do gerenciador.")
 
         while True:
             time.sleep(0.3)

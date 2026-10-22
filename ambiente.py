@@ -6,6 +6,7 @@ ou MAESTRO_TESTE=1; as bases de teste ficam em base_teste/, ao lado do código.
 """
 import json
 import os
+import threading
 from urllib.parse import urlparse
 
 RAIZ = os.path.dirname(os.path.abspath(__file__))
@@ -65,6 +66,17 @@ def paginas_verificacao(portal, config=None):
     except (TypeError, ValueError):
         return PAGINAS_VERIFICACAO_PADRAO
     return min(max(n, 1), PAGINAS_VERIFICACAO_MAX)
+
+
+# Robôs acrescentam linhas nos JSONL de eventos e o gerenciador regrava o arquivo inteiro (limpeza para re-extração):
+# sem esta trava, uma linha acrescentada entre a leitura e a troca do arquivo se perdia. Todos rodam no mesmo processo.
+TRAVA_JSONL = threading.RLock()
+
+
+def acrescentar_jsonl(caminho, registro):
+    with TRAVA_JSONL:
+        with open(caminho, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(registro) + '\n')
 
 
 def exigir_trava(caminho):

@@ -163,8 +163,7 @@ class ValeScraper:
                     "respondido": respondido,
                     "vencimento_tabela": vencimento_tabela
                 }
-                with open(self.ARQUIVO_JSONL, 'a', encoding='utf-8') as f: 
-                    f.write(json.dumps(novo) + '\n')
+                ambiente.acrescentar_jsonl(self.ARQUIVO_JSONL, novo)
                 self.db_eventos[numero] = novo
             except Exception: logger.exception(f'Falha ao gravar o evento {numero} no JSONL')
 
@@ -234,7 +233,9 @@ class ValeScraper:
         limite_login = time.time() + LOGIN_TIMEOUT_S
         ultimo_erro = None
         email = "VENDAS@VENTURAINFORMATICA.COM.BR"
-        senha = os.environ.get("PORTAL_SENHA", os.environ.get("PORTAL_SENHA", "Ventura2025*"))
+        senha = os.environ.get("PORTAL_SENHA") or ""   # só do .env: senha no código fica pública no GitHub
+        if not senha:
+            raise RuntimeError("PORTAL_SENHA não configurada no .env do gerenciador.")
 
         while True:
             time.sleep(0.3)
@@ -1881,8 +1882,7 @@ Vale Bot
                         "respondido": False, "extraido": True, 
                         "vencimento_tabela": venc_tab
                     }
-                    with open(self.ARQUIVO_JSONL, 'a', encoding='utf-8') as f: 
-                        f.write(json.dumps(novo) + '\n')
+                    ambiente.acrescentar_jsonl(self.ARQUIVO_JSONL, novo)
                     self.db_eventos[d['numero_evento']] = novo
                 except: pass
             

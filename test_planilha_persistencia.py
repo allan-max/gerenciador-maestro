@@ -73,7 +73,8 @@ class PersistenciaTest(unittest.TestCase):
         with patch('os.replace', side_effect=PermissionError('bloqueado')):
             self.assertFalse(self.manager.salvar())
         self.assertEqual(self.cota.read_bytes(), anterior)
-        self.assertEqual(len(list(Path(self.tmp.name).iterdir())), 2)
+        # só os dois JSONs, sem temporário largado (o .lock da trava combinada com o cotafrete fica, de propósito)
+        self.assertEqual(len([p for p in Path(self.tmp.name).iterdir() if p.suffix != '.lock']), 2)
         self.manager.iniciar()
         self.assertEqual(len(self.manager.cotacoes['COTAÇÃO']), 1)
 
