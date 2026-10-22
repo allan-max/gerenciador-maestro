@@ -139,7 +139,7 @@ class ContasTest(unittest.TestCase):
         self.assertTrue(seguranca.conferir_senha(salvos[-1]['a@venturainformatica.com.br']['senha'], 'nova123'))
 
     def test_painel_dev_saiu_do_gerenciador(self):
-        # dev.html foi substituído pelo dashboard2.html: nenhum evento do gerenciador entrega a lista de contas
+        # dev.html foi substituído pelo dashboard.html: nenhum evento do gerenciador entrega a lista de contas
         texto = GERENCIADOR.read_text(encoding='utf-8')
         for nome in ('pedir_dados_dev_seguro', 'resposta_painel_dev_cifrado', 'DEV_MASTER_TOKEN'):
             self.assertNotIn(nome, texto)

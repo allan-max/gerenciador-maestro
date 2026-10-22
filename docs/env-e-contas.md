@@ -19,4 +19,4 @@ O atualizador automático (`scripts/atualizador.py`) preserva esses arquivos.
 
 - Cadastro e "esqueci a senha" gravam a senha como hash PBKDF2-SHA256 com sal (`pbkdf2_sha256$...`), em `seguranca.py`.
 - Contas antigas, com a senha em texto, continuam entrando. No primeiro login certo a senha é trocada pelo hash.
-- O painel `dev.html` saiu (a gestão de contas está no `dashboard2.html`): senha e tokens não saem do servidor.
+- O painel `dev.html` saiu (a gestão de contas está no `dashboard.html`): senha e tokens não saem do servidor.
