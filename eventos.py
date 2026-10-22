@@ -107,6 +107,12 @@ def limpar(arquivo=None, agora=None):
             os.unlink(temporario)
 
 
+def ler_todos(arquivo=None):
+    """Todos, na ordem gravada (mais antigos primeiro), sem o corte de 500: o último backup do dia pode estar mais longe."""
+    with _trava:
+        return _ler(arquivo or ARQUIVO)
+
+
 def ultimos(limite=200, desde=None, arquivo=None, agora=None):
     """Mais novos primeiro, só dos últimos 7 dias (o arquivo pode ter um dia a mais até a limpeza)."""
     try:

@@ -80,6 +80,14 @@ class EventosTest(unittest.TestCase):
         self.escrever(*([0] * 600))
         self.assertEqual(len(eventos.ultimos(limite=9999)['eventos']), eventos.MAX_EVENTOS)
 
+    def test_ler_todos_sem_corte_na_ordem_gravada(self):
+        self.escrever(*([0] * 600), 1)
+        todos = eventos.ler_todos()
+        self.assertEqual(len(todos), 601)
+        self.assertEqual(todos[-1]['resumo'], '1')
+        eventos.ativar(None)
+        self.assertEqual(eventos.ler_todos(), [])
+
     def test_status_de_resposta_so_gera_evento_quando_muda(self):
         cota = Path(self.tmp.name) / 'COTAÇÕES.json'
         pedido = Path(self.tmp.name) / 'PEDIDOS.json'
@@ -140,9 +148,10 @@ class LigacaoNoGerenciadorTest(unittest.TestCase):
         self.assertIn('schedule.every().day.at("03:00").do(eventos.limpar)', self.fonte)
 
     def test_ciclos_do_auto_pilot_e_robos_registram(self):
-        for servico in ('coupa', 'vale'):
-            for nivel in ('info', 'ok', 'erro'):
-                self.assertIn(f"eventos.registrar('{servico}', 'ciclo', '{nivel}'", self.fonte)
+        # um rodar_ciclo(portal) para os dois; o comportamento está em test_sincronizacao.py
+        for nivel in ('info', 'ok', 'erro'):
+            self.assertIn(f"eventos.registrar(portal, 'ciclo', '{nivel}'", self.fonte)
+        self.assertIn("for portal in ('coupa', 'vale'):", self.fonte)
         raiz = Path(__file__).parent
         for arq, servico in (('bots/vale_bot.py', 'vale'), ('bots/coupa/mixins/planilhas.py', 'coupa')):
             texto = (raiz / arq).read_text(encoding='utf-8')

@@ -942,6 +942,7 @@ WshShell.SendKeys "~"
             bot_alvo = bot_coupa if portal == 'coupa' else bot_vale
             if bot_alvo:
                 anterior = getattr(bot_alvo, 'thread_atual', None)
+                pedido = dict(dados)
 
                 def rodar(bot=bot_alvo, anterior=anterior):
                     # Uma tarefa por vez no mesmo navegador: a nova espera a anterior terminar
@@ -952,7 +953,15 @@ WshShell.SendKeys "~"
                         logger.warning(f"{portal}: '{modo}' descartado: o robô foi desligado enquanto esperava")
                         return
                     bot.iniciar_tarefa(modo, dados)
+
+                if pedido_repetido(anterior, pedido):
+                    # Clique duplo ou ordem igual à última da fila (21/10: duas verificações da Vale): não roda de novo.
+                    # A thread só acompanha a que já existe, para o piloto (executar_tarefa) ver o comando chegar.
+                    logger.info(f"{portal}: '{modo}' igual ao último pedido da fila; não será repetido")
+                    sio.emit(f'relatar_progresso_{portal}', {'mensagem': f"⏳ '{modo}' já está em andamento ou na fila; pedido repetido ignorado."})
+                    rodar = anterior.join
                 th = threading.Thread(target=rodar, daemon=True)
+                th.pedido = pedido
                 th.start()
                 bot_alvo.thread_atual = th   # depois do start: quem espera nunca vê uma thread ainda não iniciada
             else:
@@ -1946,7 +1955,17 @@ import time
 import threading
 from datetime import datetime
 
-def rotina_backup():
+_trava_backup = threading.Lock()   # clique duplo / botão no minuto das 07:00: um copia depois do outro
+
+
+def rotina_backup(manual=False, por=None):
+    """Devolve os nomes copiados, ou None se falhou. Nunca levanta: roda dentro do schedule."""
+    with _trava_backup:
+        return _fazer_backup(manual, por)
+
+
+def _fazer_backup(manual, por):
+    detalhe = {'manual': manual, 'por': por}
     try:
         from planilha_manager import planilha_manager
         caminho_backup_dir = CONFIG_GLOBAL.get("caminho_backups", "backups")
@@ -1955,18 +1974,28 @@ def rotina_backup():
             except: pass
 
         hoje_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        copiados = []
 
         # Backup COTACOES
         if os.path.exists(planilha_manager.caminho_cotacoes):
-            shutil.copy2(planilha_manager.caminho_cotacoes, os.path.join(caminho_backup_dir, f"COTAES {hoje_str}.json"))
+            copiados.append(f"COTAES {hoje_str}.json")
+            shutil.copy2(planilha_manager.caminho_cotacoes, os.path.join(caminho_backup_dir, copiados[-1]))
 
         # Backup PEDIDOS
         if os.path.exists(planilha_manager.caminho_pedidos):
-            shutil.copy2(planilha_manager.caminho_pedidos, os.path.join(caminho_backup_dir, f"PEDIDOS {hoje_str}.json"))
+            copiados.append(f"PEDIDOS {hoje_str}.json")
+            shutil.copy2(planilha_manager.caminho_pedidos, os.path.join(caminho_backup_dir, copiados[-1]))
 
+        if not copiados:
+            raise Exception("COTAÇÕES e PEDIDOS não encontrados")
         logger.info(f"Backup realizado com sucesso as {hoje_str}")
+        eventos.registrar('gerenciador', 'backup', 'ok', f"Backup {'manual' if manual else 'automático'}: {', '.join(copiados)}",
+                          detalhe=detalhe)
+        return copiados
     except Exception as e:
         logger.error(f"Erro ao realizar backup: {e}")
+        eventos.registrar('gerenciador', 'backup', 'erro', f'Backup falhou: {e}', detalhe=detalhe)
+        return None
 
 # Agendar para toda manha as 07:00
 schedule.every().day.at("07:00").do(rotina_backup)
@@ -2047,6 +2076,12 @@ def esperar_robo_pronto(portal, timeout=120):
         time.sleep(2)
 
 
+def pedido_repetido(anterior, pedido):
+    """A última tarefa da fila ainda viva e com o mesmo pedido. Só a última: ignorar uma do meio deixaria o
+    thread_atual terminar antes das outras (o atualizador e a próxima tarefa achariam o robô livre)."""
+    return anterior is not None and anterior.is_alive() and getattr(anterior, 'pedido', None) == pedido
+
+
 def executar_tarefa(portal, modo, timeout_inicio=60):
     """Manda a tarefa e espera terminar. Erro se o comando não chegar ao robô ou se ele não confirmar sucesso
     (antes, um comando perdido ou uma extração com erro davam o ciclo como "ok")."""
@@ -2094,72 +2129,158 @@ def extracao_ok(portal):
     inatividade_alertada[portal] = False
 
 
+_trava_ciclo = threading.Lock()   # um ciclo Coupa/Vale por vez, do piloto ou manual (a tela do portal acompanha um só)
+ciclo_em_andamento = None         # 'coupa' / 'vale' enquanto um ciclo roda (para o aviso e os cartões)
+
+
+def rodar_ciclo(portal, manual=False, por=None):
+    """Liga, extrai, verifica e desliga. Quem chama segura a _trava_ciclo. A Vale verifica uma vez por dia no piloto
+    e sempre no manual (que conta como a do dia, para não pedir o OTP duas vezes). Devolve (sucesso, mensagem)."""
+    global ultimo_dia_verificacao_vale, ciclo_em_andamento
+    quem, tipo = ('Manual', 'manual') if manual else ('Auto-Pilot', 'automático')
+    nome = 'do Coupa' if portal == 'coupa' else 'da Vale'
+    canal = f'relatar_progresso_{portal}'
+    detalhe = {'manual': manual, 'por': por}
+
+    def avisar(msg):
+        sio.emit(canal, {'mensagem': f'{quem}: {msg}'})
+
+    checar_inatividade(portal)
+    ciclo_em_andamento = portal
+    try:
+        eventos.registrar(portal, 'ciclo', 'info', f'Ciclo {tipo} {nome} começou', detalhe=detalhe)
+        avisar(f'iniciando o ciclo {nome}...')
+        comandar('ligar_robo', portal)
+        esperar_robo_pronto(portal)
+        executar_tarefa(portal, 'extrair')
+        extracao_ok(portal)
+        resumo = f'Ciclo {tipo} {nome} terminou'
+        if portal == 'coupa':
+            avisar('extração do Coupa finalizada. Iniciando a verificação...')
+            executar_tarefa('coupa', 'verificar')
+        elif manual or deve_verificar_vale(datetime.now(), ultimo_dia_verificacao_vale):
+            ultimo_dia_verificacao_vale = datetime.now().date()   # uma tentativa por dia, mesmo se o OTP não vier
+            avisar('verificação da Vale (vai pedir o OTP no painel)...')
+            try:
+                executar_tarefa('vale', 'verificar')
+            except Exception as e_verif:   # OTP não informado não derruba o ciclo
+                logger.warning(f"Verificação da Vale não concluída: {e_verif}")
+                resumo += f' (verificação não concluída: {e_verif})'
+        eventos.registrar(portal, 'ciclo', 'ok', resumo, detalhe=detalhe)
+        return True, resumo
+    except Exception as e:
+        logger.error(f"Erro no ciclo {nome}: {e}")
+        if not manual:   # no manual o admin está vendo o erro no cartão
+            import traceback
+            enviar_email_erro(f"Auto-Pilot falhou {'no COUPA' if portal == 'coupa' else 'na VALE'}:\n{e}\n\n{traceback.format_exc()}")
+        eventos.registrar(portal, 'ciclo', 'erro', f'Ciclo {tipo} {nome} falhou: {e}', detalhe=detalhe)
+        sio.emit(canal, {'mensagem': f'Erro no ciclo {nome}: {e}'})
+        return False, str(e)
+    finally:
+        sio.emit('planilha_atualizada')
+        avisar(f'desligando o robô {portal.capitalize()}...')
+        try:
+            comandar('desligar_robo', portal)
+            esperar_robo_desligado(portal)
+        except Exception:
+            logger.exception(f'Falha ao desligar o robô {portal} no fim do ciclo')
+        ciclo_em_andamento = None
+
+
+def esperar_robo_desligado(portal, espera_s=60):
+    """O desligar roda no handler do socket (2 s + driver.quit()) e só depois zera o bot_<portal>. Soltar a trava
+    antes deixava o ciclo seguinte (piloto logo depois do manual) achar o robô ligado e usar um navegador fechando."""
+    limite = time.time() + espera_s
+    while globals().get('bot_' + portal) is not None and time.time() < limite:
+        time.sleep(1)
+
+
 def loop_automacao():
-    global ultimo_dia_verificacao_vale
     logger.info("Auto-Pilot: Coupa (extração + verificação) -> 1h30 -> Vale (extração + verificação diária) -> 1h30")
     time.sleep(10)
 
     while True:
-        # === COUPA ===
-        checar_inatividade('coupa')
-        try:
-            eventos.registrar('coupa', 'ciclo', 'info', 'Ciclo automático do Coupa começou')
-            sio.emit('relatar_progresso_coupa', {'mensagem': 'Auto-Pilot: iniciando o ciclo de extração do COUPA...'})
-            comandar('ligar_robo', 'coupa')
-            esperar_robo_pronto('coupa')
-            executar_tarefa('coupa', 'extrair')
-            extracao_ok('coupa')
-            sio.emit('relatar_progresso_coupa', {'mensagem': 'Auto-Pilot: extração do Coupa finalizada. Iniciando a verificação...'})
-            executar_tarefa('coupa', 'verificar')
-            eventos.registrar('coupa', 'ciclo', 'ok', 'Ciclo automático do Coupa terminou')
-        except Exception as e_coupa:
-            import traceback
-            enviar_email_erro(f"Auto-Pilot falhou no COUPA:\n{e_coupa}\n\n{traceback.format_exc()}")
-            logger.error(f"Erro no Coupa: {e_coupa}")
-            eventos.registrar('coupa', 'ciclo', 'erro', f'Ciclo automático do Coupa falhou: {e_coupa}')
-            sio.emit('relatar_progresso_coupa', {'mensagem': f'Erro no ciclo do Coupa: {e_coupa}'})
-        finally:
-            sio.emit('planilha_atualizada')
-            sio.emit('relatar_progresso_coupa', {'mensagem': 'Auto-Pilot: desligando o robô Coupa; pausa de 1h30...'})
-            try:
-                comandar('desligar_robo', 'coupa')
-            except Exception:
-                logger.exception('Falha ao desligar o robô coupa no fim do ciclo')
+        for portal in ('coupa', 'vale'):
+            with _trava_ciclo:   # ciclo manual em andamento: o piloto espera ele terminar
+                rodar_ciclo(portal)
+            sio.emit(f'relatar_progresso_{portal}', {'mensagem': 'Auto-Pilot: pausa de 1h30...'})
             logger.info("Auto-Pilot: pausa de 1h30...")
             time.sleep(90 * 60)
 
-        # === VALE ===
-        checar_inatividade('vale')
-        try:
-            eventos.registrar('vale', 'ciclo', 'info', 'Ciclo automático da Vale começou')
-            sio.emit('relatar_progresso_vale', {'mensagem': 'Auto-Pilot: iniciando o ciclo da VALE...'})
-            comandar('ligar_robo', 'vale')
-            esperar_robo_pronto('vale')
-            executar_tarefa('vale', 'extrair')
-            extracao_ok('vale')
-            if deve_verificar_vale(datetime.now(), ultimo_dia_verificacao_vale):
-                ultimo_dia_verificacao_vale = datetime.now().date()   # uma tentativa por dia, mesmo se o OTP não vier
-                sio.emit('relatar_progresso_vale', {'mensagem': 'Auto-Pilot: verificação diária da Vale (vai pedir o OTP no painel)...'})
-                try:
-                    executar_tarefa('vale', 'verificar')
-                except Exception as e_verif:   # OTP não informado não derruba o ciclo
-                    logger.warning(f"Verificação diária da Vale não concluída: {e_verif}")
-            eventos.registrar('vale', 'ciclo', 'ok', 'Ciclo automático da Vale terminou')
-        except Exception as e_vale:
-            import traceback
-            enviar_email_erro(f"Auto-Pilot falhou na VALE:\n{e_vale}\n\n{traceback.format_exc()}")
-            logger.error(f"Erro na Vale: {e_vale}")
-            eventos.registrar('vale', 'ciclo', 'erro', f'Ciclo automático da Vale falhou: {e_vale}')
-            sio.emit('relatar_progresso_vale', {'mensagem': f'Erro no ciclo da Vale: {e_vale}'})
-        finally:
-            sio.emit('planilha_atualizada')
-            sio.emit('relatar_progresso_vale', {'mensagem': 'Auto-Pilot: desligando o robô Vale; pausa de 1h30...'})
-            try:
-                comandar('desligar_robo', 'vale')
-            except Exception:
-                logger.exception('Falha ao desligar o robô vale no fim do ciclo')
-            logger.info("Auto-Pilot: pausa de 1h30...")
-            time.sleep(90 * 60)
+
+# === SINCRONIZAÇÃO MANUAL (botões do dashboard do admin; docs/sincronizacao no portal) ===
+CICLOS_MANUAIS = {'ciclo_coupa': 'coupa', 'ciclo_vale': 'vale'}
+ULTIMAS_SINCRONIZACAO = {('coupa', 'ciclo'): 'ciclo_coupa', ('vale', 'ciclo'): 'ciclo_vale', ('gerenciador', 'backup'): 'backup'}
+
+
+def _responder_sincronizacao(dados, sucesso, texto):
+    sio.emit('retorno_sincronizacao', {'servico': dados.get('servico'), 'sucesso': sucesso,
+                                       ('mensagem' if sucesso else 'erro'): texto,
+                                       'clientId': dados.get('clientId'), 'audit_id': dados.get('audit_id')})
+
+
+def _ciclo_manual(portal, dados):
+    try:
+        sio.emit('progresso_sincronizacao', {'servico': dados.get('servico'), 'mensagem': 'Ciclo manual começou'})
+        sucesso, texto = rodar_ciclo(portal, manual=True, por=dados.get('usuario'))
+    except Exception as e:
+        sucesso, texto = False, str(e)
+    finally:
+        _trava_ciclo.release()
+    _responder_sincronizacao(dados, sucesso, texto)
+
+
+def _backup_manual(dados):
+    copiados = rotina_backup(manual=True, por=dados.get('usuario'))
+    _responder_sincronizacao(dados, bool(copiados), f"Backup feito: {', '.join(copiados)}" if copiados
+                             else 'Backup falhou (veja o log do gerenciador)')
+
+
+@sio.on('comando_sincronizacao')
+def comando_sincronizacao(dados):
+    """Roda na hora o que hoje só roda no horário. Já tem ciclo rodando ou robô trabalhando pela tela: recusa."""
+    dados = dados if isinstance(dados, dict) else {}
+    servico = dados.get('servico')
+    if servico == 'backup':
+        threading.Thread(target=_backup_manual, args=(dados,), daemon=True).start()
+        return
+    portal = CICLOS_MANUAIS.get(servico)
+    if portal is None:
+        return _responder_sincronizacao(dados, False, f'Serviço desconhecido: {servico}')
+    if not _trava_ciclo.acquire(blocking=False):
+        rodando = f' ({ciclo_em_andamento})' if ciclo_em_andamento else ''
+        return _responder_sincronizacao(dados, False, f'Já tem um ciclo rodando{rodando}. Tente de novo quando terminar.')
+    # Fora de um ciclo os dois ficam desligados: ligado = alguém usando pela tela (logando, parado ou com tarefa)
+    ligados = [p for p in ('coupa', 'vale') if globals().get('bot_' + p) is not None]
+    if ligados:
+        _trava_ciclo.release()
+        return _responder_sincronizacao(dados, False, f'O robô {ligados[0]} está ligado (alguém usando pela tela). '
+                                                      'Desligue pela tela dele ou espere terminar.')
+    try:
+        threading.Thread(target=_ciclo_manual, args=(portal, dados), daemon=True).start()
+    except Exception:
+        _trava_ciclo.release()
+        raise
+
+
+def estado_sincronizacao(lista):
+    """Cartões: o que está rodando e o último resultado (ok/erro) de cada serviço. `lista`: eventos, mais novos primeiro."""
+    ultimas = {}
+    for e in lista:
+        chave = ULTIMAS_SINCRONIZACAO.get((e.get('servico'), e.get('tipo')))
+        if chave and e.get('nivel') in ('ok', 'erro'):
+            ultimas.setdefault(chave, e)
+    return {'rodando': [s for s, p in CICLOS_MANUAIS.items() if p == ciclo_em_andamento], 'ultimas': ultimas}
+
+
+@sio.on('comando_sincronizacao_estado')
+def comando_sincronizacao_estado(dados):
+    dados = dados if isinstance(dados, dict) else {}
+    try:
+        estado = estado_sincronizacao(list(reversed(eventos.ler_todos())))
+        sio.emit('retorno_sincronizacao_estado', {'sucesso': True, 'estado': estado, 'clientId': dados.get('clientId')})
+    except Exception as e:
+        sio.emit('retorno_sincronizacao_estado', {'sucesso': False, 'erro': str(e), 'clientId': dados.get('clientId')})
 
 
 def loop_agendamento():
