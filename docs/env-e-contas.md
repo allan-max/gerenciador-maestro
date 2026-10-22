@@ -11,7 +11,6 @@ anteriores, e os testes (`python -m pytest -q` ou `python -m unittest discover -
 |---|---|---|
 | `ROBO_SECRET` | conexão com o portal (32+ caracteres, igual ao do portal) | o gerenciador não sobe |
 | `PORTAL_SENHA` | login dos robôs Coupa e Vale | o login do robô falha com "PORTAL_SENHA não configurada" |
-| `DEV_MASTER_TOKEN` | chave do painel `dev.html` | o painel dev fica fechado |
 
 Senhas e chaves ficam só no `.env` e no `CONFIG.json` do servidor, nunca no código: o repositório é público.
 O atualizador automático (`scripts/atualizador.py`) preserva esses arquivos.
@@ -20,4 +19,4 @@ O atualizador automático (`scripts/atualizador.py`) preserva esses arquivos.
 
 - Cadastro e "esqueci a senha" gravam a senha como hash PBKDF2-SHA256 com sal (`pbkdf2_sha256$...`), em `seguranca.py`.
 - Contas antigas, com a senha em texto, continuam entrando. No primeiro login certo a senha é trocada pelo hash.
-- O painel dev recebe perfil, acessos e último login. Senha e tokens não saem do servidor.
+- O painel `dev.html` saiu (a gestão de contas está no `dashboard2.html`): senha e tokens não saem do servidor.

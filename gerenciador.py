@@ -7,7 +7,6 @@ if __name__ == '__main__':
 import socketio
 import threading
 import logging
-import base64
 import tempfile
 import openpyxl
 import os
@@ -383,35 +382,6 @@ def registrar_usuario(dados):
             'erro': 'Erro ao enviar o e-mail pelo Rob Local.', 
             'clientId': client_id
         })
-# ====================================================
-# MOTOR DE CRIPTOGRAFIA (E2EE) NO PYTHON
-# ====================================================
-def cifra_python(texto, chave):
-    try:
-        text_bytes = texto.encode('utf-8')
-        key_bytes = chave.encode('utf-8')
-        cifrado = bytearray(len(text_bytes))
-        for i in range(len(text_bytes)):
-            cifrado[i] = text_bytes[i] ^ key_bytes[i % len(key_bytes)]
-
-        # Converte para Base64 para poder enviar pela rede com segurana
-        return base64.b64encode(cifrado).decode('utf-8')
-    except Exception as e:
-        logger.error(f"Erro ao cifrar: {e}")
-        return None
-
-def decifra_python(b64_texto, chave):
-    try:
-        binary = base64.b64decode(b64_texto)
-        key_bytes = chave.encode('utf-8')
-        original = bytearray(len(binary))
-        for i in range(len(binary)):
-            original[i] = binary[i] ^ key_bytes[i % len(key_bytes)]
-
-        return original.decode('utf-8')
-    except Exception:
-        return None
-
 def _registrar_evento_linha_log(portal, linha_limpa):
     """Analisa a linha do arquivo TXT com try/except para registrar erros ou fim de sessão no portal."""
     try:
@@ -655,44 +625,6 @@ def validar_login(dados):
     else: 
         sio.emit('resultado_login', {'sucesso': False, 'erro': 'E-mail ou Senha incorretos.', 'clientId': cid})
   
-@sio.on('pedir_dados_dev_seguro')
-def pedir_dados_dev_seguro(dados):
-    payload_cifrado = dados.get('payload_cifrado')
-    online_users = dados.get('online_users', [])
-    client_id = dados.get('clientId')
-
-    # 1. Tenta abrir a caixa com a chave mestre (Se falhar, a senha que o Admin digitou estava errada)
-    # IMPORTANTE: A chave mestre do desenvolvedor deve estar no seu .env ou ser uma constante
-    chave_dev = os.getenv("DEV_MASTER_TOKEN") or ""
-    if not chave_dev:
-        # sem chave configurada o painel fica fechado (antes caía numa chave padrão conhecida)
-        logger.warning("Painel dev pedido, mas DEV_MASTER_TOKEN não está configurado no .env")
-        sio.emit('resposta_painel_dev_cifrado', {'payload': False, 'clientId': client_id})
-        return
-
-    comando_json = decifra_python(payload_cifrado, chave_dev)
-
-    if not comando_json:
-        # A senha estava errada ou o pacote foi adulterado! Devolve 'False' para o site
-        sio.emit('resposta_painel_dev_cifrado', {'payload': False, 'clientId': client_id})
-        return
-
-    # 2. A senha estava certa! Prepara a lista de usurios
-    # Senha e tokens nunca saem do servidor: o painel só mostra perfil, acesso e quem está online
-    usuarios = seguranca.usuarios_sem_segredos(carregar_usuarios(), online_users)
-
-    # Prepara o pacote final
-    pacote = {
-        "usuarios": usuarios,
-        "ips_bloqueados": [] # Pode implementar lista negra de IPs futuramente se quiser
-    }
-
-    # 3. Tranca a lista novamente antes de enviar pela rede!
-    pacote_str = json.dumps(pacote)
-    pacote_cifrado = cifra_python(pacote_str, chave_dev)
-
-    sio.emit('resposta_painel_dev_cifrado', {'payload': pacote_cifrado, 'clientId': client_id})
-
 VALIDADE_TOKEN_RECUPERACAO_SEG = 60 * 60  # link de redefinicao vale 1 hora
 
 def _token_recuperacao_valido(info, token):

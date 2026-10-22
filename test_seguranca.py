@@ -1,4 +1,4 @@
-"""Senhas com hash, painel dev sem segredos e validação do que vem do portal antes de virar comando no servidor."""
+"""Senhas com hash, painel dev desligado e validação do que vem do portal antes de virar comando no servidor."""
 import html
 import json
 import os
@@ -52,12 +52,6 @@ class SenhaTest(unittest.TestCase):
                      '@venturainformatica.com.br', 'ana@venturainformatica.com.br.evil.com', None):
             self.assertFalse(seguranca.email_ventura(ruim), ruim)
 
-    def test_painel_dev_nao_recebe_senha_nem_tokens(self):
-        usuarios = {'a@x': {'senha': 'h', 'token_verificacao': 't', 'token_recuperacao': 'r', 'token_recuperacao_expira': 1,
-                            'admin': True, 'ultimo_login': 'ontem'}}
-        self.assertEqual(seguranca.usuarios_sem_segredos(usuarios, ['a@x']),
-                         {'a@x': {'admin': True, 'ultimo_login': 'ontem', 'online': True}})
-
 
 class EntradaDoPortalTest(unittest.TestCase):
     def test_prioridades_do_ariba_so_numeros(self):
@@ -91,8 +85,7 @@ class EntradaDoPortalTest(unittest.TestCase):
 def contas(**globais):
     sio = SioFalso()
     salvos = []
-    ns = carregar(GERENCIADOR, {'validar_login', 'registrar_usuario', 'processar_nova_senha', 'pedir_dados_dev_seguro',
-                                '_token_recuperacao_valido', 'cifra_python', 'decifra_python'},
+    ns = carregar(GERENCIADOR, {'validar_login', 'registrar_usuario', 'processar_nova_senha', '_token_recuperacao_valido'},
                   sio=sio, seguranca=seguranca, time=__import__('time'), json=json, os=os, base64=__import__('base64'),
                   uuid=__import__('uuid'), datetime=__import__('datetime').datetime,
                   salvar_usuarios=lambda u: salvos.append(json.loads(json.dumps(u))), **globais)
@@ -145,36 +138,11 @@ class ContasTest(unittest.TestCase):
         self.assertTrue(sio.ultimo('resultado_nova_senha')['sucesso'])
         self.assertTrue(seguranca.conferir_senha(salvos[-1]['a@venturainformatica.com.br']['senha'], 'nova123'))
 
-    def test_painel_dev_fechado_sem_chave_e_sem_segredos_com_chave(self):
-        usuarios = {'a@x': {'senha': 'segredo', 'token_recuperacao': 'tok', 'admin': True}}
-        ns, sio, _ = contas(carregar_usuarios=lambda: usuarios)
-        pedido = {'payload_cifrado': ns['cifra_python']('{"comando": "listar"}', '123456'), 'online_users': ['a@x'], 'clientId': 'c'}
-        with patch.dict(os.environ, {}, clear=True):
-            ns['pedir_dados_dev_seguro'](pedido)
-        self.assertIs(sio.ultimo('resposta_painel_dev_cifrado')['payload'], False)
-
-        chave = 'chave-dev-de-teste'
-        pedido['payload_cifrado'] = ns['cifra_python']('{"comando": "listar"}', chave)
-        with patch.dict(os.environ, {'DEV_MASTER_TOKEN': chave}):
-            ns['pedir_dados_dev_seguro'](pedido)
-        pacote = json.loads(ns['decifra_python'](sio.ultimo('resposta_painel_dev_cifrado')['payload'], chave))
-        self.assertEqual(pacote['usuarios'], {'a@x': {'admin': True, 'online': True}})
-
-
-    def test_banco_de_contas_e_gravado_inteiro_ou_nada(self):
-        ns = carregar(GERENCIADOR, {'salvar_usuarios', 'carregar_usuarios'}, os=os, json=json, tempfile=tempfile)
-        anterior = os.getcwd()
-        with tempfile.TemporaryDirectory() as tmp:
-            os.chdir(tmp)
-            try:
-                ns['salvar_usuarios']({'a@x': {'senha': 'h'}})
-                with patch('json.dump', side_effect=OSError('disco cheio')), self.assertRaises(OSError):
-                    ns['salvar_usuarios']({'b@x': {}})
-                self.assertEqual(ns['carregar_usuarios'](), {'a@x': {'senha': 'h'}})
-                self.assertEqual(os.listdir(tmp), ['banco_usuarios.json'])   # sem temporário largado
-            finally:
-                os.chdir(anterior)
-
+    def test_painel_dev_saiu_do_gerenciador(self):
+        # dev.html foi substituído pelo dashboard2.html: nenhum evento do gerenciador entrega a lista de contas
+        texto = GERENCIADOR.read_text(encoding='utf-8')
+        for nome in ('pedir_dados_dev_seguro', 'resposta_painel_dev_cifrado', 'DEV_MASTER_TOKEN'):
+            self.assertNotIn(nome, texto)
 
 class ComandosTest(unittest.TestCase):
     def comandos(self, **globais):

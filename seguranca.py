@@ -49,16 +49,6 @@ def email_ventura(email):
     return bool(EMAIL_VENTURA.fullmatch(email or ''))
 
 
-# Painel dev: tudo menos senha e tokens
-CAMPOS_PAINEL_DEV = ('verificado', 'admin', 'dev', 'dashboard_access', 'planilha_access', 'portais_access',
-                     'bloqueado', 'vendedor', 'ultima_localizacao', 'ultimo_login')
-
-
-def usuarios_sem_segredos(usuarios, online=()):
-    return {email: {**{k: info[k] for k in CAMPOS_PAINEL_DEV if k in info}, 'online': email in online}
-            for email, info in usuarios.items()}
-
-
 # Ariba: botões de empresa do portal mandam "1 2 3"
 PRIORIDADES_ARIBA = re.compile(r'^[0-9]+([ ,][0-9]+)*$')
 # Findes: números de evento digitados à mão ("123/2026", "PE-45", "PE 045"). Letras com acento passam;
