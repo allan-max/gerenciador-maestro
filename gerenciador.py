@@ -108,6 +108,8 @@ if ambiente.modo_teste():
     CONFIG_GLOBAL["caminho_banco_dados"] = ambiente.pasta_banco()
     CONFIG_GLOBAL["caminho_backups"] = os.path.join(ambiente.pasta_database(), "backups_excel")
 else:
+    CONFIG_GLOBAL.setdefault("caminho_database_coupa", os.path.join(ambiente.pasta_database(), "eventos.jsonl"))
+    CONFIG_GLOBAL.setdefault("caminho_database_vale", os.path.join(ambiente.pasta_database(), "eventos_nimbi.jsonl"))
     CONFIG_GLOBAL["caminho_banco_dados"] = r"\\SERVIDOR2\Publico\ALLAN\database\Banco-de-dados"
     CONFIG_GLOBAL["caminho_backups"] = r"\\SERVIDOR2\Publico\ALLAN\database\backups_excel"
 
@@ -939,13 +941,17 @@ WshShell.SendKeys "~"
                 bot_coupa = CoupaScraper(SioDoRobo(sio), aguardando_clique, coordenadas_clique)
                 rodando_monitor_coupa = True
                 threading.Thread(target=monitorar_log_coupa, daemon=True).start()
-                threading.Thread(target=bot_coupa.iniciar_e_logar, daemon=True).start()
+                th_login = threading.Thread(target=bot_coupa.iniciar_e_logar, daemon=True)
+                bot_coupa.thread_login = th_login
+                th_login.start()
             else:
                 from bots.vale_bot import ValeScraper
                 bot_vale = ValeScraper(SioDoRobo(sio), aguardando_clique, coordenadas_clique)
                 rodando_monitor_vale = True
                 threading.Thread(target=monitorar_log_vale, daemon=True).start()
-                threading.Thread(target=bot_vale.iniciar_e_logar, daemon=True).start()
+                th_login = threading.Thread(target=bot_vale.iniciar_e_logar, daemon=True)
+                bot_vale.thread_login = th_login
+                th_login.start()
 
         elif modo == 'desligar_robo':
             if portal == 'coupa':
@@ -972,21 +978,78 @@ WshShell.SendKeys "~"
         # ?? INICIA TAREFAS NORMAIS ??
         elif modo in ['extrair', 'verificar', 'responder']:
             bot_alvo = bot_coupa if portal == 'coupa' else bot_vale
+            if modo == 'responder' and bot_alvo is None:
+                bot_alvo = bot_coupa or bot_vale
+            if modo == 'responder' and bot_alvo is None:
+                logger.info(f"{portal}: robô desligado ao receber 'responder'; ligando automaticamente...")
+                sio.emit('relatar_progresso', {'mensagem': f"🚀 Ligando o robô {portal.upper()} automaticamente para responder o evento {dados.get('evento', '')}..."})
+                portal_atual = portal
+                if portal == 'coupa':
+                    from bots.coupa import CoupaScraper
+                    bot_coupa = CoupaScraper(SioDoRobo(sio), aguardando_clique, coordenadas_clique)
+                    bot_alvo = bot_coupa
+                    rodando_monitor_coupa = True
+                    threading.Thread(target=monitorar_log_coupa, daemon=True).start()
+                else:
+                    from bots.vale_bot import ValeScraper
+                    bot_vale = ValeScraper(SioDoRobo(sio), aguardando_clique, coordenadas_clique)
+                    bot_alvo = bot_vale
+                    rodando_monitor_vale = True
+                    threading.Thread(target=monitorar_log_vale, daemon=True).start()
+
             if bot_alvo:
                 anterior = getattr(bot_alvo, 'thread_atual', None)
                 pedido = dict(dados)
+                slot_bot = 'bot_coupa' if bot_alvo is bot_coupa else 'bot_vale'
 
-                def rodar(bot=bot_alvo, anterior=anterior):
+                if modo == 'responder' and anterior is not None and anterior.is_alive():
+                    ped_ant = getattr(anterior, 'pedido', None) or {}
+                    if ped_ant.get('modo') == 'responder' and str(ped_ant.get('evento', '')).strip() == str(dados.get('evento', '')).strip():
+                        logger.info(f"{portal}: evento {dados.get('evento', '')} já está sendo respondido no momento; ignorando duplicata.")
+                        return
+
+                def rodar(bot=bot_alvo, anterior=anterior, slot_bot=slot_bot):
                     # Uma tarefa por vez no mesmo navegador: a nova espera a anterior terminar
                     if anterior is not None and anterior.is_alive():
                         logger.info(f"{portal}: '{modo}' aguardando a tarefa anterior terminar")
                         anterior.join()
-                    if globals().get('bot_' + portal) is not bot:
+                    if globals().get(slot_bot) is not bot:
                         logger.warning(f"{portal}: '{modo}' descartado: o robô foi desligado enquanto esperava")
+                        if modo == 'responder':
+                            sio.emit('tarefa_concluida', {
+                                'evento': f"Evento {dados.get('evento', '')}",
+                                'sucesso': False,
+                                'erro': 'O robô foi desligado enquanto o evento aguardava na fila.'
+                            })
                         return
+                    if modo == 'responder':
+                        th_login = getattr(bot, 'thread_login', None)
+                        if th_login is not None and th_login.is_alive():
+                            logger.info(f"{portal}: aguardando login em andamento terminar antes de responder...")
+                            th_login.join()
+                        precisa_logar = not getattr(bot, 'is_ready', False)
+                        if not precisa_logar and getattr(bot, 'driver', None) is not None:
+                            try:
+                                precisa_logar = len(bot.driver.window_handles) == 0
+                            except Exception:
+                                precisa_logar = True
+                        if precisa_logar and callable(getattr(bot, 'iniciar_e_logar', None)):
+                            bot.is_ready = False
+                            logger.info(f"{portal}: iniciando navegador e login para responder o evento {dados.get('evento', '')}...")
+                            sio.emit('relatar_progresso', {'mensagem': f"🔐 Abrindo navegador e fazendo login no portal {portal.upper()} para responder o evento {dados.get('evento', '')}..."})
+                            bot.iniciar_e_logar()
+                        if not getattr(bot, 'is_ready', False) and callable(getattr(bot, 'iniciar_e_logar', None)):
+                            erro_login = (getattr(getattr(bot, 'sio', None), 'ultima_conclusao', None) or {}).get('erro') or 'Falha ao iniciar e logar no robô.'
+                            logger.error(f"{portal}: não foi possível logar para responder o evento {dados.get('evento', '')}: {erro_login}")
+                            sio.emit('tarefa_concluida', {
+                                'evento': f"Evento {dados.get('evento', '')}",
+                                'sucesso': False,
+                                'erro': erro_login
+                            })
+                            return
                     bot.iniciar_tarefa(modo, dados)
 
-                if pedido_repetido(anterior, pedido):
+                if modo != 'responder' and pedido_repetido(anterior, pedido):
                     # Clique duplo ou ordem igual à última da fila (21/10: duas verificações da Vale): não roda de novo.
                     # A thread só acompanha a que já existe, para o piloto (executar_tarefa) ver o comando chegar.
                     logger.info(f"{portal}: '{modo}' igual ao último pedido da fila; não será repetido")
@@ -1343,6 +1406,23 @@ def comando_carregar_planilha_json(dados):
 
             cotacoes = [c for c in cotacoes if str(c.get('COTAÇÃO', '')).strip() in chaves_validas]
 
+        # Portal de origem das cotações exibidas (só Coupa e Vale têm o botão RESPONDER na tela): número -> 'coupa' | 'vale'
+        import os, json
+        def chaves_do_robo(caminho_db):
+            chaves = set()
+            if caminho_db and os.path.exists(caminho_db):
+                with open(caminho_db, 'r', encoding='utf-8') as f:
+                    for linha in f:
+                        if linha.strip():
+                            try:
+                                d = json.loads(linha)
+                                chave = str(d.get('titulo') or d.get('numero') or d.get('num') or '').strip()
+                                if chave: chaves.add(chave)
+                            except Exception: pass
+            return chaves
+        chaves_coupa = chaves_do_robo(CONFIG_GLOBAL.get("caminho_database_coupa") or os.path.join(ambiente.pasta_database(), "eventos.jsonl"))
+        chaves_vale = chaves_do_robo(CONFIG_GLOBAL.get("caminho_database_vale") or os.path.join(ambiente.pasta_database(), "eventos_nimbi.jsonl"))
+
         # <-- NOVO: Filtra apenas as cotações do vendedor logado
         if vendedor_filtro:
             cotacoes = [
@@ -1351,10 +1431,17 @@ def comando_carregar_planilha_json(dados):
             ]
             pedidos = [] # Vendedor na tela de cotações não precisa receber a base inteira de pedidos
 
+        portais_robo = {}
+        for c in cotacoes:
+            numero = str(c.get('COTAÇÃO', '')).strip()
+            if numero in chaves_coupa: portais_robo[numero] = 'coupa'
+            elif numero in chaves_vale: portais_robo[numero] = 'vale'
+
         sio.emit('retorno_planilha_json', {
             'sucesso': True,
             'cotacoes': cotacoes[::-1], 
             'pedidos': pedidos[::-1],
+            'portais_robo': portais_robo,
             'clientId': client_id
         })
     except Exception as e:
@@ -2305,8 +2392,11 @@ RECONECTAR_S = 10
 
 if __name__ == '__main__':
     # Threads só no gerenciador de verdade: importar este arquivo (testes, bots) não liga o piloto
-    threading.Thread(target=loop_automacao, daemon=True).start()
-    threading.Thread(target=monitorar_pastas_impressao, daemon=True).start()
+    if os.environ.get('MAESTRO_SEM_PILOTO') != '1':
+        threading.Thread(target=loop_automacao, daemon=True).start()
+        threading.Thread(target=monitorar_pastas_impressao, daemon=True).start()
+    
+
     threading.Thread(target=loop_agendamento, daemon=True).start()
     threading.Thread(target=loop_metricas_servidor, daemon=True).start()
     backup_inicial()

@@ -71,7 +71,9 @@ OOPS_POR_PAUSA = 3
 PAUSA_OOPS_S = 600
 MAX_PAUSAS_OOPS = 3
 
-class ValeScraper:
+from bots.coupa.mixins.resposta import RespostaMixin
+
+class ValeScraper(RespostaMixin):
     def __init__(self, sio_instance, evento_clique, dict_coordenadas):
         # --- FERRAMENTAS DO MAESTRO ---
         self.sio = sio_instance
@@ -227,7 +229,10 @@ class ValeScraper:
     # ============================ 1. LOGIN HÃBRIDO ============================
     def fazer_login_hibrido(self):
         logger.info(" Iniciando Login Inteligente. Acompanhe pelo Painel Web!")
-        self.driver.get(self.LOGIN_URL)
+        try:
+            self.driver.get(self.LOGIN_URL)
+        except Exception as e_nav:
+            logger.warning(f"Aviso ao carregar URL de login inicial: {e_nav}")
         ultimo_print = 0
         ultimo_clique_botao = 0 # <--- NOVO: Controle para evitar flood de cliques
         inicio_captcha = None
@@ -242,26 +247,34 @@ class ValeScraper:
                 self.solicitacao_parada = True   # quem engolir o erro ainda para o ciclo no próximo evento
                 self.motivo_abandono = 'Login não concluído (captcha ou portal fora do ar).'
                 raise LoginTimeout(f"LOGIN_TIMEOUT: login não concluiu em {LOGIN_TIMEOUT_S // 60} min")
-            if len(self.driver.window_handles) > 1:
-                self.driver.switch_to.window(self.driver.window_handles[-1])
-
-            if "sessions/new" not in self.driver.current_url:
-                # ANTES DE COMEMORAR: Verifica se o portal jogou o botão de confirmação na tela
-                try:
-                    botoes_finais = self.driver.find_elements(By.ID, "login_button")
-                    if botoes_finais and botoes_finais[0].is_displayed():
-                        logger.info(" Botão 'Log in' azul de confirmação detectado! Clicando...")
-                        self.driver.execute_script("arguments[0].click();", botoes_finais[0])
-                        time.sleep(4)
-                        continue # Volta para o loop para garantir que avançou de vez
-                except: 
-                    pass
-                
-                # Se não tem botão na tela, aí sim o login acabou!
-                logger.info("✅ Login concluído com sucesso!")
-                return True
-
             try:
+                if len(self.driver.window_handles) > 1:
+                    self.driver.switch_to.window(self.driver.window_handles[-1])
+
+                url_atual = self.driver.current_url or ""
+                if url_atual.startswith("data:") or url_atual == "about:blank":
+                    self.driver.get(self.LOGIN_URL)
+                    time.sleep(1)
+                    continue
+
+                if "sessions/new" not in url_atual:
+                    # ANTES DE COMEMORAR: Verifica se o portal jogou o botão de confirmação na tela
+                    try:
+                        botoes_finais = self.driver.find_elements(By.ID, "login_button")
+                        if botoes_finais and botoes_finais[0].is_displayed():
+                            logger.info(" Botão 'Log in' azul de confirmação detectado! Clicando...")
+                            self.driver.execute_script("arguments[0].click();", botoes_finais[0])
+                            time.sleep(4)
+                            continue # Volta para o loop para garantir que avançou de vez
+                    except: 
+                        pass
+                    
+                    # Se não tem botão na tela, aí sim o login acabou!
+                    if inicio_captcha is not None:
+                        self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
+                    logger.info("✅ Login concluído com sucesso!")
+                    return True
+
                 self.driver.switch_to.default_content()
 
                 # --- A. ESTADO DO CAPTCHA ---
@@ -295,36 +308,41 @@ class ValeScraper:
                 if captcha_pendente:
                     if inicio_captcha is None:
                         inicio_captcha = time.time()
+                        self.sio.emit('relatar_progresso', {'mensagem': '⚠️ Captcha detectado no login! Resolva na tela principal de Minhas Cotações...'})
                     elif time.time() - inicio_captcha > CAPTCHA_TIMEOUT_S:
+                        self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
                         self.sio.emit('relatar_progresso_vale', {'mensagem': '❌ CAPTCHA EXPIRADO! (5 min sem solução). Fechando o robô.'})
                         raise LoginTimeout("CAPTCHA_TIMEOUT")
                         
                     elemento_alvo = iframe_desafio if (iframe_desafio and iframe_desafio.is_displayed()) else iframe_caixinha
                     if elemento_alvo:
+                        if self.aguardando_clique.is_set():
+                            try:
+                                px = self.coordenadas_clique['x'] - (elemento_alvo.size['width'] / 2)
+                                py = self.coordenadas_clique['y'] - (elemento_alvo.size['height'] / 2)
+                                ActionChains(self.driver).move_to_element_with_offset(elemento_alvo, px, py).click().perform()
+                                ultimo_print = 0
+                            except Exception:
+                                pass
+                            finally:
+                                self.aguardando_clique.clear()
+
                         tempo_atual = time.time()
-                        if tempo_atual - ultimo_print > 2.0: # Manda print a cada 2 segundos e comprime
+                        if tempo_atual - ultimo_print >= 0.2: # Envia ~5 prints/segundo (quase como um vídeo)
                             try:
                                 png_bytes = elemento_alvo.screenshot_as_png
-                                from PIL import Image
-                                from io import BytesIO
-                                import base64
-                                img = Image.open(BytesIO(png_bytes))
-                                buffer = BytesIO()
-                                img.save(buffer, format="PNG")
-                                png_b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-                                self.sio.emit('imagem_captcha_do_robo', {'imagem': png_b64})
-                            except Exception as e:
+                                if png_bytes:
+                                    png_b64 = base64.b64encode(png_bytes).decode('utf-8')
+                                    self.sio.emit('imagem_captcha_do_robo', {'imagem': png_b64})
+                            except Exception:
                                 pass
                             ultimo_print = tempo_atual
-
-                        if self.aguardando_clique.is_set():
-                            px = self.coordenadas_clique['x'] - (elemento_alvo.size['width'] / 2)
-                            py = self.coordenadas_clique['y'] - (elemento_alvo.size['height'] / 2)
-                            ActionChains(self.driver).move_to_element_with_offset(elemento_alvo, px, py).click().perform()
-                            self.aguardando_clique.clear()
+                    time.sleep(0.08)
                     continue 
 
                 if captcha_ficou_verde:
+                    if inicio_captcha is not None:
+                        self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
                     # MUDANÃ‡A: Adicionado o id='login_button' na varredura
                     botoes = self.driver.find_elements(By.XPATH, "//button[@type='submit' or @id='login-submit' or @id='login_button']")
                     for btn in botoes:
@@ -1370,369 +1388,8 @@ Vale Bot
             except: pass
             return None
 
-    # ========================================================
-    # 5. RESPONDER EVENTO (ATUALIZADO PARA BASE64 E NUVEM)
-    # ========================================================
-    def responder_evento(self, dados):
-        evento = str(dados.get('evento', '')).strip()
-        lista_precos = dados.get('precos', [])
-        lista_prazos = dados.get('prazos', [])
-        lista_origens = dados.get('origens', [])
-        lista_icms = dados.get('icms', [])
-        
-        pasta_anexos = tempfile.mkdtemp(prefix='maestro-resposta-')   # apagada no fim, com ou sem erro
-        falhas = []
-
-        logger.info(f"🚀 Iniciando Resposta do Evento {evento}...")
-        
-        try:
-            ds_paths = [self._gravar_anexo(pasta_anexos, f) for f in dados.get('datasheets', [])]
-            dav_paths = [self._gravar_anexo(pasta_anexos, f) for f in dados.get('davs', [])]
-
-            # ========================================================
-            # 1. ROTA DIRETA PARA SOURCING (À PROVA DE FALHAS)
-            # ========================================================
-            self.sio.emit('relatar_progresso', {'mensagem': f" Acessando diretamente a página de Sourcing..."})
-            
-            # Navega diretamente pela URL em vez de tentar clicar no menu!
-            url_sourcing = f"{self.BASE_SUPPLIER_URL}/quotes/private_events"
-            self.driver.get(url_sourcing)
-            time.sleep(3)
-            self.garantir_logado(url_sourcing)
-
-            # ========================================================
-            # 1.5 DIGITAR O CLIENTE (VALE BASE METAIS)
-            # ========================================================
-            logger.info(" Filtrando pelo cliente 'VALE BASE METAIS'...")
-            self.sio.emit('relatar_progresso', {'mensagem': f" Filtrando eventos do cliente 'VALE BASE METAIS'..."})
-            try:
-                # Usa o campo de busca de clientes (ID customersList_1)
-                input_cliente = self.wait.until(EC.presence_of_element_located((By.ID, "customersList_1")))
-                input_cliente.clear()
-                time.sleep(0.5)
-                
-                # 👇 A ÚNICA DIFERENÇA: A EMPRESA 👇
-                input_cliente.send_keys("VALE BASE METAIS")
-                
-                time.sleep(1)
-                input_cliente.send_keys(Keys.ENTER) # Pressiona Enter após digitar
-                time.sleep(3) # Aguarda 3 segundos pro site recarregar a tabela
-                logger.info("   ✅ Filtro 'VALE BASE METAIS' aplicado com sucesso!")
-            except Exception as e:
-                logger.warning(f"    Não foi possível digitar 'VALE BASE METAIS' no campo de cliente: {e}")
-
-            # 2. Pesquisa o evento
-            logger.info(" Buscando evento...")
-            search = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input.s-toolbarSearch")))
-            search.clear()
-            search.send_keys(evento)
-            search.send_keys(Keys.RETURN)
-            time.sleep(4)
-
-            # 3. Entra no evento
-            logger.info(f"   🖱️ Procurando link do evento {evento} na tabela...")
-            try:
-                # 1. XPath ultra-preciso usando a classe e a estrutura HTML
-                xpath_preciso = f"//td[contains(@class, 'coupaTable__cell')]//a[contains(text(), '{evento}') or contains(@href, '{evento}')]"
-                link_evento = self.wait.until(EC.presence_of_element_located((By.XPATH, xpath_preciso)))
-                
-                # 2. Rola a página para garantir que o elemento está visível na tela
-                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link_evento)
-                time.sleep(1)
-                
-                # 3. Clica no link
-                self.driver.execute_script("arguments[0].click();", link_evento)
-                logger.info("   ✅ Clique efetuado com sucesso!")
-                time.sleep(3)
-                
-                # 4. TRATAMENTO CRÍTICO: Como o link tem target="_blank", ele abre uma NOVA ABA.
-                if len(self.driver.window_handles) > 1:
-                    self.driver.switch_to.window(self.driver.window_handles[-1])
-                    logger.info("   🔄 Foco alterado para a aba do evento.")
-                    
-            except Exception as e:
-                logger.warning(f"   ⚠️ Link não encontrado na tabela. Forçando acesso via URL (Nova Aba)... ({e})")
-                self.driver.execute_script(f"window.open('{self.BASE_SUPPLIER_URL}/quotes/external_responses/{evento}/multi', '_blank');")
-                time.sleep(3)
-                self.driver.switch_to.window(self.driver.window_handles[-1])
-
-            time.sleep(3)
-
-            # --- PULAR PARA A NOVA ABA E MERGULHAR NO IFRAME ---
-            self.driver.switch_to.window(self.driver.window_handles[-1])
-            time.sleep(3) 
-            
-            try: 
-                self.driver.switch_to.frame(self.wait.until(EC.presence_of_element_located((By.TAG_NAME, "iframe"))))
-            except: 
-                pass
-
-            # 4. Clica em Minha Resposta (COM PRIORIDADE ESTRITA VENTURA -> MINHAS RESPOSTAS)
-            logger.info(" Procurando botão de acesso ao evento...")
-            try:
-                time.sleep(2) # Pequena pausa para garantir que a página carregou
-                
-                # A ORDEM DEFINE A PRIORIDADE: Ele tenta o nÂ° 1 primeiro. Se falhar, vai para o 2.
-                xpath_botoes = [
-                    # =========================================================
-                    # 1Âª PRIORIDADE: O seu Span/Link com o nome da empresa
-                    # =========================================================
-                    "//a[contains(., 'VENTURA COMERCIO VAREJISTA')]",
-                    "//span[contains(text(), 'VENTURA COMERCIO VAREJISTA')]",
-                    
-                    # =========================================================
-                    # 2Âª PRIORIDADE: O botão plural "Minhas respostas" (com /multi)
-                    # =========================================================
-                    "//a[.//span[text()='Minhas respostas']]",
-                    "//span[text()='Minhas respostas']",
-                    f"//a[contains(@href, '/quotes/external_responses/{evento}/multi')]",
-                    
-                    # =========================================================
-                    # 3Âª PRIORIDADE (Rede de Segurança): Se for um evento 100% virgem
-                    # =========================================================
-                    "//a[.//span[text()='Minha resposta']]",
-                    "//a[.//span[text()='Criar resposta']]",
-                    "//span[text()='Itens']"
-                ]
-                
-                botao_clicado = False
-                for xpath in xpath_botoes:
-                    botoes = self.driver.find_elements(By.XPATH, xpath)
-                    for b in botoes:
-                        if b.is_displayed() or self.driver.execute_script("return arguments[0].offsetWidth > 0;", b):
-                            logger.info(f"    Alvo encontrado! Clicando no padrão: {xpath}")
-                            # Usamos o clique via Javascript para furar qualquer bloqueio visual do site
-                            self.driver.execute_script("arguments[0].click();", b)
-                            botao_clicado = True
-                            break
-                    if botao_clicado: 
-                        break # Paramos o loop instantaneamente se o botão for clicado
-                
-                # Se a tela bloqueou tudo porque ainda não aceitou os Termos de Participação
-                if not botao_clicado:
-                    logger.warning("    Botão direto não encontrado. Tentando Aceitar Termos de Participação primeiro...")
-                    try:
-                        Select(self.wait.until(EC.presence_of_element_located((By.ID, "participation")))).select_by_value("true")
-                        self.driver.find_element(By.CSS_SELECTOR, "button.submitIntend").click()
-                        time.sleep(3)
-                        
-                        self.driver.find_element(By.XPATH, "//a[.//span[text()='Itens']]").click()
-                        logger.info("   ✅ Termos aceitos! Avançando para a resposta...")
-                    except Exception as e:
-                        raise Exception("A tela não tem botão de responder e não pediu aceite de termos. O evento pode estar encerrado ou indisponível.")
-
-            except Exception as erro:
-                raise Exception(f"Falha ao abrir a aba de preços: {str(erro)}")
-                
-            time.sleep(4)
-
-            # 5. Anexar MÃšLTIPLOS arquivos
-            logger.info(f" Injetando PDFs ({len(ds_paths)} Datasheets, {len(dav_paths)} DAVs)...")
-            
-            if ds_paths:
-                for path in ds_paths:
-                    try:
-                        inputs_arquivo = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file'][name='attachment[file]']")
-                        if len(inputs_arquivo) > 0:
-                            inputs_arquivo[0].send_keys(path)
-                            time.sleep(2) 
-                    except Exception as e:
-                        logger.warning(f"âš ï¸ Erro ao anexar Datasheet ({path}): {e}")
-            
-            if dav_paths:
-                for path in dav_paths:
-                    try:
-                        inputs_arquivo = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file'][name='attachment[file]']")
-                        if len(inputs_arquivo) > 1:
-                            inputs_arquivo[1].send_keys(path)
-                            time.sleep(2)
-                    except Exception as e:
-                        logger.warning(f"âš ï¸ Erro ao anexar DAV ({path}): {e}")
-            
-            time.sleep(5) 
-
-            # 6. Salvar Rascunho
-            logger.info(" Salvando Rascunho Inicial...")
-            try:
-                btn_rascunho = self.driver.find_element(By.CSS_SELECTOR, "button.s-menuSaveResponse")
-                self.driver.execute_script("arguments[0].click();", btn_rascunho)
-                time.sleep(5)
-            except: pass
-
-            # 7. Expandir e Preencher APENAS os itens informados
-            logger.info(" Avaliando linhas e preenchendo itens específicos...")
-            time.sleep(2)
-            
-            try:
-                linhas_de_itens = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
-                logger.info(f"ðŸ“¦ O evento possui {len(linhas_de_itens)} linhas/itens no total.")
-                
-                for idx, linha in enumerate(linhas_de_itens):
-                    se_tem_preco = idx < len(lista_precos) and str(lista_precos[idx]).strip() != ""
-                    se_tem_prazo = idx < len(lista_prazos) and str(lista_prazos[idx]).strip() != ""
-                    
-                    if se_tem_preco or se_tem_prazo:
-                        logger.info(f"    Processando Item {idx+1}...")
-                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", linha)
-                        time.sleep(0.5)
-                        
-                        # --- 1. PRIMEIRO: EXPANDIR A LINHA PARA OS CAMPOS APARECEREM ---
-                        try:
-                            btn_expandir = linha.find_element(By.CSS_SELECTOR, "div.s-expandSidebar, img.s-expandLines")
-                            self.driver.execute_script("arguments[0].click();", btn_expandir)
-                            time.sleep(1.5) 
-                        except: 
-                            pass 
-                        
-                        # --- 2. SEGUNDO: APLICAR TODAS AS REGRAS DA VALE BASE METALS ---
-                        try:
-                            # Função interna para injetar com segurança no React
-                            def preencher_cf(seletor, valor_fixo, nome_log):
-                                cfs = linha.find_elements(By.CSS_SELECTOR, seletor)
-                                if cfs:
-                                    try:
-                                        cfs[0].clear()
-                                        cfs[0].send_keys(valor_fixo)
-                                    except:
-                                        self.driver.execute_script("""
-                                            arguments[0].value = arguments[1];
-                                            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-                                            arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
-                                        """, cfs[0], valor_fixo)
-                                    logger.info(f"      ✅ {nome_log} preenchido com '{valor_fixo}'")
-
-                            # Copiar NCM (Se existir)
-                            ncm_element = linha.find_elements(By.CSS_SELECTOR, "div.s-classification_of_goods p.s-textField")
-                            if ncm_element:
-                                ncm_val = ncm_element[0].text.strip()
-                                ncm_input = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_8")
-                                if ncm_input:
-                                    ncm_input[0].clear()
-                                    ncm_input[0].send_keys(ncm_val)
-                                    time.sleep(1)
-                                    ncm_input[0].send_keys(Keys.ARROW_DOWN)
-                                    time.sleep(0.2)
-                                    ncm_input[0].send_keys(Keys.ENTER)
-                                    logger.info(f"      ✅ NCM copiado e injetado: {ncm_val}")
-
-                            # Preenchimentos Fixos
-                            preencher_cf("input.s-custom_field_7", "3", "Campo 7")
-                            preencher_cf("input.s-custom_field_2", "0", "Campo 2")
-                            preencher_cf("input.s-custom_field_6", "0,65", "Campo 6")
-                            preencher_cf("input.s-custom_field_5", "0", "Campo 5")
-
-                            # Preencher ICMS (Campo 3) se o utilizador informou
-                            icms_atual = str(lista_icms[idx]).strip() if idx < len(lista_icms) else ""
-                            if icms_atual:
-                                preencher_cf("input.s-custom_field_3", icms_atual, "ICMS (%)")
-
-                            # Preencher Origem (Campo 9 ComboBox) se o utilizador informou
-                            origem_atual = str(lista_origens[idx]).strip() if idx < len(lista_origens) else ""
-                            if origem_atual:
-                                cfs_origem = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_9")
-                                if cfs_origem:
-                                    cfs_origem[0].clear()
-                                    cfs_origem[0].send_keys(origem_atual)
-                                    time.sleep(1)
-                                    cfs_origem[0].send_keys(Keys.ARROW_DOWN)
-                                    time.sleep(0.2)
-                                    cfs_origem[0].send_keys(Keys.ARROW_UP)
-                                    time.sleep(0.2)
-                                    cfs_origem[0].send_keys(Keys.ENTER)
-                                    logger.info(f"      ✅ Origem preenchida: {origem_atual}")
-
-                        except Exception as e:
-                            logger.warning(f"       Erro ao processar formulário extra da Vale: {e}")
-
-                        # --- 3. TERCEIRO: PREENCHER PREÃ‡O E PRAZO NORMALMENTE ---
-                        if se_tem_preco:
-                            preco_atual = str(lista_precos[idx]).strip()
-                            try:
-                                input_preco = linha.find_element(By.CSS_SELECTOR, "input.s-price_amount_input")
-                                try:
-                                    input_preco.clear()
-                                    input_preco.send_keys(preco_atual)
-                                except:
-                                    self.driver.execute_script("""
-                                        arguments[0].value = arguments[1];
-                                        arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-                                        arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
-                                    """, input_preco, preco_atual)
-                                logger.info(f"      ✅ Preço {preco_atual} inserido.")
-                            except Exception as e:
-                                falhas.append(f"item {idx+1} (preço)")
-                                logger.warning(f"       Falha ao inserir preço: {e}")
-
-                        if se_tem_prazo:
-                            prazo_atual = str(lista_prazos[idx]).strip()
-                            try:
-                                input_prazo = linha.find_element(By.CSS_SELECTOR, "input.s-lead_time_input")
-                                try:
-                                    ActionChains(self.driver) \
-                                        .move_to_element(input_prazo) \
-                                        .click() \
-                                        .pause(0.2) \
-                                        .key_down(Keys.CONTROL).send_keys('a').key_up(Keys.CONTROL) \
-                                        .send_keys(Keys.BACKSPACE) \
-                                        .send_keys(prazo_atual) \
-                                        .send_keys(Keys.TAB) \
-                                        .perform()
-                                    
-                                    time.sleep(0.2)
-                                    if not input_prazo.get_attribute('value') or prazo_atual not in input_prazo.get_attribute('value'): raise Exception("Reset")
-                                except:
-                                    self.driver.execute_script("""
-                                        let el = arguments[0];
-                                        let val = arguments[1];
-                                        let lastValue = el.value;
-                                        el.value = val;
-                                        let event = new Event('input', { bubbles: true });
-                                        event.simulated = true;
-                                        if (el._valueTracker) { el._valueTracker.setValue(lastValue); }
-                                        el.dispatchEvent(event);
-                                        el.dispatchEvent(new Event('change', { bubbles: true }));
-                                        el.dispatchEvent(new Event('blur', { bubbles: true }));
-                                    """, input_prazo, prazo_atual)
-                                logger.info(f"      ✅ Prazo {prazo_atual} inserido.")
-                            except Exception as e:
-                                falhas.append(f"item {idx+1} (prazo)")
-                                logger.warning(f"       Falha ao inserir prazo: {e}")
-                    else:
-                        logger.info(f"    Item {idx+1} ignorado (Você deixou os campos vazios).")
-                        
-            except Exception as e:
-                falhas.append("preenchimento das linhas")
-                logger.error(f" Erro crítico no preenchimento das linhas: {e}")
-
-            # 8. Salvar Final (só salva o rascunho; o envio ao cliente é feito por uma pessoa no portal)
-            logger.info("✅ Finalizando salvamento do evento...")
-            try:
-                btn_salvar = self.driver.find_element(By.CSS_SELECTOR, "button.s-save")
-            except Exception:
-                raise Exception("Botão Salvar não encontrado: o rascunho não foi salvo.")
-            self.driver.execute_script("arguments[0].click();", btn_salvar)
-            time.sleep(4)
-            self._marcar_rascunho(evento)
-            if falhas:
-                raise Exception(f"Rascunho salvo, mas com falha em: {', '.join(falhas)}. Confira no portal antes de enviar.")
-
-            logger.info(f"🎉 Rascunho do evento {evento} salvo. O envio ao cliente é manual.")
-            self.sio.emit('tarefa_concluida', {'evento': f'Evento {evento}', 'sucesso': True})
-
-            if len(self.driver.window_handles) > 1:
-                self.driver.close()
-                self.driver.switch_to.window(self.driver.window_handles[0])
-
-        except Exception as e:
-            logger.error(f" Erro ao responder evento: {e}")
-            self.sio.emit('tarefa_concluida', {'evento': f'Evento {evento}', 'sucesso': False, 'erro': str(e)})
-            
-            # Se der erro, garante que fecha a aba extra e volta pra principal pra não travar tudo
-            if len(self.driver.window_handles) > 1:
-                self.driver.close()
-                self.driver.switch_to.window(self.driver.window_handles[0])
-        finally:
-            shutil.rmtree(pasta_anexos, ignore_errors=True)
+    # 5. RESPONDER EVENTO: herdado de RespostaMixin (bots/coupa/mixins/resposta.py)
+    # Código único que responde tanto Vale quanto Vale Base Metals.
 
     @staticmethod
     def _gravar_anexo(pasta, f_data):

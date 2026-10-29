@@ -84,7 +84,10 @@ class AutenticacaoMixin:
 
     def fazer_login_hibrido(self):
         logger.info(" Iniciando Login Inteligente. Acompanhe pelo Painel Web!")
-        self.driver.get(self.LOGIN_URL)
+        try:
+            self.driver.get(self.LOGIN_URL)
+        except Exception as e_nav:
+            logger.warning(f"Aviso ao carregar URL de login inicial: {e_nav}")
         ultimo_print = 0
         ultimo_clique_botao = 0 # <--- NOVO: Controle para evitar flood de cliques
         inicio_captcha = None
@@ -99,26 +102,34 @@ class AutenticacaoMixin:
                 self.solicitacao_parada = True   # quem engolir o erro ainda para o ciclo no próximo evento
                 self.motivo_abandono = 'Login não concluído (captcha ou portal fora do ar).'
                 raise LoginTimeout(f"LOGIN_TIMEOUT: login não concluiu em {LOGIN_TIMEOUT_S // 60} min")
-            if len(self.driver.window_handles) > 1:
-                self.driver.switch_to.window(self.driver.window_handles[-1])
-
-            if "sessions/new" not in self.driver.current_url:
-                # ANTES DE COMEMORAR: Verifica se o portal jogou o botão de confirmação na tela
-                try:
-                    botoes_finais = self.driver.find_elements(By.ID, "login_button")
-                    if botoes_finais and botoes_finais[0].is_displayed():
-                        logger.info(" Botão 'Log in' azul de confirmação detectado! Clicando...")
-                        self.driver.execute_script("arguments[0].click();", botoes_finais[0])
-                        time.sleep(4)
-                        continue # Volta para o loop para garantir que avançou de vez
-                except: 
-                    pass
-                
-                # Se não tem botão na tela, aí sim o login acabou!
-                logger.info("✅ Login concluído com sucesso!")
-                return True
-
             try:
+                if len(self.driver.window_handles) > 1:
+                    self.driver.switch_to.window(self.driver.window_handles[-1])
+
+                url_atual = self.driver.current_url or ""
+                if url_atual.startswith("data:") or url_atual == "about:blank":
+                    self.driver.get(self.LOGIN_URL)
+                    time.sleep(1)
+                    continue
+
+                if "sessions/new" not in url_atual:
+                    # ANTES DE COMEMORAR: Verifica se o portal jogou o botão de confirmação na tela
+                    try:
+                        botoes_finais = self.driver.find_elements(By.ID, "login_button")
+                        if botoes_finais and botoes_finais[0].is_displayed():
+                            logger.info(" Botão 'Log in' azul de confirmação detectado! Clicando...")
+                            self.driver.execute_script("arguments[0].click();", botoes_finais[0])
+                            time.sleep(4)
+                            continue # Volta para o loop para garantir que avançou de vez
+                    except: 
+                        pass
+                    
+                    # Se não tem botão na tela, aí sim o login acabou!
+                    if inicio_captcha is not None:
+                        self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
+                    logger.info("✅ Login concluído com sucesso!")
+                    return True
+
                 self.driver.switch_to.default_content()
 
                 frames = self.driver.find_elements(By.TAG_NAME, "iframe")
@@ -151,36 +162,41 @@ class AutenticacaoMixin:
                 if captcha_pendente:
                     if inicio_captcha is None:
                         inicio_captcha = time.time()
+                        self.sio.emit('relatar_progresso', {'mensagem': '⚠️ Captcha detectado no login! Resolva na tela principal de Minhas Cotações...'})
                     elif time.time() - inicio_captcha > CAPTCHA_TIMEOUT_S:
+                        self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
                         self.sio.emit('relatar_progresso_coupa', {'mensagem': '❌ CAPTCHA EXPIRADO! (5 min sem solução). Fechando o robô.'})
                         raise LoginTimeout("CAPTCHA_TIMEOUT")
                         
                     elemento_alvo = iframe_desafio if (iframe_desafio and iframe_desafio.is_displayed()) else iframe_caixinha
                     if elemento_alvo:
+                        if self.aguardando_clique.is_set():
+                            try:
+                                px = self.coordenadas_clique['x'] - (elemento_alvo.size['width'] / 2)
+                                py = self.coordenadas_clique['y'] - (elemento_alvo.size['height'] / 2)
+                                ActionChains(self.driver).move_to_element_with_offset(elemento_alvo, px, py).click().perform()
+                                ultimo_print = 0
+                            except Exception:
+                                pass
+                            finally:
+                                self.aguardando_clique.clear()
+
                         tempo_atual = time.time()
-                        if tempo_atual - ultimo_print > 2.0: # Manda print a cada 2 segundos em vez de metralhar
+                        if tempo_atual - ultimo_print >= 0.2: # Envia ~5 prints/segundo (quase como um vídeo)
                             try:
                                 png_bytes = elemento_alvo.screenshot_as_png
-                                from PIL import Image
-                                from io import BytesIO
-                                import base64
-                                img = Image.open(BytesIO(png_bytes))
-                                buffer = BytesIO()
-                                img.save(buffer, format="PNG")
-                                png_b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-                                self.sio.emit('imagem_captcha_do_robo', {'imagem': png_b64})
-                            except Exception as e:
+                                if png_bytes:
+                                    png_b64 = base64.b64encode(png_bytes).decode('utf-8')
+                                    self.sio.emit('imagem_captcha_do_robo', {'imagem': png_b64})
+                            except Exception:
                                 pass
                             ultimo_print = tempo_atual
-
-                        if self.aguardando_clique.is_set():
-                            px = self.coordenadas_clique['x'] - (elemento_alvo.size['width'] / 2)
-                            py = self.coordenadas_clique['y'] - (elemento_alvo.size['height'] / 2)
-                            ActionChains(self.driver).move_to_element_with_offset(elemento_alvo, px, py).click().perform()
-                            self.aguardando_clique.clear()
+                    time.sleep(0.08)
                     continue 
 
                 if captcha_ficou_verde:
+                    if inicio_captcha is not None:
+                        self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
                     # MUDANÇA: Adicionado o id='login_button' na varredura
                     botoes = self.driver.find_elements(By.XPATH, "//button[@type='submit' or @id='login-submit' or @id='login_button']")
                     for btn in botoes:
@@ -385,8 +401,8 @@ class AutenticacaoMixin:
                 logger.info("✅ Login concluído! Robô pronto para receber tarefas da nuvem.")
                 
                 # ðŸ‘‡ ESTA É A LINHA MãGICA QUE DESTRANCA O BOTãO NO SITE NA HORA ðŸ‘‡
-                self.sio.emit('tarefa_concluida', {'evento': 'Login do Robo', 'sucesso': True})
                 self.is_ready = True
+                self.sio.emit('tarefa_concluida', {'evento': 'Login do Robo', 'sucesso': True})
             else:
                 self.sio.emit('tarefa_concluida', {'evento': 'Login do Robo', 'sucesso': False, 'erro': 'Falha na validação do login.'})
         except Exception as e:

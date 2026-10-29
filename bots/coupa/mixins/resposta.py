@@ -49,15 +49,333 @@ if not logger.handlers:
 
 
 class RespostaMixin:
+    def _selecionar_cliente_sourcing(self, nome_cliente):
+        eh_metais = "metal" in str(nome_cliente).lower() or "metais" in str(nome_cliente).lower()
+        rotulo = "Vale Base Metals" if eh_metais else "Vale"
+        logger.info(f"🏢 Selecionando o cliente '{rotulo}' no campo customersList_1...")
+        self.sio.emit('relatar_progresso', {'mensagem': f"🏢 Selecionando cliente '{rotulo}'..."})
+        try:
+            if hasattr(self.driver, 'switch_to') and hasattr(self.driver.switch_to, 'default_content'):
+                self.driver.switch_to.default_content()
+            input_cliente = self.wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "input#customersList_1, input.s-inputCustomerList"))
+            )
+            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", input_cliente)
+            self.driver.execute_script("arguments[0].click();", input_cliente)
+            time.sleep(1)
+
+            if eh_metais:
+                xpath_opcao = (
+                    "//li[contains(@class, 'ComboBox__resultItem') and ("
+                    "normalize-space(text())='Vale Base Metals' or "
+                    "normalize-space(text())='Vale Base Metais' or "
+                    "contains(translate(normalize-space(text()), 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'), 'VALE BASE METAL')"
+                    ")]"
+                )
+            else:
+                xpath_opcao = (
+                    "//li[contains(@class, 'ComboBox__resultItem') and ("
+                    "normalize-space(text())='Vale' or "
+                    "normalize-space(text())='VALE'"
+                    ")]"
+                )
+
+            opcoes = self.driver.find_elements(By.XPATH, xpath_opcao)
+            if opcoes:
+                self.driver.execute_script("arguments[0].click();", opcoes[0])
+            else:
+                input_cliente.clear()
+                time.sleep(0.3)
+                input_cliente.send_keys(rotulo)
+                time.sleep(1)
+                opcoes = self.driver.find_elements(By.XPATH, xpath_opcao)
+                if opcoes:
+                    self.driver.execute_script("arguments[0].click();", opcoes[0])
+                else:
+                    input_cliente.send_keys(Keys.ENTER)
+
+            time.sleep(3)
+            logger.info(f"   ✅ Cliente '{rotulo}' selecionado com sucesso!")
+            return True
+        except Exception as e:
+            logger.warning(f"   ⚠️ Não foi possível selecionar o cliente '{rotulo}': {e}")
+            return False
+
+    def _pesquisar_link_evento(self, evento):
+        logger.info(f"🔎 Pesquisando evento {evento}...")
+        try:
+            if hasattr(self.driver, 'switch_to') and hasattr(self.driver.switch_to, 'default_content'):
+                self.driver.switch_to.default_content()
+        except Exception:
+            pass
+        search = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input.s-toolbarSearch")))
+        search.clear()
+        time.sleep(0.3)
+        try:
+            if (search.get_attribute("value") or "").strip():
+                self.driver.execute_script("arguments[0].value = '';", search)
+        except Exception:
+            pass
+        search.send_keys(evento)
+        search.send_keys(Keys.RETURN)
+        time.sleep(4)
+
+        xpath_preciso = f"//td[contains(@class, 'coupaTable__cell')]//a[contains(text(), '{evento}') or contains(@href, '{evento}')]"
+        try:
+            return WebDriverWait(self.driver, 6).until(EC.presence_of_element_located((By.XPATH, xpath_preciso)))
+        except Exception:
+            return None
+
+    def _verificar_e_resolver_captcha(self):
+        """Se aparecer um Captcha em qualquer etapa, transmite em alta velocidade (~5 FPS, estilo vídeo) para a tela principal de todos os vendedores até alguém resolver."""
+        def _eh_recaptcha(f):
+            try:
+                src = f.get_attribute("src") or ""
+                name = f.get_attribute("name") or ""
+                return "anchor" in src or "bframe" in src or "recaptcha" in src or name.startswith("a-") or name.startswith("c-")
+            except Exception:
+                return False
+
+        # Descobre onde os iframes do reCAPTCHA estão sem entrar em iframes ocultos na página de listagem
+        dentro_iframe_evento = bool(getattr(self, '_dentro_iframe_evento', False))
+        modo_contexto = "coupa_iframe" if dentro_iframe_evento else "top"
+        try:
+            frames_atuais = self.driver.find_elements(By.TAG_NAME, "iframe")
+            tem_recaptcha = any(_eh_recaptcha(f) for f in frames_atuais)
+            if not tem_recaptcha and dentro_iframe_evento and hasattr(self.driver.switch_to, 'default_content'):
+                self.driver.switch_to.default_content()
+                frames_top = self.driver.find_elements(By.TAG_NAME, "iframe")
+                if any(_eh_recaptcha(f) for f in frames_top):
+                    modo_contexto = "top"
+                    tem_recaptcha = True
+                else:
+                    # Volta para o iframe principal do evento Coupa
+                    for f_outer in frames_top:
+                        if not _eh_recaptcha(f_outer):
+                            try:
+                                self.driver.switch_to.frame(f_outer)
+                                break
+                            except Exception:
+                                pass
+        except Exception:
+            return False
+
+        if not tem_recaptcha:
+            return False
+
+        def _posicionar_contexto():
+            if not hasattr(self.driver.switch_to, 'default_content'):
+                return
+            if modo_contexto == "top":
+                self.driver.switch_to.default_content()
+            elif modo_contexto == "coupa_iframe":
+                self.driver.switch_to.default_content()
+                for f_o in self.driver.find_elements(By.TAG_NAME, "iframe"):
+                    if not _eh_recaptcha(f_o):
+                        try:
+                            self.driver.switch_to.frame(f_o)
+                            break
+                        except Exception:
+                            pass
+
+        inicio_captcha = None
+        ultimo_print = 0
+        resolvido = False
+
+        while True:
+            try:
+                _posicionar_contexto()
+                frames = self.driver.find_elements(By.TAG_NAME, "iframe")
+                iframe_caixinha = None
+                iframe_desafio = None
+
+                for f in frames:
+                    src = f.get_attribute("src") or ""
+                    name = f.get_attribute("name") or ""
+                    if "anchor" in src or name.startswith("a-"):
+                        iframe_caixinha = f
+                    elif "bframe" in src or name.startswith("c-"):
+                        iframe_desafio = f
+
+                captcha_pendente = False
+                if iframe_caixinha and iframe_caixinha.is_displayed():
+                    captcha_pendente = True
+                    try:
+                        self.driver.switch_to.frame(iframe_caixinha)
+                        if self.driver.find_element(By.ID, "recaptcha-anchor").get_attribute("aria-checked") == "true":
+                            captcha_pendente = False
+                    except Exception:
+                        pass
+                    finally:
+                        if modo_contexto in ("top", "coupa_iframe"):
+                            _posicionar_contexto()
+                        elif hasattr(self.driver.switch_to, 'default_content'):
+                            self.driver.switch_to.default_content()
+
+                if iframe_desafio and iframe_desafio.is_displayed():
+                    captcha_pendente = True
+
+                if not captcha_pendente:
+                    if inicio_captcha is not None:
+                        self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
+                        resolvido = True
+                    break
+
+                if inicio_captcha is None:
+                    inicio_captcha = time.time()
+                    logger.warning("⚠️ Captcha detectado! Enviando em tempo real para a tela principal dos vendedores...")
+                    self.sio.emit('relatar_progresso', {'mensagem': '⚠️ Captcha detectado! Resolva na tela principal de Minhas Cotações...'})
+                elif time.time() - inicio_captcha > 300:
+                    self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
+                    raise Exception("CAPTCHA_TIMEOUT: Captcha expirado sem solução em 5 minutos.")
+
+                elemento_alvo = iframe_desafio if (iframe_desafio and iframe_desafio.is_displayed()) else iframe_caixinha
+                if elemento_alvo:
+                    aguardando = getattr(self, 'aguardando_clique', None)
+                    coords = getattr(self, 'coordenadas_clique', None)
+                    if aguardando is not None and aguardando.is_set() and coords:
+                        try:
+                            largura = (getattr(elemento_alvo, 'size', None) or {}).get('width', 0)
+                            altura = (getattr(elemento_alvo, 'size', None) or {}).get('height', 0)
+                            px = coords['x'] - (largura / 2)
+                            py = coords['y'] - (altura / 2)
+                            ActionChains(self.driver).move_to_element_with_offset(elemento_alvo, px, py).click().perform()
+                            ultimo_print = 0  # força novo frame imediato após o clique
+                        except Exception as e_click:
+                            logger.warning(f"Erro ao clicar no Captcha: {e_click}")
+                        finally:
+                            aguardando.clear()
+
+                    agora = time.time()
+                    if agora - ultimo_print >= 0.2:
+                        try:
+                            png_bytes = getattr(elemento_alvo, 'screenshot_as_png', None)
+                            if png_bytes:
+                                png_b64 = base64.b64encode(png_bytes).decode('utf-8')
+                                self.sio.emit('imagem_captcha_do_robo', {'imagem': png_b64})
+                        except Exception:
+                            pass
+                        ultimo_print = agora
+
+                time.sleep(0.08)
+            except Exception as e_cap:
+                if "CAPTCHA_TIMEOUT" in str(e_cap):
+                    raise
+                break
+
+        if dentro_iframe_evento and modo_contexto == "top" and hasattr(self.driver.switch_to, 'default_content'):
+            try:
+                self.driver.switch_to.default_content()
+                for f_o in self.driver.find_elements(By.TAG_NAME, "iframe"):
+                    if not _eh_recaptcha(f_o):
+                        self.driver.switch_to.frame(f_o)
+                        break
+            except Exception:
+                pass
+
+        return resolvido
+
+    def _capturar_print_item(self, linha, idx_item, preco_str="", prazo_str=""):
+        """Tira uma print da área dos campos preenchidos (focado no prazo de entrega e campos do item)."""
+        try:
+            # Rola até a área dos campos preenchidos do item (priorizando o campo de prazo de entrega e campos preenchidos)
+            try:
+                campo_prazo = None
+                campos_prazo = linha.find_elements(By.CSS_SELECTOR, "input.s-lead_time_input")
+                if campos_prazo:
+                    campo_prazo = campos_prazo[0]
+
+                self.driver.execute_script("""
+                    const elLinha = arguments[0];
+                    const elPrazo = arguments[1];
+                    if (document.activeElement && typeof document.activeElement.blur === 'function') {
+                        document.activeElement.blur();
+                    }
+                    const seletores = [
+                        'input.s-lead_time_input',
+                        'input.s-price_amount_input',
+                        'input.s-custom_field_1',
+                        'input.s-custom_field_3',
+                        'input.s-custom_field_4',
+                        'input.s-custom_field_6',
+                        'input.s-custom_field_7',
+                        'input.s-custom_field_8',
+                        'input.s-custom_field_9'
+                    ];
+                    const visiveis = Array.from(elLinha.querySelectorAll(seletores.join(',')))
+                        .filter(el => {
+                            const r = el.getBoundingClientRect();
+                            return r.width > 0 && r.height > 0;
+                        });
+                    if (visiveis.length > 0) {
+                        let minTop = Infinity, maxBottom = -Infinity;
+                        visiveis.forEach(c => {
+                            const r = c.getBoundingClientRect();
+                            if (r.top < minTop) minTop = r.top;
+                            if (r.bottom > maxBottom) maxBottom = r.bottom;
+                        });
+                        let alvoCentro = (minTop + maxBottom) / 2;
+                        const refPrazo = elPrazo || elLinha.querySelector('input.s-lead_time_input');
+                        if (refPrazo) {
+                            const rp = refPrazo.getBoundingClientRect();
+                            if (rp.width > 0 && rp.height > 0) {
+                                const margem = 90;
+                                const delta = alvoCentro - (window.innerHeight / 2);
+                                const novoTop = rp.top - delta;
+                                const novoBottom = rp.bottom - delta;
+                                if (novoBottom > window.innerHeight - margem) {
+                                    alvoCentro += (novoBottom - (window.innerHeight - margem));
+                                } else if (novoTop < margem) {
+                                    alvoCentro -= (margem - novoTop);
+                                }
+                            }
+                        }
+                        window.scrollBy(0, alvoCentro - (window.innerHeight / 2));
+                    } else if (elPrazo) {
+                        elPrazo.scrollIntoView({ block: 'center' });
+                    } else {
+                        elLinha.scrollIntoView({ block: 'end' });
+                    }
+                """, linha, campo_prazo)
+            except Exception:
+                try:
+                    campo_prazo = linha.find_element(By.CSS_SELECTOR, "input.s-lead_time_input")
+                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", campo_prazo)
+                except Exception:
+                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'end'});", linha)
+
+            time.sleep(0.6)
+            # Importante: usa get_screenshot_as_png() da janela visível primeiro, pois linha.screenshot_as_png
+            # no ChromeDriver força scroll para o topo da div.s-itemsAndServicesLine (cortando os campos preenchidos embaixo).
+            png_bytes = None
+            if hasattr(self.driver, 'get_screenshot_as_png'):
+                png_bytes = self.driver.get_screenshot_as_png()
+            if not png_bytes:
+                png_bytes = getattr(linha, 'screenshot_as_png', None)
+            if not png_bytes:
+                return None
+            png_b64 = base64.b64encode(png_bytes).decode('utf-8')
+            return {
+                'item': idx_item + 1,
+                'imagem': png_b64,
+                'preco': str(preco_str or '').strip(),
+                'prazo': str(prazo_str or '').strip()
+            }
+        except Exception as e:
+            logger.warning(f"   ⚠️ Não foi possível capturar print do Item {idx_item + 1}: {e}")
+            return None
+
     def responder_evento(self, dados):
         evento = str(dados.get('evento', '')).strip()
         lista_precos = dados.get('precos', [])
         lista_prazos = dados.get('prazos', [])
+        lista_ncms = dados.get('ncms', [])
         lista_origens = dados.get('origens', [])
         lista_icms = dados.get('icms', [])
         
         pasta_anexos = tempfile.mkdtemp(prefix='maestro-resposta-')   # apagada no fim, com ou sem erro
         falhas = []
+        prints_itens_map = {}
 
         logger.info(f"🚀 Iniciando Resposta do Evento {evento}...")
 
@@ -66,64 +384,41 @@ class RespostaMixin:
             dav_paths = [self._gravar_anexo(pasta_anexos, f) for f in dados.get('davs', [])]
 
             # 1. ROTA DIRETA PARA SOURCING (À PROVA DE FALHAS)
-            self.sio.emit('relatar_progresso', {'mensagem': f" Acedendo diretamente ã  página de Sourcing..."})
+            self.sio.emit('relatar_progresso', {'mensagem': f" Acessando diretamente a página de Sourcing..."})
             
-            # Navega diretamente pela URL em vez de tentar clicar no menu!
+            # Sempre entra na página de pesquisa (inclusive ao puxar o próximo evento da fila)
+            self._dentro_iframe_evento = False
             url_sourcing = f"{self.BASE_SUPPLIER_URL}/quotes/private_events"
             self.driver.get(url_sourcing)
             time.sleep(3)
+            self._verificar_e_resolver_captcha()
             self.garantir_logado(url_sourcing)
+            self._verificar_e_resolver_captcha()
 
-            # 1.5 DIGITAR O CLIENTE (VALE)
-            logger.info(" Filtrando pelo cliente 'vale'...")
-            self.sio.emit('relatar_progresso', {'mensagem': f" Filtrando eventos do cliente 'vale'..."})
-            try:
-                # Usa o campo de busca de clientes (ID customersList_1)
-                input_cliente = self.wait.until(EC.presence_of_element_located((By.ID, "customersList_1")))
-                input_cliente.clear()
-                time.sleep(0.5)
-                input_cliente.send_keys("vale")
-                time.sleep(1)
-                input_cliente.send_keys(Keys.ENTER) # Pressiona Enter após digitar
-                time.sleep(3) # Aguarda 3 segundos pro site recarregar a tabela
-                logger.info("   ✅ Filtro 'vale' aplicado com sucesso!")
-            except Exception as e:
-                logger.warning(f"    Não foi possível digitar 'vale' no campo de cliente: {e}")
+            # 1.5 SELECIONA PRIMEIRO O CLIENTE 'Vale' E PROCURA O EVENTO
+            self._selecionar_cliente_sourcing("Vale")
+            link_evento = self._pesquisar_link_evento(evento)
 
-            # 2. Pesquisa o evento
-            logger.info(" Buscando evento...")
-            search = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input.s-toolbarSearch")))
-            search.clear()
-            search.send_keys(evento)
-            search.send_keys(Keys.RETURN)
-            time.sleep(4)
+            # 2. SE NÃO ACHAR NO 'Vale' NORMAL, MUDA O CLIENTE PARA 'Vale Base Metals' E PROCURA NOVAMENTE
+            if link_evento is None:
+                logger.info(f"   ⚠️ Evento {evento} não encontrado no cliente 'Vale'. Mudando para 'Vale Base Metals'...")
+                self.sio.emit('relatar_progresso', {'mensagem': f"🔄 Evento {evento} não encontrado na Vale. Mudando cliente para Vale Base Metals..."})
+                self._selecionar_cliente_sourcing("Vale Base Metals")
+                link_evento = self._pesquisar_link_evento(evento)
 
             # 3. Entra no evento
-            logger.info(f"   🖱️ Procurando link do evento {evento} na tabela...")
-            try:
-                # 1. XPath ultra-preciso usando a classe e a estrutura HTML que você capturou
-                xpath_preciso = f"//td[contains(@class, 'coupaTable__cell')]//a[contains(text(), '{evento}') or contains(@href, '{evento}')]"
-                link_evento = self.wait.until(EC.presence_of_element_located((By.XPATH, xpath_preciso)))
-                
-                # 2. Rola a página para garantir que o elemento está visível na tela
+            logger.info(f"   🖱️ Abrindo evento {evento}...")
+            if link_evento is not None:
                 self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link_evento)
                 time.sleep(1)
-                
-                # 3. Clica no link
                 self.driver.execute_script("arguments[0].click();", link_evento)
                 logger.info("   ✅ Clique efetuado com sucesso!")
                 time.sleep(3)
-                
-                # 4. TRATAMENTO CRÍTICO: Como o link tem target="_blank", ele abre uma NOVA ABA.
-                # O Selenium precisa de ser instruído a "pular" para essa aba recém-aberta.
                 if len(self.driver.window_handles) > 1:
                     self.driver.switch_to.window(self.driver.window_handles[-1])
                     logger.info("   🔄 Foco alterado para a aba do evento.")
-                    
-            except Exception as e:
-                logger.warning(f"   ⚠️ Link não encontrado na tabela. Forçando acesso via URL (Nova Aba)... ({e})")
-                # Se falhar o clique, abre o evento forçadamente numa ABA NOVA 
-                # (Abrimos em nova aba via JS para não quebrar a lógica de fechar aba no final da função)
+            else:
+                logger.warning(f"   ⚠️ Link não encontrado na tabela em Vale nem em Vale Base Metals. Forçando acesso via URL (Nova Aba)...")
                 self.driver.execute_script(f"window.open('{self.BASE_SUPPLIER_URL}/quotes/external_responses/{evento}/multi', '_blank');")
                 time.sleep(3)
                 self.driver.switch_to.window(self.driver.window_handles[-1])
@@ -135,6 +430,7 @@ class RespostaMixin:
             
             try: 
                 self.driver.switch_to.frame(self.wait.until(EC.presence_of_element_located((By.TAG_NAME, "iframe"))))
+                self._dentro_iframe_evento = True
             except: 
                 pass
 
@@ -241,16 +537,22 @@ class RespostaMixin:
             # 7. Expandir e Preencher APENAS os itens informados
             logger.info(" Avaliando linhas e preenchendo itens específicos...")
             time.sleep(2)
+            salvou_algum_item = False
             
             try:
                 linhas_de_itens = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
-                logger.info(f" O evento possui {len(linhas_de_itens)} linhas/itens no total.")
+                total_linhas = len(linhas_de_itens)
+                logger.info(f" O evento possui {total_linhas} linhas/itens no total.")
                 
-                for idx, linha in enumerate(linhas_de_itens):
+                for idx in range(total_linhas):
                     se_tem_preco = idx < len(lista_precos) and str(lista_precos[idx]).strip() != ""
                     se_tem_prazo = idx < len(lista_prazos) and str(lista_prazos[idx]).strip() != ""
                     
                     if se_tem_preco or se_tem_prazo:
+                        linhas_atuais = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
+                        if idx >= len(linhas_atuais):
+                            break
+                        linha = linhas_atuais[idx]
                         logger.info(f"    Processando Item {idx+1}...")
                         self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", linha)
                         time.sleep(1) # PAUSA: Espera a rolagem terminar
@@ -281,21 +583,21 @@ class RespostaMixin:
                                             arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
                                         """, cfs[0], valor_fixo)
                                     logger.info(f"      ✅ {nome_log} preenchido com '{valor_fixo}'")
-                                    time.sleep(1.5) # O FREIO MãGICO: Dá 1.5s para o servidor processar antes de ir pro próximo imposto
+                                    time.sleep(1.5) # O FREIO MÁGICO: Dá 1.5s para o servidor processar antes de ir pro próximo imposto
 
-                            # Copiar NCM (Se existir no item, joga pro custom_field_9 ComboBox)
-                            ncm_element = linha.find_elements(By.CSS_SELECTOR, "div.s-classification_of_goods p.s-textField")
-                            if ncm_element:
-                                ncm_val = ncm_element[0].text.strip()
+                            # Preencher NCM da Planilha Base (ComboBox - custom_field_9)
+                            ncm_atual = str(lista_ncms[idx]).strip() if idx < len(lista_ncms) else ""
+                            if ncm_atual:
                                 ncm_input = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_9")
                                 if ncm_input:
                                     ncm_input[0].clear()
-                                    ncm_input[0].send_keys(ncm_val)
+                                    time.sleep(0.3)
+                                    ncm_input[0].send_keys(ncm_atual)
                                     time.sleep(1.5) # Mais tempo para o AJAX do dropdown do NCM carregar
                                     ncm_input[0].send_keys(Keys.ARROW_DOWN)
                                     time.sleep(0.5)
                                     ncm_input[0].send_keys(Keys.ENTER)
-                                    logger.info(f"      ✅ NCM copiado e injetado: {ncm_val}")
+                                    logger.info(f"      ✅ NCM da planilha preenchido: {ncm_atual}")
                                     time.sleep(1.5) # Freio após injetar NCM
 
                             # Impostos Fixos
@@ -309,21 +611,98 @@ class RespostaMixin:
                             if icms_atual:
                                 preencher_cf("input.s-custom_field_4", icms_atual, "ICMS (%)")
 
-                            # Preencher Origem (ComboBox - Campo 1) se o utilizador informou
+                            # Preencher Origem (ComboBox - Campo 1: input.ComboBox__input.s-custom_field_1 com aria-owns="custom_field_1_..._results")
                             origem_atual = str(lista_origens[idx]).strip() if idx < len(lista_origens) else ""
                             if origem_atual:
                                 cfs_origem = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_1")
                                 if cfs_origem:
-                                    cfs_origem[0].clear()
-                                    time.sleep(0.5)
-                                    cfs_origem[0].send_keys(origem_atual)
+                                    inp_origem = cfs_origem[0]
+                                    try:
+                                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", inp_origem)
+                                        self.driver.execute_script("arguments[0].click();", inp_origem)
+                                        time.sleep(0.3)
+                                    except Exception:
+                                        pass
+                                    inp_origem.clear()
+                                    time.sleep(0.3)
+                                    inp_origem.send_keys(origem_atual)
                                     time.sleep(1.5)
-                                    cfs_origem[0].send_keys(Keys.ARROW_DOWN)
-                                    time.sleep(0.5)
-                                    cfs_origem[0].send_keys(Keys.ARROW_UP)
-                                    time.sleep(0.5)
-                                    cfs_origem[0].send_keys(Keys.ENTER)
-                                    logger.info(f"      ✅ Origem preenchida: {origem_atual}")
+                                    # Seleciona a opção correspondente ao número digitado na lista de resultados (aria-owns="custom_field_1_..._results")
+                                    selecionou_origem = False
+                                    try:
+                                        m_num = re.match(r'^(\d+)', origem_atual)
+                                        num_origem = m_num.group(1) if m_num else origem_atual
+                                        owns_id = inp_origem.get_attribute("aria-owns") or ""
+                                        opcoes_origem = []
+                                        if owns_id:
+                                            opcoes_origem = self.driver.find_elements(By.CSS_SELECTOR, f"#{owns_id} li.ComboBox__resultItem, #{owns_id} li")
+                                        if not opcoes_origem:
+                                            opcoes_origem = [
+                                                li for li in self.driver.find_elements(By.CSS_SELECTOR, "li.ComboBox__resultItem")
+                                                if li.is_displayed()
+                                            ]
+                                        opcao_alvo = None
+                                        for li in opcoes_origem:
+                                            txt_li = (getattr(li, 'text', '') or '').strip()
+                                            if not txt_li:
+                                                continue
+                                            if txt_li.lower() == origem_atual.lower() or re.match(rf'^{re.escape(num_origem)}(?:\b|\s|-|\.)', txt_li):
+                                                opcao_alvo = li
+                                                break
+                                        if opcao_alvo is None and opcoes_origem:
+                                            for li in opcoes_origem:
+                                                txt_li = (getattr(li, 'text', '') or '').strip()
+                                                if txt_li.startswith(num_origem):
+                                                    opcao_alvo = li
+                                                    break
+                                        if opcao_alvo is not None:
+                                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'nearest'}); arguments[0].click();", opcao_alvo)
+                                            selecionou_origem = True
+                                        else:
+                                            selecionou_js = self.driver.execute_script("""
+                                                const inp = arguments[0];
+                                                const valor = String(arguments[1] || '').trim();
+                                                const m = valor.match(/^(\\d+)/);
+                                                const numAlvo = m ? m[1] : valor;
+                                                const ownsId = inp && inp.getAttribute ? inp.getAttribute('aria-owns') : '';
+                                                let itens = [];
+                                                if (ownsId) {
+                                                    const ul = document.getElementById(ownsId);
+                                                    if (ul) itens = Array.from(ul.querySelectorAll('li.ComboBox__resultItem, li[role="option"], li'));
+                                                }
+                                                if (!itens.length) {
+                                                    itens = Array.from(document.querySelectorAll('li.ComboBox__resultItem'))
+                                                        .filter(el => el.offsetWidth > 0 || el.offsetHeight > 0);
+                                                }
+                                                const norm = s => String(s || '').trim();
+                                                let alvo = itens.find(li => {
+                                                    const t = norm(li.innerText || li.textContent);
+                                                    if (!t) return false;
+                                                    if (t.toLowerCase() === valor.toLowerCase()) return true;
+                                                    const mLi = t.match(/^(\\d+)\\b/);
+                                                    return mLi && mLi[1] === numAlvo;
+                                                });
+                                                if (!alvo && itens.length) {
+                                                    alvo = itens.find(li => norm(li.innerText || li.textContent).startsWith(numAlvo)) || itens[0];
+                                                }
+                                                if (alvo) {
+                                                    alvo.scrollIntoView({ block: 'nearest' });
+                                                    alvo.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                                                    alvo.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                                                    alvo.click();
+                                                    return true;
+                                                }
+                                                return false;
+                                            """, inp_origem, origem_atual)
+                                            selecionou_origem = (selecionou_js is True and bool(owns_id or opcoes_origem))
+                                    except Exception:
+                                        selecionou_origem = False
+
+                                    if not selecionou_origem:
+                                        inp_origem.send_keys(Keys.ARROW_DOWN)
+                                        time.sleep(0.4)
+                                        inp_origem.send_keys(Keys.ENTER)
+                                    logger.info(f"      ✅ Origem preenchida e selecionada: {origem_atual}")
                                     time.sleep(1.5) # Freio após injetar Origem
 
                         except Exception as e:
@@ -349,7 +728,7 @@ class RespostaMixin:
                                 time.sleep(1.5) # Freio após injetar o Preço
                             except Exception as e:
                                 falhas.append(f"item {idx+1} (preço)")
-                                logger.warning(f"      âš ï¸ Falha ao inserir preço: {e}")
+                                logger.warning(f"      ⚠️ Falha ao inserir preço: {e}")
 
                         if se_tem_prazo:
                             prazo_atual = str(lista_prazos[idx]).strip()
@@ -384,7 +763,36 @@ class RespostaMixin:
                                 time.sleep(1.5) # Freio após injetar o Prazo
                             except Exception as e:
                                 falhas.append(f"item {idx+1} (prazo)")
-                                logger.warning(f"      âš ï¸ Falha ao inserir prazo: {e}")
+                                logger.warning(f"      ⚠️ Falha ao inserir prazo: {e}")
+
+                        # Captura print da área dos campos preenchidos do item
+                        preco_log = str(lista_precos[idx]).strip() if se_tem_preco else ""
+                        prazo_log = str(lista_prazos[idx]).strip() if se_tem_prazo else ""
+                        p_item = self._capturar_print_item(linha, idx, preco_log, prazo_log)
+                        if p_item:
+                            prints_itens_map[idx] = p_item
+
+                        # Salva o item atual (<button class="button primary s-save" type="button"><span>Salvar</span></button>)
+                        try:
+                            botoes_salvar_item = linha.find_elements(By.CSS_SELECTOR, "button.s-save")
+                            if not botoes_salvar_item:
+                                try:
+                                    btn_unico = self.driver.find_element(By.CSS_SELECTOR, "button.s-save")
+                                    if btn_unico:
+                                        botoes_salvar_item = [btn_unico]
+                                except Exception:
+                                    botoes_salvar_item = self.driver.find_elements(By.CSS_SELECTOR, "button.s-save")
+                            if botoes_salvar_item:
+                                btn_salvar_item = botoes_salvar_item[0]
+                                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn_salvar_item)
+                                time.sleep(0.3)
+                                self.driver.execute_script("arguments[0].click();", btn_salvar_item)
+                                salvou_algum_item = True
+                                logger.info(f"      💾 Item {idx+1} salvo (button.s-save).")
+                                time.sleep(2.5)
+                                self._verificar_e_resolver_captcha()
+                        except Exception as e_save_it:
+                            logger.warning(f"      ⚠️ Aviso ao clicar em Salvar no Item {idx+1}: {e_save_it}")
                     else:
                         logger.info(f"    Item {idx+1} ignorado (Você deixou os campos vazios).")
                         
@@ -396,29 +804,53 @@ class RespostaMixin:
             logger.info("✅ Finalizando salvamento do evento...")
             try:
                 btn_salvar = self.driver.find_element(By.CSS_SELECTOR, "button.s-save")
+                self.driver.execute_script("arguments[0].click();", btn_salvar)
+                time.sleep(3)
+                self._verificar_e_resolver_captcha()
             except NoSuchElementException:
-                raise Exception("Botão Salvar não encontrado: o rascunho não foi salvo.")
-            self.driver.execute_script("arguments[0].click();", btn_salvar)
-            time.sleep(4)
+                if not salvou_algum_item:
+                    raise Exception("Botão Salvar não encontrado: o rascunho não foi salvo.")
+
+            # 8.5 Caso algum item preenchido ainda não tenha print capturada, captura como fallback
+            try:
+                linhas_salvas = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
+                for idx, linha_s in enumerate(linhas_salvas):
+                    se_tem_preco = idx < len(lista_precos) and str(lista_precos[idx]).strip() != ""
+                    se_tem_prazo = idx < len(lista_prazos) and str(lista_prazos[idx]).strip() != ""
+                    if (se_tem_preco or se_tem_prazo) and idx not in prints_itens_map:
+                        preco_log = str(lista_precos[idx]).strip() if se_tem_preco else ""
+                        prazo_log = str(lista_prazos[idx]).strip() if se_tem_prazo else ""
+                        p_salvo = self._capturar_print_item(linha_s, idx, preco_log, prazo_log)
+                        if p_salvo:
+                            prints_itens_map[idx] = p_salvo
+            except Exception as e_print:
+                logger.warning(f"   ⚠️ Falha ao atualizar prints pós-salvamento: {e_print}")
+
+            prints_finais = [prints_itens_map[k] for k in sorted(prints_itens_map.keys())]
+            if prints_finais:
+                self.sio.emit('prints_resposta_evento', {'evento': str(evento), 'prints': prints_finais})
+
             self._marcar_rascunho(evento)
             if falhas:
                 raise Exception(f"Rascunho salvo, mas com falha em: {', '.join(falhas)}. Confira no portal antes de enviar.")
 
-            logger.info(f"🎉 Rascunho do evento {evento} salvo. O envio ao cliente é manual.")
-            self.sio.emit('tarefa_concluida', {'evento': f'Evento {evento}', 'sucesso': True})
-
             if len(self.driver.window_handles) > 1:
                 self.driver.close()
                 self.driver.switch_to.window(self.driver.window_handles[0])
+
+            logger.info(f"🎉 Rascunho do evento {evento} salvo. O envio ao cliente é manual.")
+            self.sio.emit('tarefa_concluida', {'evento': f'Evento {evento}', 'sucesso': True, 'prints': prints_finais})
 
         except Exception as e:
-            logger.error(f"âŒ Erro ao responder evento: {e}")
+            logger.error(f"❌ Erro ao responder evento: {e}")
+            # Se der erro, garante que fecha a aba extra e volta pra principal antes de liberar o próximo da fila
+            try:
+                if len(self.driver.window_handles) > 1:
+                    self.driver.close()
+                    self.driver.switch_to.window(self.driver.window_handles[0])
+            except Exception:
+                pass
             self.sio.emit('tarefa_concluida', {'evento': f'Evento {evento}', 'sucesso': False, 'erro': str(e)})
-            
-            # Se der erro, garante que fecha a aba extra e volta pra principal pra não travar tudo
-            if len(self.driver.window_handles) > 1:
-                self.driver.close()
-                self.driver.switch_to.window(self.driver.window_handles[0])
         finally:
             shutil.rmtree(pasta_anexos, ignore_errors=True)
 
