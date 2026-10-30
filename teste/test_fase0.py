@@ -16,7 +16,7 @@ from selenium.webdriver.common.by import By
 
 from test_planilha_persistencia import Manager, namespace as ns_manager
 
-RAIZ = Path(__file__).parent
+RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
 ARQ_COUPA_LOGIN = RAIZ / 'bots/coupa/mixins/autenticacao.py'
 ARQ_VALE = RAIZ / 'bots/vale_bot.py'
 LOGGER = logging.getLogger('teste-fase0')

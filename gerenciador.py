@@ -1,5 +1,22 @@
 # -*- coding: utf-8 -*-
 import sys
+import os
+
+PASTA_GERENCIADOR = os.path.dirname(os.path.abspath(__file__))
+PASTA_LOGS = os.path.join(PASTA_GERENCIADOR, 'logs')
+os.makedirs(PASTA_LOGS, exist_ok=True)
+
+# Se executado sem console (ex: pythonw ou como serviço em segundo plano),
+# redireciona stdout e stderr para o arquivo de log para capturar todos os prints e erros
+if sys.stdout is None or sys.stderr is None:
+    try:
+        _std_log = open(os.path.join(PASTA_LOGS, 'gerenciador_console.log'), 'a', encoding='utf-8', buffering=1)
+        if sys.stdout is None:
+            sys.stdout = _std_log
+        if sys.stderr is None:
+            sys.stderr = _std_log
+    except Exception:
+        pass
 
 # Força UTF-8 nos fluxos de saída do console para evitar erros de encode de emojis no Windows
 if sys.platform == 'win32':
@@ -43,13 +60,34 @@ if ROBO_SECRET is None:
 if __name__ == '__main__' and len(ROBO_SECRET) < 32:
     raise SystemExit("Configure ROBO_SECRET com pelo menos 32 caracteres, igual ao segredo do servidor Maestro.")
 
-PASTA_LOGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
-os.makedirs(PASTA_LOGS, exist_ok=True)
+log_handlers = [
+    RotatingFileHandler(
+        os.path.join(PASTA_LOGS, 'gerenciador.log'), maxBytes=10_000_000, backupCount=10, encoding='utf-8'
+    )
+]
+
+# Grava também o log central em .txt na pasta de Logs da rede (\\SERVIDOR2\Publico\ALLAN\Logs\gerenciador.txt)
+PASTA_LOGS_REDE = r"\\SERVIDOR2\Publico\ALLAN\Logs"
+if os.environ.get('MAESTRO_TESTE') == '1':
+    PASTA_LOGS_REDE = os.path.join(PASTA_GERENCIADOR, 'base_teste', 'Logs')
+
+try:
+    os.makedirs(PASTA_LOGS_REDE, exist_ok=True)
+    caminho_log_txt = os.path.join(PASTA_LOGS_REDE, 'gerenciador.txt')
+    rede_handler = RotatingFileHandler(
+        caminho_log_txt, maxBytes=10_000_000, backupCount=10, encoding='utf-8'
+    )
+    log_handlers.append(rede_handler)
+except Exception:
+    pass
+
+if sys.stdout is not None:
+    log_handlers.append(logging.StreamHandler(sys.stdout))
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [PID %(process)d] [%(threadName)s] %(name)s %(levelname)s %(message)s',
-    handlers=[logging.StreamHandler(), RotatingFileHandler(
-        os.path.join(PASTA_LOGS, 'gerenciador.log'), maxBytes=5_000_000, backupCount=5, encoding='utf-8')],
+    handlers=log_handlers,
 )
 logger = logging.getLogger(__name__)
 
@@ -113,7 +151,8 @@ CONFIG_GLOBAL = carregar_config()
 import ambiente
 if ambiente.modo_teste():
     os.makedirs(ambiente.pasta_banco(), exist_ok=True)
-    CONFIG_GLOBAL["caminho_excel"] = os.path.join(ambiente.RAIZ, "teste.xlsx")
+    candidato_excel = os.path.join(ambiente.RAIZ, "teste", "teste.xlsx")
+    CONFIG_GLOBAL["caminho_excel"] = candidato_excel if os.path.exists(candidato_excel) else os.path.join(ambiente.RAIZ, "teste.xlsx")
     CONFIG_GLOBAL["caminho_database_coupa"] = os.path.join(ambiente.pasta_database(), "eventos.jsonl")
     CONFIG_GLOBAL["caminho_pedidos_json"] = os.path.join(ambiente.pasta_database(), "pedidos.json")
     CONFIG_GLOBAL["caminho_database_vale"] = os.path.join(ambiente.pasta_database(), "eventos_nimbi.jsonl")
@@ -136,8 +175,11 @@ if __name__ == '__main__':
         logger.error(f"Já existe um gerenciador rodando ({e}). Feche-o antes de abrir outro.")
         # ponytail: o recusado acrescenta 1 linha no arquivo do que está rodando; nunca limpa nem regrava
         eventos.registrar('gerenciador', 'instancia', 'aviso', f'Segundo gerenciador recusado: já existe um rodando ({e})')
-        try: input("Pressione Enter para fechar esta janela...")
-        except EOFError: pass
+        try:
+            if sys.stdin and hasattr(sys.stdin, 'read'):
+                input("Pressione Enter para fechar esta janela...")
+        except Exception:
+            pass
         sys.exit(3)
     eventos.limpar()
 
@@ -720,14 +762,17 @@ def validar_login(dados):
         if usuarios[email].get('bloqueado'): 
             sio.emit('resultado_login', {'sucesso': False, 'erro': 'Conta suspensa.', 'clientId': cid})
         else: 
+            dash_acc = bool(usuarios[email].get('dashboard_access', False))
+            is_adm = bool(usuarios[email].get('admin', False))
+            port_acc = bool(usuarios[email].get('portais_access', False)) or dash_acc or is_adm
             sio.emit('resultado_login', {
                 'sucesso': True, 
                 'user': email, 
-                'isAdmin': usuarios[email].get('admin', False), 
-                'isDev': usuarios[email].get('dev', False), 
-                'hasDashboardAccess': usuarios[email].get('dashboard_access', False),
-                'hasPlanilhaAccess': usuarios[email].get('planilha_access', False), # <-- NOVO
-                'hasPortaisAccess': usuarios[email].get('portais_access', False),   # <-- NOVO
+                'isAdmin': is_adm, 
+                'isDev': bool(usuarios[email].get('dev', False)), 
+                'hasDashboardAccess': dash_acc,
+                'hasPlanilhaAccess': False,
+                'hasPortaisAccess': port_acc,
                 'vendedor': usuarios[email].get('vendedor', ''),
                 'clientId': cid
             })
@@ -1244,66 +1289,49 @@ WshShell.SendKeys "~"
             def run_findes():
                 global bot_findes, rodando_monitor_findes
                 try:
-                    comando = 'cmd.exe /k "title ROBO_FINDES"'
-                    bot_findes = subprocess.Popen(comando, creationflags=subprocess.CREATE_NEW_CONSOLE)
+                    caminho_findes_local = CONFIG_GLOBAL.get("caminho_findes", r"C:\Users\Administrator\Desktop\FINDES")
+                    env_findes = os.environ.copy()
+                    env_findes["NODE_SKIP_PLATFORM_CHECK"] = "1"
+
+                    # Abre o CMD já na pasta correta, setando a variável de ambiente e iniciando o dotnet run diretamente
+                    # Isso evita depender de SendKeys/foco na janela, não sendo afetado pelo Coupa ou outros programas
+                    comando = f'title ROBO_FINDES & cd /d "{caminho_findes_local}" & set NODE_SKIP_PLATFORM_CHECK=1 & dotnet run'
+                    bot_findes = subprocess.Popen(
+                        ['cmd.exe', '/k', comando],
+                        cwd=caminho_findes_local,
+                        stdin=subprocess.PIPE,
+                        text=True,
+                        encoding='utf-8',
+                        errors='replace',
+                        creationflags=subprocess.CREATE_NEW_CONSOLE,
+                        env=env_findes
+                    )
 
                     rodando_monitor_findes = True
                     sio.emit('sincronizar_estado_findes_antigo', {'status': 'executando'})
                     threading.Thread(target=monitorar_log_findes, daemon=True).start()
 
-                    sio.emit('relatar_progresso_findes_antigo', {'mensagem': '👻 Fantasma assumiu o teclado! Preparando ambiente...'})
+                    sio.emit('relatar_progresso_findes_antigo', {'mensagem': '🚀 Robô .NET iniciado com sucesso! Preparando envio dos eventos...'})
 
-                    caminho_findes_local = CONFIG_GLOBAL.get("caminho_findes", r"C:\Users\Administrator\Desktop\FINDES")
-                    vbs_code = f"""
-Set WshShell = WScript.CreateObject("WScript.Shell")
-WScript.Sleep 2000 
+                    def injetar_eventos():
+                        try:
+                            # Aguarda o .NET carregar antes de mandar os eventos pelo pipe direto
+                            time.sleep(10)
+                            if eventos_str:
+                                eventos_lista = [e.strip() for e in eventos_str.split(',') if e.strip()]
+                                for evento in eventos_lista:
+                                    if bot_findes and bot_findes.poll() is None and bot_findes.stdin:
+                                        sio.emit('relatar_progresso_findes_antigo', {'mensagem': f"📝 Enviando evento para o robô: {evento}"})
+                                        bot_findes.stdin.write(f"{evento}\n")
+                                        bot_findes.stdin.flush()
+                                        time.sleep(2)
+                                if bot_findes and bot_findes.poll() is None and bot_findes.stdin:
+                                    bot_findes.stdin.write("sair\n")
+                                    bot_findes.stdin.flush()
+                        except Exception as e_inj:
+                            logger.warning(f"Aviso ao injetar eventos no Findes via stdin: {e_inj}")
 
-' Puxa a janela para a frente
-For i = 1 To 5
-    Success = WshShell.AppActivate("ROBO_FINDES")
-    If Success Then Exit For
-    WScript.Sleep 500
-Next
-WScript.Sleep 800
-
-' --- PASSO 1: ENTRAR NA PASTA ---
-WshShell.SendKeys "cd {caminho_findes_local}"
-WScript.Sleep 500
-WshShell.SendKeys "~"
-WScript.Sleep 1500
-
-' --- PASSO 2: APLICAR A REGRA NODE ---
-WshShell.SendKeys "set NODE_SKIP_PLATFORM_CHECK=1"
-WScript.Sleep 500
-WshShell.SendKeys "~"
-WScript.Sleep 1500
-
-' --- PASSO 3: INICIAR O ROBÔ ---
-WshShell.SendKeys "dotnet run"
-WScript.Sleep 5000
-WshShell.SendKeys "~"
-
-' Dá 10 segundos para o .NET carregar antes de começar a mandar os eventos
-WScript.Sleep 10000
-"""
-                    if eventos_str:
-                        eventos_lista = [e.strip() for e in eventos_str.split(',') if e.strip()]
-                        for evento in eventos_lista:
-                            vbs_code += f"""
-WshShell.SendKeys "{evento}"
-WScript.Sleep 500
-WshShell.SendKeys "~"
-WScript.Sleep 2000
-"""
-                        vbs_code += """
-WshShell.SendKeys "sair"
-WScript.Sleep 500
-WshShell.SendKeys "~"
-"""
-                    vbs_path = os.path.join(tempfile.gettempdir(), "digitador_findes.vbs")
-                    with open(vbs_path, "w", encoding="utf-8") as f: 
-                        f.write(vbs_code)
-                    subprocess.Popen(["wscript.exe", vbs_path])
+                    threading.Thread(target=injetar_eventos, daemon=True).start()
 
                     bot_findes.wait()
                     eventos.registrar('findes', 'ciclo', 'ok', 'Módulo Findes (pesquisa) concluído com sucesso', ref=eventos_str or None)
@@ -1405,9 +1433,21 @@ def admin_alterar_acesso_dashboard(dados):
             sio.emit('admin_resposta_acesso', {'sucesso': False, 'erro': 'Usuário não encontrado.', 'clientId': client_id})
             return
         usuarios[email][campo] = acesso
+        if campo == 'dashboard_access' and acesso:
+            usuarios[email]['portais_access'] = True
+        elif campo == 'portais_access' and not acesso:
+            usuarios[email]['dashboard_access'] = False
         salvar_usuarios(usuarios)
         logger.info(f"Admin alterou {campo} de {email} para {acesso}")
-        sio.emit('admin_resposta_acesso', {'sucesso': True, 'email': email, 'campo': campo, 'acesso': acesso, 'clientId': client_id})
+        sio.emit('admin_resposta_acesso', {
+            'sucesso': True,
+            'email': email,
+            'campo': campo,
+            'acesso': acesso,
+            'portais_access': bool(usuarios[email].get('portais_access', False)),
+            'dashboard_access': bool(usuarios[email].get('dashboard_access', False)),
+            'clientId': client_id
+        })
     except Exception as e:
         logger.error(f"Erro ao alterar acesso de {email}: {e}")
         sio.emit('admin_resposta_acesso', {'sucesso': False, 'erro': 'Erro ao salvar o banco de usuários.', 'clientId': client_id})
@@ -2056,7 +2096,7 @@ MAPA_LOGS_TXT = {
     'me': ('Mercado Eletrônico', 'mercadoeletronico.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\mercadoeletronico.txt']),
     'ariba': ('Robô SAP Ariba', 'aribasourcing.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\aribasourcing.txt']),
     'findes': ('Robô Findes', 'findes.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\findes.txt', r'\\SERVIDOR2\Publico\ALLAN\Logs\log-findes.txt']),
-    'gerenciador': ('Gerenciador Central', 'gerenciador.log', [os.path.join('logs', 'gerenciador.log'), r'\\SERVIDOR2\Publico\ALLAN\Logs\console-log.txt']),
+    'gerenciador': ('Gerenciador Central', 'gerenciador.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\gerenciador.txt', os.path.join('logs', 'gerenciador.log')]),
     'console_produtos': ('API Cadastro de Produtos', 'console-log.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\console-log.txt']),
     'zapzap': ('Bot WhatsApp / Gateway', 'log_zapzap.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\log_zapzap.txt']),
     'acessos': ('Registro de Acessos', 'registro_acessos.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\registro_acessos.txt']),

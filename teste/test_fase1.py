@@ -15,7 +15,7 @@ from scripts import recuperar_perdidas
 from test_fase0 import LOGGER, carregar
 from test_planilha_persistencia import Manager, namespace as ns_manager
 
-RAIZ = Path(__file__).parent
+RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
 PROD = ambiente.BASE_PRODUCAO + r'\database\Banco-de-dados\COTAÇÕES.json'
 
 

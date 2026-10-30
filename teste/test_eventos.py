@@ -118,7 +118,8 @@ class LigacaoNoGerenciadorTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.fonte = Path(__file__).with_name('gerenciador.py').read_text(encoding='utf-8')
+        raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
+        cls.fonte = (raiz / 'gerenciador.py').read_text(encoding='utf-8')
         cls.arvore = ast.parse(cls.fonte)
 
     def test_comando_eventos_responde_com_client_id(self):
@@ -152,7 +153,7 @@ class LigacaoNoGerenciadorTest(unittest.TestCase):
         for nivel in ('info', 'ok', 'erro'):
             self.assertIn(f"eventos.registrar(portal, 'ciclo', '{nivel}'", self.fonte)
         self.assertIn("for portal in ('coupa', 'vale'):", self.fonte)
-        raiz = Path(__file__).parent
+        raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
         for arq, servico in (('bots/vale_bot.py', 'vale'), ('bots/coupa/mixins/planilhas.py', 'coupa')):
             texto = (raiz / arq).read_text(encoding='utf-8')
             self.assertLess(texto.index('planilha_manager.adicionar_linhas(self.NOME_ABA_ALVO'),

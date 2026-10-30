@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from test_fase0 import LOGGER, Relogio, carregar
 
-RAIZ = Path(__file__).parent
+RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
 GER = RAIZ / 'gerenciador.py'
 FUNCOES = {'SioDoRobo', 'comandar', 'esperar_robo_pronto', 'executar_tarefa', 'precisa_alertar_inatividade',
            'checar_inatividade', 'extracao_ok', 'INATIVIDADE_ALERTA_S', 'DURACAO_MAX_TAREFA_S', '_trava_inatividade'}

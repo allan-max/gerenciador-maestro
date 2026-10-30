@@ -57,7 +57,7 @@ class RespostaTest(unittest.TestCase):
 class RespostaUnificadaCoupaValeTest(unittest.TestCase):
     def test_vale_herda_resposta_mixin_do_coupa(self):
         import ast
-        raiz = Path(__file__).parent
+        raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
         arvore_vale = ast.parse((raiz / 'bots/vale_bot.py').read_text(encoding='utf-8'))
         classe_vale = next(n for n in arvore_vale.body if isinstance(n, ast.ClassDef) and n.name == 'ValeScraper')
         bases = [getattr(b, 'id', None) for b in classe_vale.bases]
@@ -75,7 +75,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
         from selenium.common.exceptions import NoSuchElementException
         from test_fase0 import LOGGER, Relogio, carregar
 
-        raiz = Path(__file__).parent
+        raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
         ns = carregar(
             raiz / 'bots/coupa/mixins/resposta.py',
             {'RespostaMixin'},
@@ -205,7 +205,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
         from selenium.common.exceptions import NoSuchElementException
         from test_fase0 import LOGGER, Relogio, carregar
 
-        raiz = Path(__file__).parent
+        raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
         ns = carregar(
             raiz / 'bots/coupa/mixins/resposta.py',
             {'RespostaMixin'},

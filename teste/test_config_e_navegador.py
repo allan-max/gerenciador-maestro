@@ -11,7 +11,7 @@ import ambiente
 import navegador
 from test_fase0 import carregar
 
-RAIZ = Path(__file__).parent
+RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
 
 
 class PaginasVerificacaoTest(unittest.TestCase):

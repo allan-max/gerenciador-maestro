@@ -5,10 +5,12 @@ from types import SimpleNamespace
 from dotenv import dotenv_values
 from pathlib import Path
 
+RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
+
 
 class AutenticacaoRoboTest(unittest.TestCase):
     def test_ler_segredo_do_env_nao_aplica_outras_opcoes_antecipadamente(self):
-        tree = ast.parse(Path(__file__).with_name('gerenciador.py').read_text(encoding='utf-8'))
+        tree = ast.parse((RAIZ / 'gerenciador.py').read_text(encoding='utf-8'))
         assignment = next(n for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'ROBO_SECRET' for t in n.targets))
         fallback = next(n for n in tree.body if isinstance(n, ast.If) and ast.unparse(n.test) == 'ROBO_SECRET is None')
         code = compile(ast.Module(body=[assignment, fallback], type_ignores=[]), '<credencial-robo>', 'exec')
@@ -26,7 +28,7 @@ class AutenticacaoRoboTest(unittest.TestCase):
             self.assertEqual(namespace['ROBO_SECRET'], 'b' * 64)
 
     def test_segredo_obrigatorio_antes_de_configurar_base_ou_iniciar_servicos(self):
-        tree = ast.parse(Path(__file__).with_name('gerenciador.py').read_text(encoding='utf-8'))
+        tree = ast.parse((RAIZ / 'gerenciador.py').read_text(encoding='utf-8'))
         guard = next(n for n in tree.body if isinstance(n, ast.If) and 'len(ROBO_SECRET)' in ast.unparse(n.test))
         database = next(n for n in ast.walk(tree) if isinstance(n, ast.Call) and ast.unparse(n.func) == 'planilha_manager.iniciar')
         config = next(n for n in ast.walk(tree) if isinstance(n, ast.Call) and ast.unparse(n.func) == 'carregar_config')

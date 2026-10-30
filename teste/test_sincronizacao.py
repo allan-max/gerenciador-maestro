@@ -12,7 +12,8 @@ from unittest.mock import MagicMock, patch
 
 from test_fase0 import LOGGER, carregar
 
-GER = Path(__file__).parent / 'gerenciador.py'
+RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
+GER = RAIZ / 'gerenciador.py'
 FUNCOES = {'rodar_ciclo', 'loop_automacao', 'comando_sincronizacao', 'comando_sincronizacao_estado', '_ciclo_manual',
            '_backup_manual', '_responder_sincronizacao', 'estado_sincronizacao', 'rotina_backup', 'deve_verificar_vale',
            '_trava_ciclo', 'ciclo_em_andamento', 'CICLOS_MANUAIS', 'ULTIMAS_SINCRONIZACAO', 'ultimo_dia_verificacao_vale',
