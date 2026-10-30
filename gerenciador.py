@@ -1280,7 +1280,7 @@ WScript.Sleep 1500
 
 ' --- PASSO 3: INICIAR O ROBÔ ---
 WshShell.SendKeys "dotnet run"
-WScript.Sleep 500
+WScript.Sleep 5000
 WshShell.SendKeys "~"
 
 ' Dá 10 segundos para o .NET carregar antes de começar a mandar os eventos
