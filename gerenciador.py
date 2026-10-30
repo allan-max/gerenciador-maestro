@@ -72,6 +72,7 @@ def carregar_config():
             "caminho_bat_me": r"C:\Users\Administrator\Desktop\mercadoeletronico.bat",
             "caminho_ariba": r"C:\Users\Administrator\Desktop\AribaSourcing",
             "caminho_findes": r"C:\Users\Administrator\Desktop\FINDES",
+            "caminho_findes_novo": r"C:\Users\USER\Desktop\allan\Findes",
             "emails_relatorio": os.environ.get("EMAILS_RELATORIO", "")
         }
         default_config = com_padroes(default_config)
@@ -300,6 +301,7 @@ bot_findes = None
 processo_me = None
 bot_ariba = None
 rodando_monitor_findes = False
+rodando_monitor_findes_novo = False
 rodando_monitor_me = False
 rodando_monitor_ariba = False
 rodando_monitor_coupa = False
@@ -445,6 +447,89 @@ def monitorar_log_me():
                     time.sleep(0.5)
     except Exception as e:
         logger.error(f"Erro ao monitorar log do ME: {e}")
+def obter_pasta_findes_novo():
+    caminho = CONFIG_GLOBAL.get("caminho_findes_novo", r"C:\Users\USER\Desktop\allan\Findes")
+    if os.path.isdir(caminho):
+        return caminho
+    # Fallback caso mude de usuário ou ambiente
+    caminho_alt = r"C:\Users\USER\Desktop\allan\Findes"
+    if os.path.isdir(caminho_alt):
+        return caminho_alt
+    return caminho
+
+def findes_novo_esta_rodando():
+    try:
+        import psutil
+        my_pid = os.getpid()
+        for p in psutil.process_iter(['name', 'cmdline']):
+            try:
+                if p.pid == my_pid:
+                    continue
+                cmdline = p.info.get('cmdline') or []
+                cmd_str = ' '.join(cmdline).lower()
+                if 'findes.py' in cmd_str and 'gerenciador' not in cmd_str:
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception as e:
+        logger.debug(f"Erro ao checar status do Findes novo via psutil: {e}")
+    return False
+
+def monitorar_log_findes_novo():
+    global rodando_monitor_findes_novo
+    caminho_log = r"\\SERVIDOR2\Publico\ALLAN\Logs\findes.txt"
+    if not os.path.exists(caminho_log):
+        caminho_local = os.path.join(obter_pasta_findes_novo(), "findes.txt")
+        if os.path.exists(caminho_local):
+            caminho_log = caminho_local
+
+    # Envia últimas linhas se houver histórico para preencher o terminal
+    if os.path.exists(caminho_log):
+        try:
+            with open(caminho_log, 'r', encoding='utf-8', errors='ignore') as f:
+                linhas = f.readlines()
+                ultimas = linhas[-30:] if len(linhas) > 30 else linhas
+                for l in ultimas:
+                    limpa = l.strip()
+                    if limpa:
+                        sio.emit('relatar_progresso_findes', {'mensagem': limpa})
+        except Exception as e:
+            logger.warning(f"Erro ao ler histórico recente do Findes: {e}")
+
+    try:
+        tentativas = 0
+        while rodando_monitor_findes_novo and not os.path.exists(caminho_log) and tentativas < 30:
+            time.sleep(1)
+            tentativas += 1
+
+        if not rodando_monitor_findes_novo or not os.path.exists(caminho_log):
+            return
+
+        with open(caminho_log, 'r', encoding='utf-8', errors='ignore') as f:
+            f.seek(0, os.SEEK_END)
+            contador_sem_linha = 0
+            while rodando_monitor_findes_novo:
+                linha = f.readline()
+                if linha and linha.strip():
+                    linha_limpa = linha.strip()
+                    sio.emit('relatar_progresso_findes', {'mensagem': linha_limpa})
+                    _registrar_evento_linha_log('findes', linha_limpa)
+                    contador_sem_linha = 0
+                else:
+                    time.sleep(0.5)
+                    contador_sem_linha += 1
+                    # A cada ~10 segundos, verifica se o processo findes.py ainda está vivo
+                    if contador_sem_linha >= 20:
+                        contador_sem_linha = 0
+                        if not findes_novo_esta_rodando():
+                            logger.info("Processo Findes novo não está mais ativo.")
+                            sio.emit('relatar_progresso_findes', {'mensagem': '⏹️ Processo Findes finalizado.'})
+                            rodando_monitor_findes_novo = False
+                            sio.emit('sincronizar_estado_findes', {'status': 'desligado'})
+                            break
+    except Exception as e:
+        logger.error(f"Erro no monitor do Findes novo: {e}")
+
 def monitorar_log_findes():
     global bot_findes, rodando_monitor_findes
     caminho_log = r"\\SERVIDOR2\Publico\ALLAN\Logs\log-findes.txt" 
@@ -456,7 +541,7 @@ def monitorar_log_findes():
     if not rodando_monitor_findes:
         return
 
-    # ?? A "MOCHILA" QUE VAI GUARDAR OS TEXTOS PARA O BOTO COPIAR ??
+    # 🎒 A "MOCHILA" QUE VAI GUARDAR OS TEXTOS PARA O BOTÃO COPIAR 🎒
     textos_acumulados = ""
 
     try:
@@ -467,39 +552,40 @@ def monitorar_log_findes():
                 if linha and linha.strip():
                     linha_limpa = linha.strip()
 
-                    # 1. Envia a linha normalmente para o mini-terminal do site
+                    # 1. Envia a linha para o terminal do robô antigo (modal) e canal geral
+                    sio.emit('relatar_progresso_findes_antigo', {'mensagem': linha_limpa})
                     sio.emit('relatar_progresso_findes', {'mensagem': linha_limpa})
                     _registrar_evento_linha_log('findes', linha_limpa)
 
                     # ========================================================
-                    # 2. A MGICA DO COLECIONADOR: Filtra e junta os dados!
+                    # 2. A MÁGICA DO COLECIONADOR: Filtra e junta os dados!
                     # ========================================================
                     if linha_limpa.startswith("CDE:"):
-                        # Se j tiver alguma coisa na mochila (ou seja,  o 2 evento), d 2 enters para separar
                         if textos_acumulados: 
                             textos_acumulados += "\n\n"
                         textos_acumulados += linha_limpa + "\n"
 
-                    elif linha_limpa.startswith("MATERIAL:") or linha_limpa.startswith("TRMINO") or linha_limpa.startswith("TERMINO"):
+                    elif linha_limpa.startswith("MATERIAL:") or linha_limpa.startswith("TÉRMINO") or linha_limpa.startswith("TERMINO"):
                         textos_acumulados += linha_limpa + "\n"
 
                     # ========================================================
-                    # 3. FINALIZAO: Entrega a mochila ao site!
+                    # 3. FINALIZAÇÃO: Entrega a mochila ao site!
                     # ========================================================
-                    if "=== SESSO FINALIZADA ===" in linha_limpa:
-
-                        # ... dentro do IF do === SESSO FINALIZADA === ...
+                    if "=== SESSÃO FINALIZADA ===" in linha_limpa:
                         if textos_acumulados.strip():
                             logger.info("Enviando textos gerados para o site...")
-                            io.emit('findes_textos_gerados', {'texto': textos_acumulados.strip()})
+                            sio.emit('findes_textos_gerados', {'texto': textos_acumulados.strip()})
 
-                        sio.emit('relatar_progresso_findes', {'mensagem': '?? Sinal de Fim recebido! Fechando o rob automaticamente...'})
+                        sio.emit('relatar_progresso_findes_antigo', {'mensagem': '⏹️ Sinal de Fim recebido! Fechando o robô automaticamente...'})
+                        sio.emit('relatar_progresso_findes', {'mensagem': '⏹️ Sinal de Fim recebido! Fechando o robô automaticamente...'})
 
                         if bot_findes:
                             os.system(f"taskkill /F /T /PID {bot_findes.pid}")
                             bot_findes = None
 
                         rodando_monitor_findes = False
+                        sio.emit('sincronizar_estado_findes_antigo', {'status': 'desligado'})
+                        sio.emit('relatar_progresso_findes_antigo', {'comando_interno': 'desligar_botoes'})
                         sio.emit('relatar_progresso_findes', {'comando_interno': 'desligar_botoes'})
                         break 
                 else:
@@ -1075,28 +1161,79 @@ WshShell.SendKeys "~"
                 logger.warning("?? Comando de parada recebido, mas nenhum rob estava extraindo no momento.")
 
     # ========================================================
-    # ?? ROTA .NET DO FINDES (INICIA COMO O ARIBA) ??
+    # 🏭 FINDES (ROBÔ NOVO VIA .BAT E ROBÔ ANTIGO PESQUISA .NET)
     # ========================================================
     elif portal == 'findes':
-        if modo == 'ligar_robo':
+        # 1. COMANDOS DO ROBÔ NOVO (iniciar_findes.bat / parar_findes.bat)
+        if modo in ['iniciar_findes', 'ligar_robo_novo', 'iniciar_novo'] or (modo == 'ligar_robo' and dados.get('versao') != 'antigo' and not dados.get('evento')):
+            pasta_novo = obter_pasta_findes_novo()
+            bat_iniciar = os.path.join(pasta_novo, "iniciar_findes.bat")
+
+            if not os.path.exists(bat_iniciar):
+                msg_erro = f"❌ Arquivo iniciar_findes.bat não encontrado em: {pasta_novo}"
+                logger.error(msg_erro)
+                sio.emit('relatar_progresso_findes', {'mensagem': msg_erro})
+                sio.emit('sincronizar_estado_findes', {'status': 'desligado'})
+                return
+
+            sio.emit('relatar_progresso_findes', {'mensagem': f"🚀 Acionando iniciar_findes.bat em {pasta_novo}..."})
+            try:
+                subprocess.Popen(["cmd.exe", "/c", "iniciar_findes.bat"], cwd=pasta_novo, shell=True)
+                rodando_monitor_findes_novo = True
+                sio.emit('sincronizar_estado_findes', {'status': 'executando'})
+                threading.Thread(target=monitorar_log_findes_novo, daemon=True).start()
+                eventos.registrar('findes', 'ciclo', 'ok', 'Robô Findes (novo) iniciado via .bat')
+            except Exception as e:
+                logger.error(f"Erro ao disparar iniciar_findes.bat: {e}")
+                sio.emit('relatar_progresso_findes', {'mensagem': f"❌ Falha ao iniciar: {e}"})
+                sio.emit('sincronizar_estado_findes', {'status': 'desligado'})
+
+        elif modo in ['parar_findes', 'desligar_robo_novo', 'parar_novo'] or (modo == 'desligar_robo' and dados.get('versao') != 'antigo'):
+            pasta_novo = obter_pasta_findes_novo()
+            bat_parar = os.path.join(pasta_novo, "parar_findes.bat")
+            sio.emit('relatar_progresso_findes', {'mensagem': "🛑 Parando robô Findes (acionando parar_findes.bat)..."})
+
+            if os.path.exists(bat_parar):
+                try:
+                    subprocess.Popen(["cmd.exe", "/c", "parar_findes.bat"], cwd=pasta_novo, shell=True)
+                except Exception as e:
+                    logger.warning(f"Erro ao executar parar_findes.bat: {e}")
+
+            # Força o encerramento do processo caso o bat demore
+            try:
+                import psutil
+                for p in psutil.process_iter(['name', 'cmdline']):
+                    try:
+                        cmdline = p.info.get('cmdline') or []
+                        if 'findes.py' in ' '.join(cmdline).lower():
+                            p.kill()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            rodando_monitor_findes_novo = False
+            sio.emit('sincronizar_estado_findes', {'status': 'desligado'})
+            sio.emit('relatar_progresso_findes', {'mensagem': "⏹️ Robô Findes parado com sucesso."})
+
+        # 2. COMANDOS DO ROBÔ ANTIGO (PESQUISA .NET)
+        elif modo in ['ligar_robo_antigo'] or (modo == 'ligar_robo' and (dados.get('versao') == 'antigo' or dados.get('evento'))):
             eventos_str = dados.get('evento', '')
-            sio.emit('relatar_progresso_findes', {'mensagem': f"?? Iniciando Mdulo .NET Findes para os eventos: {eventos_str}"})
+            sio.emit('relatar_progresso_findes_antigo', {'mensagem': f"🚀 Iniciando Módulo .NET Findes para os eventos: {eventos_str}"})
+            sio.emit('relatar_progresso_findes', {'mensagem': f"🚀 Iniciando Módulo .NET Findes para os eventos: {eventos_str}"})
 
             def run_findes():
                 global bot_findes, rodando_monitor_findes
                 try:
-                    # 1. Abre APENAS a janela preta vazia com o nome ROBO_FINDES
                     comando = 'cmd.exe /k "title ROBO_FINDES"'
                     bot_findes = subprocess.Popen(comando, creationflags=subprocess.CREATE_NEW_CONSOLE)
 
-                    # INICIA O VIGIA DE LOGS
                     rodando_monitor_findes = True
+                    sio.emit('sincronizar_estado_findes_antigo', {'status': 'executando'})
                     threading.Thread(target=monitorar_log_findes, daemon=True).start()
 
-                    # 2. O Digitador Fantasma agora faz TODO o trabalho
-                    sio.emit('relatar_progresso_findes', {'mensagem': '?? Fantasma assumiu o teclado! Preparando ambiente...'})
+                    sio.emit('relatar_progresso_findes_antigo', {'mensagem': '👻 Fantasma assumiu o teclado! Preparando ambiente...'})
 
-                    # ?? USANDO O SMBOLO '~' QUE  O 'ENTER' INFALVEL DO VBSCRIPT ??
                     caminho_findes_local = CONFIG_GLOBAL.get("caminho_findes", r"C:\Users\Administrator\Desktop\FINDES")
                     vbs_code = f"""
 Set WshShell = WScript.CreateObject("WScript.Shell")
@@ -1122,18 +1259,16 @@ WScript.Sleep 500
 WshShell.SendKeys "~"
 WScript.Sleep 1500
 
-' --- PASSO 3: INICIAR O ROB ---
+' --- PASSO 3: INICIAR O ROBÔ ---
 WshShell.SendKeys "dotnet run"
 WScript.Sleep 500
 WshShell.SendKeys "~"
 
-' D 10 segundos para o .NET carregar antes de comear a mandar os eventos
+' Dá 10 segundos para o .NET carregar antes de começar a mandar os eventos
 WScript.Sleep 10000
 """
-                    # --- PASSO 4: DIGITAR OS EVENTOS E SAIR ---
                     if eventos_str:
                         eventos_lista = [e.strip() for e in eventos_str.split(',') if e.strip()]
-
                         for evento in eventos_lista:
                             vbs_code += f"""
 WshShell.SendKeys "{evento}"
@@ -1146,38 +1281,46 @@ WshShell.SendKeys "sair"
 WScript.Sleep 500
 WshShell.SendKeys "~"
 """
-                    # Guarda e executa o Fantasma
                     vbs_path = os.path.join(tempfile.gettempdir(), "digitador_findes.vbs")
                     with open(vbs_path, "w", encoding="utf-8") as f: 
                         f.write(vbs_code)
                     subprocess.Popen(["wscript.exe", vbs_path])
 
-                    # O Python fica  espera que a janela feche
                     bot_findes.wait()
-                    eventos.registrar('findes', 'ciclo', 'ok', 'Módulo Findes concluído com sucesso', ref=eventos_str or None)
+                    eventos.registrar('findes', 'ciclo', 'ok', 'Módulo Findes (pesquisa) concluído com sucesso', ref=eventos_str or None)
 
                 except Exception as e:
-                    logger.error(f"Erro na execuo do Findes: {e}")
-                    sio.emit('relatar_progresso_findes', {'mensagem': f'? Erro Crtico ao iniciar: {e}'})
+                    logger.error(f"Erro na execução do Findes antigo: {e}")
+                    sio.emit('relatar_progresso_findes_antigo', {'mensagem': f'❌ Erro Crítico ao iniciar: {e}'})
                 finally:
                     if bot_findes:
                         bot_findes = None
-                        sio.emit('relatar_progresso_findes', {'mensagem': "? Mdulo Findes concludo/fechado.", 'comando_interno': 'desligar_botoes'})
+                    rodando_monitor_findes = False
+                    sio.emit('sincronizar_estado_findes_antigo', {'status': 'desligado'})
+                    sio.emit('relatar_progresso_findes_antigo', {'mensagem': "⏹️ Módulo Findes concluído/fechado.", 'comando_interno': 'desligar_botoes'})
 
-            # Roda o Findes em paralelo para no travar o gerenciador
             threading.Thread(target=run_findes, daemon=True).start()
 
-        elif modo == 'desligar_robo':
+        elif modo in ['desligar_robo_antigo'] or (modo == 'desligar_robo' and dados.get('versao') == 'antigo'):
             if bot_findes:
-                sio.emit('relatar_progresso_findes', {'mensagem': '?? Freio acionado! Encerrando o Findes...'})
+                sio.emit('relatar_progresso_findes_antigo', {'mensagem': '⏹️ Freio acionado! Encerrando o Findes...'})
                 os.system(f"taskkill /F /T /PID {bot_findes.pid}")
                 bot_findes = None
             else:
-                sio.emit('relatar_progresso_findes', {'mensagem': "?? O rob j estava desligado."})
-            sio.emit('relatar_progresso_findes', {'comando_interno': 'desligar_botoes'})
+                sio.emit('relatar_progresso_findes_antigo', {'mensagem': "⏹️ O robô já estava desligado."})
+            rodando_monitor_findes = False
+            sio.emit('sincronizar_estado_findes_antigo', {'status': 'desligado'})
+            sio.emit('relatar_progresso_findes_antigo', {'comando_interno': 'desligar_botoes'})
 
         elif modo == 'mover_anexos_findes':
-            sio.emit('relatar_progresso_findes', {'mensagem': "?? Funo de mover anexos precisa ser acoplada  lgica do .NET."})
+            sio.emit('relatar_progresso_findes', {'mensagem': "⚠️ Função de mover anexos precisa ser acoplada à lógica do .NET."})
+
+@sio.on('pedir_estado_findes')
+def responder_estado_findes(dados=None):
+    status_novo = 'executando' if (rodando_monitor_findes_novo or findes_novo_esta_rodando()) else 'desligado'
+    status_antigo = 'executando' if (bot_findes is not None or rodando_monitor_findes) else 'desligado'
+    sio.emit('sincronizar_estado_findes', {'status': status_novo})
+    sio.emit('sincronizar_estado_findes_antigo', {'status': status_antigo})
 
 @sio.on('executar_clique')
 def receber_clique(dados):

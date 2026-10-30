@@ -164,7 +164,6 @@ class AutenticacaoMixin:
                         inicio_captcha = time.time()
                         self.sio.emit('relatar_progresso', {'mensagem': '⚠️ Captcha detectado no login! Resolva na tela principal de Minhas Cotações...'})
                     elif time.time() - inicio_captcha > CAPTCHA_TIMEOUT_S:
-                        self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
                         self.sio.emit('relatar_progresso_coupa', {'mensagem': '❌ CAPTCHA EXPIRADO! (5 min sem solução). Fechando o robô.'})
                         raise LoginTimeout("CAPTCHA_TIMEOUT")
                         
