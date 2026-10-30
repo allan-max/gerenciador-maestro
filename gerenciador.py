@@ -1184,7 +1184,8 @@ WshShell.SendKeys "~"
 
             sio.emit('relatar_progresso_findes', {'mensagem': f"🚀 Acionando iniciar_findes.bat em {pasta_novo}..."})
             try:
-                subprocess.Popen(["cmd.exe", "/c", "iniciar_findes.bat"], cwd=pasta_novo, shell=True)
+                flags_cmd = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
+                subprocess.Popen(["cmd.exe", "/c", "iniciar_findes.bat"], cwd=pasta_novo, creationflags=flags_cmd)
                 rodando_monitor_findes_novo = True
                 sio.emit('sincronizar_estado_findes', {'status': 'executando'})
                 threading.Thread(target=monitorar_log_findes_novo, daemon=True).start()
@@ -1201,7 +1202,8 @@ WshShell.SendKeys "~"
 
             if os.path.exists(bat_parar):
                 try:
-                    subprocess.Popen(["cmd.exe", "/c", "parar_findes.bat"], cwd=pasta_novo, shell=True)
+                    flags_cmd = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
+                    subprocess.Popen(["cmd.exe", "/c", "parar_findes.bat"], cwd=pasta_novo, creationflags=flags_cmd)
                 except Exception as e:
                     logger.warning(f"Erro ao executar parar_findes.bat: {e}")
 
