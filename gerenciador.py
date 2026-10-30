@@ -72,7 +72,7 @@ def carregar_config():
             "caminho_bat_me": r"C:\Users\Administrator\Desktop\mercadoeletronico.bat",
             "caminho_ariba": r"C:\Users\Administrator\Desktop\AribaSourcing",
             "caminho_findes": r"C:\Users\Administrator\Desktop\FINDES",
-            "caminho_findes_novo": r"C:\Users\USER\Desktop\allan\Findes",
+            "caminho_findes_novo": r"C:\Users\Administrator\Desktop\allan bots\Findes",
             "emails_relatorio": os.environ.get("EMAILS_RELATORIO", "")
         }
         default_config = com_padroes(default_config)
@@ -448,13 +448,19 @@ def monitorar_log_me():
     except Exception as e:
         logger.error(f"Erro ao monitorar log do ME: {e}")
 def obter_pasta_findes_novo():
-    caminho = CONFIG_GLOBAL.get("caminho_findes_novo", r"C:\Users\USER\Desktop\allan\Findes")
+    caminho = CONFIG_GLOBAL.get("caminho_findes_novo", r"C:\Users\Administrator\Desktop\allan bots\Findes")
     if os.path.isdir(caminho):
         return caminho
-    # Fallback caso mude de usuário ou ambiente
-    caminho_alt = r"C:\Users\USER\Desktop\allan\Findes"
-    if os.path.isdir(caminho_alt):
-        return caminho_alt
+    # Fallback caso mude de usuário ou ambiente (ex: teste local)
+    candidatos = [
+        r"C:\Users\Administrator\Desktop\allan bots\Findes",
+        r"C:\Users\USER\Desktop\allan bots\Findes",
+        r"C:\Users\USER\Desktop\allan\Findes",
+        r"C:\Users\Administrator\Desktop\allan\Findes"
+    ]
+    for c in candidatos:
+        if os.path.isdir(c):
+            return c
     return caminho
 
 def findes_novo_esta_rodando():
