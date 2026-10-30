@@ -1,5 +1,16 @@
 # -*- coding: utf-8 -*-
 import sys
+
+# Força UTF-8 nos fluxos de saída do console para evitar erros de encode de emojis no Windows
+if sys.platform == 'win32':
+    try:
+        if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 if __name__ == '__main__':
     # Bots fazem "from gerenciador import ...": sem isto o Python roda este arquivo
     # de novo dentro do mesmo processo e sobe um segundo piloto automático.
@@ -1176,9 +1187,9 @@ WshShell.SendKeys "~"
             bat_iniciar = os.path.join(pasta_novo, "iniciar_findes.bat")
 
             if not os.path.exists(bat_iniciar):
-                msg_erro = f"❌ Arquivo iniciar_findes.bat não encontrado em: {pasta_novo}"
+                msg_erro = f"Arquivo iniciar_findes.bat não encontrado em: {pasta_novo}"
                 logger.error(msg_erro)
-                sio.emit('relatar_progresso_findes', {'mensagem': msg_erro})
+                sio.emit('relatar_progresso_findes', {'mensagem': f"❌ {msg_erro}"})
                 sio.emit('sincronizar_estado_findes', {'status': 'desligado'})
                 return
 
