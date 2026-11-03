@@ -415,6 +415,433 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
             gerenciador.bot_coupa = bot_coupa_orig
             gerenciador.bot_vale = bot_vale_orig
 
+    def test_responder_evento_vale_metais_campos_e_ordem_correta(self):
+        import os
+        import re
+        import shutil
+        import base64
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys
+        from selenium.common.exceptions import NoSuchElementException
+        from test_fase0 import LOGGER, Relogio, carregar
+
+        raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
+        ns = carregar(
+            raiz / 'bots/coupa/mixins/resposta.py',
+            {'RespostaMixin'},
+            os=os, re=re, time=Relogio(), tempfile=tempfile, shutil=shutil, base64=base64,
+            By=By, Keys=Keys, NoSuchElementException=NoSuchElementException,
+            ActionChains=lambda d: SimpleNamespace(
+                move_to_element=lambda el: SimpleNamespace(
+                    click=lambda: SimpleNamespace(
+                        pause=lambda t: SimpleNamespace(
+                            key_down=lambda k: SimpleNamespace(
+                                send_keys=lambda s: SimpleNamespace(
+                                    key_up=lambda k2: SimpleNamespace(
+                                        send_keys=lambda b: SimpleNamespace(
+                                            send_keys=lambda v: SimpleNamespace(
+                                                send_keys=lambda tb: SimpleNamespace(perform=lambda: el.send_keys(v))
+                                            )
+                                        )
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            ),
+            WebDriverWait=lambda d, t: SimpleNamespace(until=lambda cond: cond(d)),
+            EC=SimpleNamespace(presence_of_element_located=lambda loc: (lambda d: d.find_element(*loc))),
+        )
+        ordem_preenchimento = []
+        opcoes_clicadas = []
+
+        class InputValeMetais:
+            def __init__(self, nome_campo, seletor, cls='', role='', aria_owns='', text=''):
+                self.nome_campo = nome_campo
+                self.seletor = seletor
+                self.cls = cls
+                self.role = role
+                self.aria_owns = aria_owns
+                self.text = text
+                self.valor = ''
+
+            def clear(self):
+                self.valor = ''
+
+            def send_keys(self, v):
+                v_str = str(v)
+                if (
+                    self.nome_campo in ('NCM', 'ORIGEM', 'COFINS', 'IPI', 'ICMS', 'PRAZO', 'PRECO')
+                    and v_str.strip()
+                    and v_str not in ('\ue004', '\ue015', '\ue007', '\ue009', '\ue003', 'a')
+                ):
+                    self.valor = v_str
+                    ordem_preenchimento.append((self.nome_campo, self.seletor, v_str))
+
+            def get_attribute(self, attr):
+                if attr == 'class':
+                    return self.cls
+                if attr == 'role':
+                    return self.role
+                if attr == 'aria-owns':
+                    return self.aria_owns
+                if attr == 'value':
+                    return self.valor
+                return ''
+
+            def is_displayed(self):
+                return True
+
+        class LinhaValeMetais:
+            def __init__(self, idx):
+                self.idx = idx
+                self.screenshot_as_png = f'PNG_VM_{idx}'.encode('utf-8')
+                self.campos = {
+                    'ncm': InputValeMetais(
+                        'NCM',
+                        'input.ComboBox__input.s-custom_field_8',
+                        cls='ComboBox__input s-custom_field_8',
+                        role='combobox',
+                        aria_owns='custom_field_8_17_results'
+                    ),
+                    'origem': InputValeMetais(
+                        'ORIGEM',
+                        'input.ComboBox__input.s-custom_field_9',
+                        cls='ComboBox__input s-custom_field_9',
+                        role='combobox',
+                        aria_owns='custom_field_9_18_results'
+                    ),
+                    'cofins': InputValeMetais('COFINS', 'input.s-custom_field_7', cls='s-custom_field_7'),
+                    'ipi': InputValeMetais('IPI', 'input.s-custom_field_5', cls='s-custom_field_5'),
+                    'icms': InputValeMetais('ICMS', 'input.s-custom_field_3', cls='s-custom_field_3'),
+                    'prazo': InputValeMetais('PRAZO', 'input.s-lead_time_input', cls='s-numberInput s-lead_time_input'),
+                    'preco': InputValeMetais('PRECO', 'input.s-price_amount_input', cls='s-moneyInput s-price_amount_input'),
+                }
+
+            def find_element(self, by, value):
+                if 's-lead_time_input' in value:
+                    return self.campos['prazo']
+                if 's-price_amount_input' in value:
+                    return self.campos['preco']
+                return InputValeMetais('OUTRO', value)
+
+            def find_elements(self, by, value):
+                if value in ('input.ComboBox__input.s-custom_field_8', 'input.s-custom_field_8'):
+                    return [self.campos['ncm']]
+                if value in ('input.ComboBox__input.s-custom_field_9', 'input.s-custom_field_9'):
+                    return [self.campos['origem']]
+                if value == 'input.s-custom_field_7':
+                    return [self.campos['cofins']]
+                if value == 'input.s-custom_field_5':
+                    return [self.campos['ipi']]
+                if value == 'input.s-custom_field_3':
+                    return [self.campos['icms']]
+                if value == 'input.s-lead_time_input':
+                    return [self.campos['prazo']]
+                if value == 'input.s-price_amount_input':
+                    return [self.campos['preco']]
+                if value == 'button.s-save':
+                    return [InputValeMetais('SALVAR', 'button.s-save')]
+                return []
+
+        class DriverValeMetais:
+            def __init__(self):
+                self.window_handles = ['aba1']
+                self.switch_to = SimpleNamespace(
+                    window=lambda h: None,
+                    frame=lambda f: None,
+                    default_content=lambda: None,
+                    alert=SimpleNamespace(accept=lambda: None),
+                )
+                self.linhas = [LinhaValeMetais(1)]
+                self.opcoes_ncm = [
+                    InputValeMetais('OPCAO_NCM', 'li.ComboBox__resultItem', text='84818099 - Outras torneiras e válvulas'),
+                ]
+                self.opcoes_origem = [
+                    InputValeMetais('OPCAO_ORIGEM', 'li.ComboBox__resultItem', text='0 - Nacional, exceto as indicadas nos códigos 3, 4, 5 e 8'),
+                    InputValeMetais('OPCAO_ORIGEM', 'li.ComboBox__resultItem', text='1 - Estrangeira - Importação direta'),
+                ]
+
+            def get(self, url): pass
+            def close(self): pass
+            def execute_script(self, s, *a):
+                if 'click()' in s and len(a) >= 1:
+                    alvo = a[0]
+                    if getattr(alvo, 'seletor', '') == 'li.ComboBox__resultItem':
+                        opcoes_clicadas.append(alvo.text)
+                return True
+            def get_screenshot_as_png(self):
+                return b'PNG_VM_1'
+            def find_element(self, by, value):
+                return InputValeMetais('EL', value)
+            def find_elements(self, by, value):
+                if value == 'div.s-itemsAndServicesLine':
+                    return self.linhas
+                if 'custom_field_8_17_results' in value:
+                    return self.opcoes_ncm
+                if 'custom_field_9_18_results' in value:
+                    return self.opcoes_origem
+                if 'VENTURA COMERCIO VAREJISTA' in value:
+                    return [InputValeMetais('BTN', value)]
+                return []
+
+        bot = type('Bot', (ns['RespostaMixin'],), {})()
+        bot.BASE_SUPPLIER_URL = 'https://supplier.coupahost.com'
+        bot.driver = DriverValeMetais()
+        bot.wait = SimpleNamespace(until=lambda cond: cond(bot.driver))
+        bot.garantir_logado = lambda url: None
+        bot._marcar_rascunho = lambda ev: None
+        bot.sio = SimpleNamespace(emit=lambda ev, d: None)
+
+        with patch.object(LOGGER, 'handle'):
+            bot.responder_evento({
+                'evento': '831667',
+                'precos': ['250,00'],
+                'prazos': ['12'],
+                'ncms': ['84818099'],
+                'origens': ['0'],
+                'icms': ['18'],
+            })
+
+        self.assertEqual(
+            ordem_preenchimento,
+            [
+                ('NCM', 'input.ComboBox__input.s-custom_field_8', '84818099'),
+                ('ORIGEM', 'input.ComboBox__input.s-custom_field_9', '0'),
+                ('COFINS', 'input.s-custom_field_7', '3'),
+                ('IPI', 'input.s-custom_field_5', '0'),
+                ('ICMS', 'input.s-custom_field_3', '18'),
+                ('PRAZO', 'input.s-lead_time_input', '12'),
+                ('PRECO', 'input.s-price_amount_input', '250,00'),
+            ],
+            'Para o Vale Metais, deve preencher os campos na ordem exata: NCM -> ORIGEM -> COFINS -> IPI -> ICMS -> PRAZO -> PREÇO POR UNIDADE'
+        )
+        self.assertIn('84818099 - Outras torneiras e válvulas', opcoes_clicadas)
+        self.assertIn('0 - Nacional, exceto as indicadas nos códigos 3, 4, 5 e 8', opcoes_clicadas)
+
+        # Valida também que _inspecionar_campos_linha reconhece todos os 7 campos do Vale Metais preenchidos
+        inspecao = bot._inspecionar_campos_linha(
+            bot.driver.linhas[0],
+            preco_alvo='250,00',
+            prazo_alvo='12',
+            ncm_alvo='84818099',
+            origem_alvo='0',
+            icms_alvo='18'
+        )
+        self.assertEqual(
+            list(inspecao.keys()),
+            ['NCM', 'Origem', 'COFINS (%)', 'IPI (%)', 'ICMS (%)', 'Prazo', 'Preço']
+        )
+        for nome_c, info_c in inspecao.items():
+            self.assertFalse(info_c['vazio'], f'Campo {nome_c} do Vale Metais deveria constar como preenchido')
+
+    def test_datasheet_por_linha_anexa_arquivo_em_cada_item_via_botao_add_file(self):
+        import os
+        import re
+        import shutil
+        import base64
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys
+        from selenium.common.exceptions import NoSuchElementException
+        from test_fase0 import LOGGER, Relogio, carregar
+
+        raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
+        ns = carregar(
+            raiz / 'bots/coupa/mixins/resposta.py',
+            {'RespostaMixin'},
+            os=os, re=re, time=Relogio(), tempfile=tempfile, shutil=shutil, base64=base64,
+            By=By, Keys=Keys, NoSuchElementException=NoSuchElementException,
+            ActionChains=lambda d: SimpleNamespace(
+                move_to_element=lambda el: SimpleNamespace(
+                    click=lambda: SimpleNamespace(
+                        pause=lambda t: SimpleNamespace(
+                            key_down=lambda k: SimpleNamespace(
+                                send_keys=lambda s: SimpleNamespace(
+                                    key_up=lambda k2: SimpleNamespace(
+                                        send_keys=lambda b: SimpleNamespace(
+                                            send_keys=lambda v: SimpleNamespace(
+                                                send_keys=lambda tb: SimpleNamespace(perform=lambda: el.send_keys(v))
+                                            )
+                                        )
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            ),
+            WebDriverWait=lambda d, t: SimpleNamespace(until=lambda cond: cond(d)),
+            EC=SimpleNamespace(presence_of_element_located=lambda loc: (lambda d: d.find_element(*loc))),
+        )
+        botoes_add_file_clicados = []
+        arquivos_por_item_recebidos = {0: [], 1: []}
+        arquivos_gerais_ds_recebidos = []
+        arquivos_gerais_dav_recebidos = []
+
+        class InputFileMock:
+            def __init__(self, destino_lista):
+                self.destino_lista = destino_lista
+            def send_keys(self, path):
+                self.destino_lista.append(os.path.basename(path))
+            def is_displayed(self):
+                return True
+
+        class ElementoSimples:
+            def __init__(self, seletor='', idx_item=None):
+                self.seletor = seletor
+                self.idx_item = idx_item
+                self.value = '10'
+            def clear(self): pass
+            def send_keys(self, v): pass
+            def click(self): pass
+            def is_displayed(self): return True
+            def get_attribute(self, name): return self.value if name == 'value' else 'false'
+
+        class LinhaItemMock:
+            def __init__(self, idx):
+                self.idx = idx
+                self.btn_add_file = ElementoSimples('button.s-addFile.buttonAsLink', idx_item=idx)
+                self.inp_file_item = InputFileMock(arquivos_por_item_recebidos[idx])
+
+            def find_element(self, by, value):
+                return ElementoSimples(value, idx_item=self.idx)
+
+            def find_elements(self, by, value):
+                if 's-addFile' in value or 'Adicionar anexo de arquivo' in value:
+                    return [self.btn_add_file]
+                if "input[type='file']" in value:
+                    return [self.inp_file_item]
+                if value == 'button.s-save':
+                    return [ElementoSimples('button.s-save', idx_item=self.idx)]
+                if value.startswith('input.s-custom_field_'):
+                    return [ElementoSimples(value, idx_item=self.idx)]
+                return []
+
+        class DriverMockDatasheetLinha:
+            def __init__(self):
+                self.window_handles = ['aba1']
+                self.switch_to = SimpleNamespace(
+                    window=lambda h: None,
+                    frame=lambda f: None,
+                    default_content=lambda: None,
+                    alert=SimpleNamespace(accept=lambda: None),
+                )
+                self.linhas = [LinhaItemMock(0), LinhaItemMock(1)]
+                self.inp_ds_geral = InputFileMock(arquivos_gerais_ds_recebidos)
+                self.inp_dav_geral = InputFileMock(arquivos_gerais_dav_recebidos)
+
+            def get(self, url): pass
+            def close(self): pass
+            def execute_script(self, s, *a):
+                if 'click()' in s and len(a) >= 1:
+                    alvo = a[0]
+                    if getattr(alvo, 'seletor', '') == 'button.s-addFile.buttonAsLink':
+                        botoes_add_file_clicados.append(alvo.idx_item)
+                if 'return window.__ultimoInputFileClicado' in s:
+                    return None
+                return True
+            def get_screenshot_as_png(self):
+                return b'PNG_DS_LINHA'
+            def find_element(self, by, value):
+                return ElementoSimples(value)
+            def find_elements(self, by, value):
+                if value == 'div.s-itemsAndServicesLine':
+                    return self.linhas
+                if value == "input[type='file'][name='attachment[file]']":
+                    return [self.inp_ds_geral, self.inp_dav_geral]
+                if 'VENTURA COMERCIO VAREJISTA' in value:
+                    return [ElementoSimples(value)]
+                return []
+
+        bot = type('Bot', (ns['RespostaMixin'],), {})()
+        bot.BASE_SUPPLIER_URL = 'https://supplier.coupahost.com'
+        bot.driver = DriverMockDatasheetLinha()
+        bot.wait = SimpleNamespace(until=lambda cond: cond(bot.driver))
+        bot.garantir_logado = lambda url: None
+        bot._marcar_rascunho = lambda ev: None
+        bot.sio = SimpleNamespace(emit=lambda ev, d: None)
+
+        b64_pdf = base64.b64encode(b'%PDF-1.4 mock').decode('ascii')
+
+        with patch.object(LOGGER, 'handle'):
+            bot.responder_evento({
+                'evento': '990011',
+                'precos': ['100,00', '200,00'],
+                'prazos': ['10', '15'],
+                'datasheet_por_linha': True,
+                'datasheets': [{'name': 'nao_deve_ir_no_geral.pdf', 'data': b64_pdf}],
+                'datasheets_por_item': [
+                    [{'name': 'datasheet_item_1.pdf', 'data': b64_pdf}],
+                    [{'name': 'datasheet_item_2.pdf', 'data': b64_pdf}],
+                ],
+                'davs': [{'name': 'dav_geral.pdf', 'data': b64_pdf}],
+            })
+
+        self.assertEqual(
+            botoes_add_file_clicados,
+            [0, 1],
+            'Deve clicar em button.s-addFile (Adicionar anexo de arquivo) no Item 1 e no Item 2'
+        )
+        self.assertEqual(arquivos_por_item_recebidos[0], ['datasheet_item_1.pdf'])
+        self.assertEqual(arquivos_por_item_recebidos[1], ['datasheet_item_2.pdf'])
+        self.assertEqual(
+            arquivos_gerais_ds_recebidos,
+            [],
+            'Quando datasheet_por_linha=True, não deve anexar datasheet no campo geral do evento'
+        )
+        self.assertEqual(arquivos_gerais_dav_recebidos, ['dav_geral.pdf'])
+
+    def test_motivos_curtos_minimalistas_e_email_vendas7_no_erro_do_evento(self):
+        import os
+        import re
+        import shutil
+        import base64
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys
+        from selenium.common.exceptions import NoSuchElementException
+        from test_fase0 import LOGGER, Relogio, carregar
+
+        raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
+        ns = carregar(
+            raiz / 'bots/coupa/mixins/resposta.py',
+            {'RespostaMixin'},
+            os=os, re=re, time=Relogio(), tempfile=tempfile, shutil=shutil, base64=base64,
+            By=By, Keys=Keys, NoSuchElementException=NoSuchElementException,
+            ActionChains=lambda d: SimpleNamespace(),
+            WebDriverWait=lambda d, t: SimpleNamespace(until=lambda cond: cond(d)),
+            EC=SimpleNamespace(presence_of_element_located=lambda loc: (lambda d: d.find_element(*loc))),
+        )
+        bot = type('Bot', (ns['RespostaMixin'],), {})()
+
+        # 1. NCM digitado mas não existe no portal
+        motivos_ncm = bot._gerar_motivos_curtos_item(
+            ['NCM'],
+            {'NCM': {'valor': '', 'vazio': True, 'obrigatorio': True, 'ncm_inexistente': True}},
+            preco_alvo='100,00', prazo_alvo='10', ncm_alvo='9999.99.99', origem_alvo='0',
+        )
+        self.assertEqual(motivos_ncm, ['NCM não existe'])
+
+        # 2. Faltou a origem e Valor errado
+        motivos_origem_valor = bot._gerar_motivos_curtos_item(
+            ['Origem', 'Preço por unidade'],
+            {
+                'Origem': {'valor': '', 'vazio': True, 'obrigatorio': True},
+                'Preço por unidade': {'valor': 'abc', 'vazio': False, 'obrigatorio': True, 'invalido_portal': True},
+            },
+            preco_alvo='abc', prazo_alvo='10', ncm_alvo='8413.70.90', origem_alvo='',
+        )
+        self.assertIn('Faltou a origem', motivos_origem_valor)
+        self.assertIn('Valor errado', motivos_origem_valor)
+
+        # 3. Faltou o NCM (quando o usuário nem informou NCM na planilha)
+        motivos_sem_ncm = bot._gerar_motivos_curtos_item(
+            ['NCM'],
+            {'NCM': {'valor': '', 'vazio': True, 'obrigatorio': True, 'ncm_inexistente': False}},
+            preco_alvo='100,00', prazo_alvo='10', ncm_alvo='', origem_alvo='0',
+        )
+        self.assertEqual(motivos_sem_ncm, ['Faltou o NCM'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -231,33 +231,91 @@ class RespostaMixin:
 
                 elemento_alvo = iframe_desafio if (iframe_desafio and iframe_desafio.is_displayed()) else iframe_caixinha
                 if elemento_alvo:
-                    aguardando = getattr(self, 'aguardando_clique', None)
-                    coords = getattr(self, 'coordenadas_clique', None)
-                    if aguardando is not None and aguardando.is_set() and coords:
-                        try:
-                            largura = (getattr(elemento_alvo, 'size', None) or {}).get('width', 0)
-                            altura = (getattr(elemento_alvo, 'size', None) or {}).get('height', 0)
-                            px = coords['x'] - (largura / 2)
-                            py = coords['y'] - (altura / 2)
-                            ActionChains(self.driver).move_to_element_with_offset(elemento_alvo, px, py).click().perform()
-                            ultimo_print = 0  # força novo frame imediato após o clique
-                        except Exception as e_click:
-                            logger.warning(f"Erro ao clicar no Captcha: {e_click}")
-                        finally:
-                            aguardando.clear()
+                    ultimo_check_dom = time.time()
+                    rect = None
+                    try:
+                        rect = elemento_alvo.rect
+                    except Exception:
+                        rect = None
 
-                    agora = time.time()
-                    if agora - ultimo_print >= 0.2:
-                        try:
-                            png_bytes = getattr(elemento_alvo, 'screenshot_as_png', None)
-                            if png_bytes:
-                                png_b64 = base64.b64encode(png_bytes).decode('utf-8')
-                                self.sio.emit('imagem_captcha_do_robo', {'imagem': png_b64})
-                        except Exception:
-                            pass
-                        ultimo_print = agora
+                    while True:
+                        aguardando = getattr(self, 'aguardando_clique', None)
+                        coords = getattr(self, 'coordenadas_clique', None)
+                        if aguardando is not None and aguardando.is_set() and coords:
+                            try:
+                                cx = int(coords.get('x', 0))
+                                cy = int(coords.get('y', 0))
+                                clique_ok = False
+                                if rect and hasattr(self.driver, 'execute_cdp_cmd'):
+                                    try:
+                                        abs_x = int(rect['x'] + cx)
+                                        abs_y = int(rect['y'] + cy)
+                                        self.driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': abs_x, 'y': abs_y})
+                                        self.driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': abs_x, 'y': abs_y, 'button': 'left', 'clickCount': 1})
+                                        self.driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': abs_x, 'y': abs_y, 'button': 'left', 'clickCount': 1})
+                                        clique_ok = True
+                                    except Exception:
+                                        clique_ok = False
+                                if not clique_ok:
+                                    largura = (rect or {}).get('width') or (getattr(elemento_alvo, 'size', None) or {}).get('width', 0)
+                                    altura = (rect or {}).get('height') or (getattr(elemento_alvo, 'size', None) or {}).get('height', 0)
+                                    px = cx - (largura / 2)
+                                    py = cy - (altura / 2)
+                                    ActionChains(self.driver).move_to_element_with_offset(elemento_alvo, px, py).click().perform()
+                            except Exception as e_click:
+                                logger.warning(f"Erro ao clicar no Captcha: {e_click}")
+                            finally:
+                                aguardando.clear()
 
-                time.sleep(0.08)
+                        agora = time.time()
+                        if agora - ultimo_print >= (1.0 / 60.0): # 60 FPS (60 quadros por segundo)
+                            capturado = False
+                            if rect and hasattr(self.driver, 'execute_cdp_cmd'):
+                                try:
+                                    clip = {
+                                        'x': float(rect.get('x', 0)),
+                                        'y': float(rect.get('y', 0)),
+                                        'width': float(rect.get('width', 400)),
+                                        'height': float(rect.get('height', 580)),
+                                        'scale': 1.0
+                                    }
+                                    res = self.driver.execute_cdp_cmd('Page.captureScreenshot', {
+                                        'format': 'jpeg',
+                                        'quality': 75,
+                                        'clip': clip
+                                    })
+                                    b64 = res.get('data')
+                                    if b64:
+                                        self.sio.emit('imagem_captcha_do_robo', {'imagem': f"data:image/jpeg;base64,{b64}"})
+                                        capturado = True
+                                except Exception:
+                                    capturado = False
+                            if not capturado:
+                                try:
+                                    png_bytes = getattr(elemento_alvo, 'screenshot_as_png', None)
+                                    if png_bytes:
+                                        png_b64 = base64.b64encode(png_bytes).decode('utf-8')
+                                        self.sio.emit('imagem_captcha_do_robo', {'imagem': png_b64})
+                                except Exception:
+                                    pass
+                            ultimo_print = agora
+
+                        if inicio_captcha and (time.time() - inicio_captcha > 300):
+                            self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
+                            raise Exception("CAPTCHA_TIMEOUT: Captcha expirado sem solução em 5 minutos.")
+
+                        if time.time() - ultimo_check_dom >= 0.4:
+                            ultimo_check_dom = time.time()
+                            try:
+                                if not elemento_alvo.is_displayed():
+                                    break
+                                if elemento_alvo is iframe_caixinha:
+                                    break
+                                rect = elemento_alvo.rect
+                            except Exception:
+                                break
+
+                        time.sleep(0.001)
             except Exception as e_cap:
                 if "CAPTCHA_TIMEOUT" in str(e_cap):
                     raise
@@ -297,6 +355,7 @@ class RespostaMixin:
                         'input.s-custom_field_1',
                         'input.s-custom_field_3',
                         'input.s-custom_field_4',
+                        'input.s-custom_field_5',
                         'input.s-custom_field_6',
                         'input.s-custom_field_7',
                         'input.s-custom_field_8',
@@ -365,6 +424,1149 @@ class RespostaMixin:
             logger.warning(f"   ⚠️ Não foi possível capturar print do Item {idx_item + 1}: {e}")
             return None
 
+
+    def _detectar_erro_salvar_item(self, linha=None):
+        """
+        Detecta se o Coupa exibiu o alerta de validação:
+        <div class="innerbox"><div>Resolva todos os erros e tente outra vez.</div></div>
+        """
+        texto_alvo = "resolva todos os erros e tente outra vez"
+        try:
+            # 1. Verifica elementos com classe 'innerbox'
+            innerboxes = self.driver.find_elements(By.CSS_SELECTOR, "div.innerbox")
+            for ib in innerboxes:
+                try:
+                    txt = (ib.text or "").strip().lower()
+                    if texto_alvo in txt:
+                        return True
+                except Exception:
+                    pass
+
+            # 2. Verifica mensagens flash ou de erro no Coupa
+            caixas_erro = self.driver.find_elements(By.CSS_SELECTOR, ".flash_error, .flash_message, .error_messages, div.error")
+            for ce in caixas_erro:
+                try:
+                    txt = (ce.text or "").strip().lower()
+                    if texto_alvo in txt:
+                        return True
+                except Exception:
+                    pass
+
+            # 3. Busca por texto direto no DOM
+            el_erros = self.driver.find_elements(By.XPATH, "//*[contains(translate(text(), 'RESOLVA', 'resolva'), 'resolva todos os erros e tente outra vez')]")
+            for el in el_erros:
+                try:
+                    if el.is_displayed():
+                        return True
+                except Exception:
+                    pass
+
+            # 4. Se a linha foi informada, verifica dentro da linha
+            if linha is not None:
+                inners_linha = linha.find_elements(By.CSS_SELECTOR, "div.innerbox, .fieldWithErrors, .error")
+                for ib in inners_linha:
+                    try:
+                        txt = (ib.text or "").strip().lower()
+                        if texto_alvo in txt:
+                            return True
+                    except Exception:
+                        pass
+        except Exception as e_det:
+            logger.debug(f"Aviso ao checar erro do portal: {e_det}")
+        return False
+
+    def _obter_valor_input(self, el):
+        try:
+            val = el.get_attribute("value")
+            if val is None:
+                val = el.get_property("value")
+            return str(val or "").strip()
+        except Exception:
+            return ""
+
+    def _identificar_rotulo_campo(self, el):
+        try:
+            label = el.get_attribute("aria-label") or el.get_attribute("placeholder") or ""
+            if label.strip():
+                return label.strip()
+
+            el_id = el.get_attribute("id")
+            if el_id:
+                labels = self.driver.find_elements(By.CSS_SELECTOR, f"label[for='{el_id}']")
+                if labels and labels[0].text.strip():
+                    return labels[0].text.strip()
+
+            pais = el.find_elements(By.XPATH, "ancestor::div[label]//label")
+            if pais and pais[0].text.strip():
+                return pais[0].text.strip()
+
+            name = el.get_attribute("name") or ""
+            if name:
+                return name.split(".")[-1].replace("_", " ").title()
+        except Exception:
+            pass
+        return "Campo do Item"
+
+    def _eh_linha_vale_metais(self, linha, cliente_evento=""):
+        """
+        Detecta se a linha do item utiliza o layout do Vale Metais (Vale Base Metals):
+        1. NCM: input.ComboBox__input.s-custom_field_8 (role="combobox", aria-owns="custom_field_8_..._results")
+        2. ORIGEM: input.ComboBox__input.s-custom_field_9 (role="combobox", aria-owns="custom_field_9_..._results")
+        3. COFINS %: input.s-custom_field_7
+        4. IPI %: input.s-custom_field_5
+        5. ICMS %: input.s-custom_field_3
+        6. PRAZO: input.s-lead_time_input
+        7. PREÇO POR UNIDADE: input.s-price_amount_input
+        """
+        try:
+            if linha is not None:
+                cf8_combo = linha.find_elements(By.CSS_SELECTOR, "input.ComboBox__input.s-custom_field_8")
+                if cf8_combo:
+                    return True
+                cf8 = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_8")
+                if cf8:
+                    cls8 = str(cf8[0].get_attribute("class") or "")
+                    role8 = str(cf8[0].get_attribute("role") or "")
+                    owns8 = str(cf8[0].get_attribute("aria-owns") or "")
+                    if "ComboBox__input" in cls8 or role8.lower() == "combobox" or owns8:
+                        return True
+                cf5 = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_5")
+                if cf5:
+                    return True
+                cli = str(cliente_evento or getattr(self, '_cliente_evento_atual', '') or '').strip().lower()
+                if cli in ("vale base metals", "vale metais"):
+                    cf1 = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_1")
+                    if not cf1:
+                        return True
+        except Exception:
+            pass
+        return False
+
+    def _campo_tem_erro_portal(self, el):
+        if el is None:
+            return False
+        try:
+            aria_inv = str(el.get_attribute("aria-invalid") or "").strip().lower()
+            if aria_inv == "true":
+                return True
+            cls = str(el.get_attribute("class") or "").lower()
+            if "error" in cls or "invalid" in cls:
+                return True
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def _valor_monetario_valido(valor):
+        s = str(valor or "").strip()
+        if not s:
+            return False
+        s_limpo = re.sub(r'[R$\s]', '', s)
+        if ',' in s_limpo and '.' in s_limpo:
+            s_limpo = s_limpo.replace('.', '').replace(',', '.')
+        elif ',' in s_limpo:
+            s_limpo = s_limpo.replace(',', '.')
+        try:
+            return float(s_limpo) > 0
+        except Exception:
+            return False
+
+    def _motivo_curto_campo(self, nome_campo, info=None, ncm_alvo="", origem_alvo="", preco_alvo="", prazo_alvo="", icms_alvo=""):
+        """Traduz um campo com problema em um alerta curto, minimalista e direto para o usuário."""
+        info = info or {}
+        nome_low = str(nome_campo or "").strip().lower()
+        alvo_info = str(info.get('valor_alvo') or "").strip()
+
+        if nome_low == "ncm" or "ncm" in nome_low:
+            alvo = alvo_info or str(ncm_alvo or "").strip()
+            return "NCM não existe" if alvo else "Faltou o NCM"
+
+        if nome_low == "origem" or "origem" in nome_low:
+            alvo = alvo_info or str(origem_alvo or "").strip()
+            val_atual = str(info.get('valor_atual') or "").strip()
+            if not alvo or not val_atual:
+                return "Faltou a origem"
+            return "Origem inválida"
+
+        if "preço" in nome_low or "preco" in nome_low or "valor" in nome_low:
+            alvo = alvo_info or str(preco_alvo or "").strip()
+            return "Valor errado" if alvo else "Faltou o valor"
+
+        if "prazo" in nome_low or "tempo de espera" in nome_low:
+            alvo = alvo_info or str(prazo_alvo or "").strip()
+            return "Prazo inválido" if alvo else "Faltou o prazo"
+
+        if "icms" in nome_low:
+            alvo = alvo_info or str(icms_alvo or "").strip()
+            return "ICMS inválido" if alvo else "Faltou o ICMS"
+
+        if "ipi" in nome_low:
+            return "Faltou o IPI"
+        if "cofins" in nome_low:
+            return "Faltou o COFINS"
+        if "pis" in nome_low:
+            return "Faltou o PIS"
+        if "iss" in nome_low:
+            return "Faltou o ISS"
+
+        return str(nome_campo or "Erro no campo").strip()
+
+    def _gerar_motivos_curtos_item(self, campos_finais, campos_inspecionados, preco_alvo="", prazo_alvo="", ncm_alvo="", origem_alvo="", icms_alvo=""):
+        """Gera lista de motivos curtos e diretos (ex: ['NCM não existe', 'Faltou a origem']) para um item."""
+        motivos = []
+        campos_inspecionados = campos_inspecionados or {}
+        for c_nome in (campos_finais or []):
+            if c_nome == "Campos obrigatórios do item não aceitos pelo portal":
+                continue
+            info_c = campos_inspecionados.get(c_nome)
+            m = self._motivo_curto_campo(
+                c_nome,
+                info=info_c,
+                ncm_alvo=ncm_alvo,
+                origem_alvo=origem_alvo,
+                preco_alvo=preco_alvo,
+                prazo_alvo=prazo_alvo,
+                icms_alvo=icms_alvo
+            )
+            if m and m not in motivos:
+                motivos.append(m)
+
+        if not motivos:
+            # Se o portal recusou mas nenhum campo ficou literalmente em branco, deduz pelos valores informados
+            info_ncm = campos_inspecionados.get('NCM') or {}
+            info_ori = campos_inspecionados.get('Origem') or {}
+            if info_ncm.get('ncm_inexistente') or info_ncm.get('invalido_portal'):
+                motivos.append("NCM não existe" if str(ncm_alvo or "").strip() else "Faltou o NCM")
+            elif info_ori.get('origem_inexistente') or info_ori.get('invalido_portal'):
+                motivos.append("Faltou a origem" if not str(origem_alvo or "").strip() else "Origem inválida")
+            elif not str(preco_alvo or "").strip():
+                motivos.append("Faltou o valor")
+            elif not self._valor_monetario_valido(preco_alvo):
+                motivos.append("Valor errado")
+            elif not str(prazo_alvo or "").strip():
+                motivos.append("Faltou o prazo")
+            elif not str(origem_alvo or "").strip() and 'Origem' in campos_inspecionados:
+                motivos.append("Faltou a origem")
+            elif not str(ncm_alvo or "").strip() and 'NCM' in campos_inspecionados:
+                motivos.append("Faltou o NCM")
+            elif str(ncm_alvo or "").strip() and 'NCM' in campos_inspecionados:
+                motivos.append("NCM não existe")
+            else:
+                motivos.append("Valor errado")
+
+        return motivos
+
+    def _resumir_erro_curto(self, erro_bruto="", motivos_curtos=None):
+        """Retorna mensagem curta, minimalista e direta para exibir em vermelho no card do evento."""
+        if motivos_curtos:
+            unicos = list(dict.fromkeys(str(m).strip() for m in motivos_curtos if str(m).strip()))
+            if unicos:
+                return " · ".join(unicos)
+
+        txt = str(erro_bruto or "").strip()
+        low = txt.lower()
+        if not txt:
+            return "Erro ao responder"
+        if "ncm não existe" in low or "ncm nao existe" in low:
+            return "NCM não existe"
+        if "faltou o ncm" in low:
+            return "Faltou o NCM"
+        if "faltou a origem" in low or ("origem" in low and "vazio" in low):
+            return "Faltou a origem"
+        if "origem inválida" in low or "origem invalida" in low:
+            return "Origem inválida"
+        if "valor errado" in low or ("preço" in low and ("erro" in low or "falha" in low)):
+            return "Valor errado"
+        if "faltou o valor" in low or ("preço" in low and "vazio" in low):
+            return "Faltou o valor"
+        if "faltou o prazo" in low or ("prazo" in low and ("vazio" in low or "falha" in low)):
+            return "Faltou o prazo"
+        if "prazo inválido" in low or "prazo invalido" in low:
+            return "Prazo inválido"
+        if "faltou o icms" in low or ("icms" in low and "vazio" in low):
+            return "Faltou o ICMS"
+        if "ncm" in low:
+            return "NCM não existe"
+        if "origem" in low:
+            return "Faltou a origem"
+        if "preço" in low or "preco" in low:
+            return "Valor errado"
+        if "prazo" in low:
+            return "Faltou o prazo"
+        if "não tem botão de responder" in low or "encerrado" in low or "indisponível" in low or "aba de preços" in low:
+            return "Evento encerrado"
+        if "botão salvar não encontrado" in low:
+            return "Erro ao salvar"
+        if "desligado" in low:
+            return "Robô desligado"
+        if "login" in low or "autentica" in low:
+            return "Falha no login"
+        if "captcha" in low:
+            return "Erro no Captcha"
+        if "resolva todos os erros" in low:
+            return "Valor errado"
+        return txt[:48] + ("…" if len(txt) > 48 else "")
+
+    def _inspecionar_campos_linha(self, linha, preco_alvo="", prazo_alvo="", ncm_alvo="", origem_alvo="", icms_alvo="", cliente_evento=""):
+        """
+        Inspeciona todos os campos da linha do item e retorna dicionário com o status de cada um:
+        se está vazio e qual o valor alvo esperado. Suporta tanto o layout Vale comum quanto Vale Metais.
+        """
+        resultado = {}
+        eh_vale_metais = self._eh_linha_vale_metais(linha, cliente_evento)
+
+        if eh_vale_metais:
+            # 1. NCM (Vale Metais: custom_field_8 ComboBox)
+            try:
+                inp_ncm = linha.find_elements(By.CSS_SELECTOR, "input.ComboBox__input.s-custom_field_8") or linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_8")
+                if inp_ncm:
+                    val = self._obter_valor_input(inp_ncm[0])
+                    resultado['NCM'] = {
+                        'nome': 'NCM',
+                        'elemento': inp_ncm[0],
+                        'vazio': (val == ""),
+                        'ncm_inexistente': bool(getattr(inp_ncm[0], '_ncm_nao_encontrado', False)),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_ncm[0]),
+                        'valor_atual': val,
+                        'valor_alvo': ncm_alvo,
+                        'tipo': 'ncm'
+                    }
+            except Exception:
+                pass
+
+            # 2. Origem (Vale Metais: custom_field_9 ComboBox)
+            try:
+                inp_origem = linha.find_elements(By.CSS_SELECTOR, "input.ComboBox__input.s-custom_field_9") or linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_9")
+                if inp_origem:
+                    val = self._obter_valor_input(inp_origem[0])
+                    resultado['Origem'] = {
+                        'nome': 'Origem',
+                        'elemento': inp_origem[0],
+                        'vazio': (val == ""),
+                        'origem_inexistente': bool(getattr(inp_origem[0], '_origem_nao_encontrada', False)),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_origem[0]),
+                        'valor_atual': val,
+                        'valor_alvo': origem_alvo,
+                        'tipo': 'origem'
+                    }
+            except Exception:
+                pass
+
+            # 3. COFINS (%) (Vale Metais: custom_field_7)
+            try:
+                inp_cofins = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_7")
+                if inp_cofins:
+                    val = self._obter_valor_input(inp_cofins[0])
+                    resultado['COFINS (%)'] = {
+                        'nome': 'COFINS (%)',
+                        'elemento': inp_cofins[0],
+                        'vazio': (val == ""),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_cofins[0]),
+                        'valor_atual': val,
+                        'valor_alvo': "3",
+                        'tipo': 'cf'
+                    }
+            except Exception:
+                pass
+
+            # 4. IPI (%) (Vale Metais: custom_field_5)
+            try:
+                inp_ipi = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_5")
+                if inp_ipi:
+                    val = self._obter_valor_input(inp_ipi[0])
+                    resultado['IPI (%)'] = {
+                        'nome': 'IPI (%)',
+                        'elemento': inp_ipi[0],
+                        'vazio': (val == ""),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_ipi[0]),
+                        'valor_atual': val,
+                        'valor_alvo': "0",
+                        'tipo': 'cf'
+                    }
+            except Exception:
+                pass
+
+            # 5. ICMS (%) (Vale Metais: custom_field_3)
+            try:
+                inp_icms = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_3")
+                if inp_icms:
+                    val = self._obter_valor_input(inp_icms[0])
+                    resultado['ICMS (%)'] = {
+                        'nome': 'ICMS (%)',
+                        'elemento': inp_icms[0],
+                        'vazio': (val == ""),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_icms[0]),
+                        'valor_atual': val,
+                        'valor_alvo': icms_alvo if icms_alvo else "0",
+                        'tipo': 'cf'
+                    }
+            except Exception:
+                pass
+
+            # 6. Prazo (Tempo de espera (dias): s-lead_time_input)
+            try:
+                inp_prazo = linha.find_elements(By.CSS_SELECTOR, "input.s-lead_time_input")
+                if inp_prazo:
+                    val = self._obter_valor_input(inp_prazo[0])
+                    resultado['Prazo'] = {
+                        'nome': 'Prazo',
+                        'elemento': inp_prazo[0],
+                        'vazio': (val == ""),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_prazo[0]),
+                        'valor_atual': val,
+                        'valor_alvo': prazo_alvo,
+                        'tipo': 'prazo'
+                    }
+            except Exception:
+                pass
+
+            # 7. Preço por unidade (por último: s-price_amount_input)
+            try:
+                inp_preco = linha.find_elements(By.CSS_SELECTOR, "input.s-price_amount_input")
+                if inp_preco:
+                    val = self._obter_valor_input(inp_preco[0])
+                    resultado['Preço'] = {
+                        'nome': 'Preço',
+                        'elemento': inp_preco[0],
+                        'vazio': (val == ""),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_preco[0]),
+                        'valor_atual': val,
+                        'valor_alvo': preco_alvo,
+                        'tipo': 'preco'
+                    }
+            except Exception:
+                pass
+        else:
+            # Layout Vale Padrão
+            # 1. NCM
+            try:
+                inp_ncm = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_9")
+                if inp_ncm:
+                    val = self._obter_valor_input(inp_ncm[0])
+                    resultado['NCM'] = {
+                        'nome': 'NCM',
+                        'elemento': inp_ncm[0],
+                        'vazio': (val == ""),
+                        'ncm_inexistente': bool(getattr(inp_ncm[0], '_ncm_nao_encontrado', False)),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_ncm[0]),
+                        'valor_atual': val,
+                        'valor_alvo': ncm_alvo,
+                        'tipo': 'ncm'
+                    }
+            except Exception:
+                pass
+
+            # 2. COFINS (%)
+            try:
+                inp_cofins = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_8")
+                if inp_cofins:
+                    val = self._obter_valor_input(inp_cofins[0])
+                    resultado['COFINS (%)'] = {
+                        'nome': 'COFINS (%)',
+                        'elemento': inp_cofins[0],
+                        'vazio': (val == ""),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_cofins[0]),
+                        'valor_atual': val,
+                        'valor_alvo': "3",
+                        'tipo': 'cf'
+                    }
+            except Exception:
+                pass
+
+            # 3. PIS (%)
+            try:
+                inp_pis = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_7")
+                if inp_pis:
+                    val = self._obter_valor_input(inp_pis[0])
+                    resultado['PIS (%)'] = {
+                        'nome': 'PIS (%)',
+                        'elemento': inp_pis[0],
+                        'vazio': (val == ""),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_pis[0]),
+                        'valor_atual': val,
+                        'valor_alvo': "0,65",
+                        'tipo': 'cf'
+                    }
+            except Exception:
+                pass
+
+            # 4. IPI (%)
+            try:
+                inp_ipi = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_6")
+                if inp_ipi:
+                    val = self._obter_valor_input(inp_ipi[0])
+                    resultado['IPI (%)'] = {
+                        'nome': 'IPI (%)',
+                        'elemento': inp_ipi[0],
+                        'vazio': (val == ""),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_ipi[0]),
+                        'valor_atual': val,
+                        'valor_alvo': "0",
+                        'tipo': 'cf'
+                    }
+            except Exception:
+                pass
+
+            # 5. ISS (%)
+            try:
+                inp_iss = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_3")
+                if inp_iss:
+                    val = self._obter_valor_input(inp_iss[0])
+                    resultado['ISS (%)'] = {
+                        'nome': 'ISS (%)',
+                        'elemento': inp_iss[0],
+                        'vazio': (val == ""),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_iss[0]),
+                        'valor_atual': val,
+                        'valor_alvo': "0",
+                        'tipo': 'cf'
+                    }
+            except Exception:
+                pass
+
+            # 6. ICMS (%)
+            try:
+                inp_icms = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_4")
+                if inp_icms:
+                    val = self._obter_valor_input(inp_icms[0])
+                    resultado['ICMS (%)'] = {
+                        'nome': 'ICMS (%)',
+                        'elemento': inp_icms[0],
+                        'vazio': (val == ""),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_icms[0]),
+                        'valor_atual': val,
+                        'valor_alvo': icms_alvo,
+                        'tipo': 'cf'
+                    }
+            except Exception:
+                pass
+
+            # 7. Origem
+            try:
+                inp_origem = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_1")
+                if inp_origem:
+                    val = self._obter_valor_input(inp_origem[0])
+                    resultado['Origem'] = {
+                        'nome': 'Origem',
+                        'elemento': inp_origem[0],
+                        'vazio': (val == ""),
+                        'origem_inexistente': bool(getattr(inp_origem[0], '_origem_nao_encontrada', False)),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_origem[0]),
+                        'valor_atual': val,
+                        'valor_alvo': origem_alvo,
+                        'tipo': 'origem'
+                    }
+            except Exception:
+                pass
+
+            # 8. Prazo
+            try:
+                inp_prazo = linha.find_elements(By.CSS_SELECTOR, "input.s-lead_time_input")
+                if inp_prazo:
+                    val = self._obter_valor_input(inp_prazo[0])
+                    resultado['Prazo'] = {
+                        'nome': 'Prazo',
+                        'elemento': inp_prazo[0],
+                        'vazio': (val == ""),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_prazo[0]),
+                        'valor_atual': val,
+                        'valor_alvo': prazo_alvo,
+                        'tipo': 'prazo'
+                    }
+            except Exception:
+                pass
+
+            # 9. Preço (por último)
+            try:
+                inp_preco = linha.find_elements(By.CSS_SELECTOR, "input.s-price_amount_input")
+                if inp_preco:
+                    val = self._obter_valor_input(inp_preco[0])
+                    resultado['Preço'] = {
+                        'nome': 'Preço',
+                        'elemento': inp_preco[0],
+                        'vazio': (val == ""),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_preco[0]),
+                        'valor_atual': val,
+                        'valor_alvo': preco_alvo,
+                        'tipo': 'preco'
+                    }
+            except Exception:
+                pass
+
+        # 10. Campos explicitamente marcados com erro pelo Coupa (.fieldWithErrors ou .error)
+        try:
+            campos_erro = linha.find_elements(By.CSS_SELECTOR, ".fieldWithErrors input, .fieldWithErrors select, input.error, select.error")
+            for c_err in campos_erro:
+                val_err = self._obter_valor_input(c_err)
+                if val_err == "":
+                    rotulo = self._identificar_rotulo_campo(c_err)
+                    if rotulo and rotulo not in resultado:
+                        resultado[rotulo] = {
+                            'nome': rotulo,
+                            'elemento': c_err,
+                            'vazio': True,
+                            'valor_atual': "",
+                            'valor_alvo': "",
+                            'tipo': 'extra_obrigatorio'
+                        }
+        except Exception:
+            pass
+
+        return resultado
+
+    def _selecionar_origem_dropdown(self, linha, inp_origem, origem_atual):
+        try:
+            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", inp_origem)
+            self.driver.execute_script("arguments[0].click();", inp_origem)
+            time.sleep(0.3)
+        except Exception:
+            pass
+        try:
+            inp_origem.clear()
+            time.sleep(0.3)
+            inp_origem.send_keys(origem_atual)
+            time.sleep(1.5)
+            selecionou_origem = False
+            m_num = re.match(r'^(\d+)', origem_atual)
+            num_origem = m_num.group(1) if m_num else origem_atual
+            owns_id = inp_origem.get_attribute("aria-owns") or ""
+            opcoes_origem = []
+            if owns_id:
+                opcoes_origem = self.driver.find_elements(By.CSS_SELECTOR, f"#{owns_id} li.ComboBox__resultItem, #{owns_id} li")
+            if not opcoes_origem:
+                opcoes_origem = [
+                    li for li in self.driver.find_elements(By.CSS_SELECTOR, "li.ComboBox__resultItem")
+                    if li.is_displayed()
+                ]
+            opcao_alvo = None
+            for li in opcoes_origem:
+                txt_li = (getattr(li, 'text', '') or '').strip()
+                if not txt_li:
+                    continue
+                if txt_li.lower() == origem_atual.lower() or re.match(rf'^{re.escape(num_origem)}(?:\b|\s|-|\.)', txt_li):
+                    opcao_alvo = li
+                    break
+            if opcao_alvo is None and opcoes_origem:
+                for li in opcoes_origem:
+                    txt_li = (getattr(li, 'text', '') or '').strip()
+                    if txt_li.startswith(num_origem):
+                        opcao_alvo = li
+                        break
+            if opcao_alvo is not None:
+                self.driver.execute_script("arguments[0].scrollIntoView({block: 'nearest'}); arguments[0].click();", opcao_alvo)
+                selecionou_origem = True
+            else:
+                selecionou_js = self.driver.execute_script("""
+                    const inp = arguments[0];
+                    const valor = String(arguments[1] || '').trim();
+                    const m = valor.match(/^(\\d+)/);
+                    const numAlvo = m ? m[1] : valor;
+                    const ownsId = inp && inp.getAttribute ? inp.getAttribute('aria-owns') : '';
+                    let itens = [];
+                    if (ownsId) {
+                        const ul = document.getElementById(ownsId);
+                        if (ul) itens = Array.from(ul.querySelectorAll('li.ComboBox__resultItem, li[role="option"], li'));
+                    }
+                    if (!itens.length) {
+                        itens = Array.from(document.querySelectorAll('li.ComboBox__resultItem'))
+                            .filter(el => el.offsetWidth > 0 || el.offsetHeight > 0);
+                    }
+                    const norm = s => String(s || '').trim();
+                    let alvo = itens.find(li => {
+                        const t = norm(li.innerText || li.textContent);
+                        if (!t) return false;
+                        if (t.toLowerCase() === valor.toLowerCase()) return true;
+                        const mLi = t.match(/^(\\d+)\\b/);
+                        return mLi && mLi[1] === numAlvo;
+                    });
+                    if (!alvo && itens.length) {
+                        alvo = itens.find(li => norm(li.innerText || li.textContent).startsWith(numAlvo)) || itens[0];
+                    }
+                    if (alvo) {
+                        alvo.scrollIntoView({ block: 'nearest' });
+                        alvo.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                        alvo.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                        alvo.click();
+                        return true;
+                    }
+                    return false;
+                """, inp_origem, origem_atual)
+                selecionou_origem = (selecionou_js is True and bool(owns_id or opcoes_origem))
+
+            if not selecionou_origem:
+                try:
+                    if owns_id:
+                        setattr(inp_origem, '_origem_nao_encontrada', True)
+                except Exception:
+                    pass
+                inp_origem.send_keys(Keys.ARROW_DOWN)
+                time.sleep(0.4)
+                inp_origem.send_keys(Keys.ENTER)
+            else:
+                try:
+                    setattr(inp_origem, '_origem_nao_encontrada', False)
+                except Exception:
+                    pass
+        except Exception as e_ori:
+            logger.warning(f"      ⚠️ Erro ao selecionar dropdown de origem: {e_ori}")
+
+    def _preencher_ncm_combobox(self, inp_ncm, ncm_atual):
+        try:
+            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", inp_ncm)
+            self.driver.execute_script("arguments[0].click();", inp_ncm)
+            time.sleep(0.2)
+        except Exception:
+            pass
+        inp_ncm.clear()
+        time.sleep(0.3)
+        inp_ncm.send_keys(ncm_atual)
+        time.sleep(1.5)
+        selecionou_ncm = False
+        tinha_owns = False
+        try:
+            owns_id = inp_ncm.get_attribute("aria-owns") or ""
+            if owns_id:
+                tinha_owns = True
+                opcoes_ncm = self.driver.find_elements(By.CSS_SELECTOR, f"#{owns_id} li.ComboBox__resultItem, #{owns_id} li")
+                ncm_limpo = re.sub(r'\D', '', ncm_atual)
+                for li in opcoes_ncm:
+                    txt_li = (getattr(li, 'text', '') or '').strip()
+                    if not txt_li:
+                        continue
+                    txt_limpo = re.sub(r'\D', '', txt_li)
+                    if ncm_atual in txt_li or (ncm_limpo and txt_limpo.startswith(ncm_limpo)):
+                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'nearest'}); arguments[0].click();", li)
+                        selecionou_ncm = True
+                        break
+        except Exception:
+            selecionou_ncm = False
+
+        try:
+            if tinha_owns and not selecionou_ncm:
+                setattr(inp_ncm, '_ncm_nao_encontrado', True)
+            elif selecionou_ncm:
+                setattr(inp_ncm, '_ncm_nao_encontrado', False)
+        except Exception:
+            pass
+
+        if not selecionou_ncm:
+            inp_ncm.send_keys(Keys.ARROW_DOWN)
+            time.sleep(0.5)
+            inp_ncm.send_keys(Keys.ENTER)
+        return selecionou_ncm
+
+    def _repreencher_campos_vazios_linha(self, linha, campos_inspecionados, idx):
+        """
+        Para cada campo que está em branco e tem valor alvo definido, realiza o preenchimento novamente,
+        garantindo que Prazo e por último Preço por unidade sejam preenchidos no final.
+        """
+        def _prioridade_campo(item_kv):
+            t = item_kv[1].get('tipo', '')
+            if t == 'preco':
+                return 2
+            if t == 'prazo':
+                return 1
+            return 0
+
+        for nome_campo, info in sorted(campos_inspecionados.items(), key=_prioridade_campo):
+            if not info.get('vazio'):
+                continue
+            valor_alvo = str(info.get('valor_alvo') or "").strip()
+            el = info.get('elemento')
+            tipo = info.get('tipo')
+
+            if not valor_alvo:
+                logger.info(f"      ℹ️ Campo '{nome_campo}' está em branco no Item {idx+1}, mas não há valor informado para preencher.")
+                continue
+
+            logger.info(f"      [INFO] Repreenchendo campo em branco do Item {idx+1}: {nome_campo} com '{valor_alvo}'...")
+            try:
+                if tipo == 'preco':
+                    try:
+                        el.clear()
+                        time.sleep(0.2)
+                        el.send_keys(valor_alvo)
+                        el.send_keys(Keys.TAB)
+                    except Exception:
+                        pass
+                    self.driver.execute_script("""
+                        arguments[0].value = arguments[1];
+                        arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+                        arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+                        arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
+                    """, el, valor_alvo)
+                    time.sleep(1.0)
+
+                elif tipo == 'prazo':
+                    try:
+                        ActionChains(self.driver) \
+                            .move_to_element(el) \
+                            .click() \
+                            .pause(0.2) \
+                            .key_down(Keys.CONTROL).send_keys('a').key_up(Keys.CONTROL) \
+                            .send_keys(Keys.BACKSPACE) \
+                            .send_keys(valor_alvo) \
+                            .send_keys(Keys.TAB) \
+                            .perform()
+                    except Exception:
+                        pass
+                    self.driver.execute_script("""
+                        let el = arguments[0];
+                        let val = arguments[1];
+                        let lastValue = el.value;
+                        el.value = val;
+                        let event = new Event('input', { bubbles: true });
+                        event.simulated = true;
+                        if (el._valueTracker) { el._valueTracker.setValue(lastValue); }
+                        el.dispatchEvent(event);
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        el.dispatchEvent(new Event('blur', { bubbles: true }));
+                    """, el, valor_alvo)
+                    time.sleep(1.0)
+
+                elif tipo == 'ncm':
+                    try:
+                        self._preencher_ncm_combobox(el, valor_alvo)
+                    except Exception:
+                        pass
+                    time.sleep(1.0)
+
+                elif tipo == 'origem':
+                    self._selecionar_origem_dropdown(linha, el, valor_alvo)
+                    time.sleep(1.0)
+
+                else: # cf ou genérico
+                    try:
+                        el.clear()
+                        time.sleep(0.2)
+                        el.send_keys(valor_alvo)
+                        el.send_keys(Keys.TAB)
+                    except Exception:
+                        pass
+                    self.driver.execute_script("""
+                        arguments[0].value = arguments[1];
+                        arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+                        arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+                        arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
+                    """, el, valor_alvo)
+                    time.sleep(1.0)
+
+            except Exception as e_rep:
+                logger.warning(f"      ⚠️ Falha ao repreencher {nome_campo}: {e_rep}")
+
+    def _registrar_erro_no_evento(self, evento, item_num, erro_portal, campos_vazios):
+        try:
+            import eventos
+            ev_limpo = str(evento).replace("Evento ", "").strip()
+            campos_str = ", ".join(campos_vazios)
+            resumo = f"Item {item_num} (Cotação {ev_limpo}): '{erro_portal}'. Campo(s) vazio(s): {campos_str}"
+            detalhe = {
+                'evento': ev_limpo,
+                'item': item_num,
+                'erro_portal': erro_portal,
+                'campos_vazios': campos_vazios,
+                'sucesso': False
+            }
+            servico = "coupa" if "coupa" in self.__class__.__name__.lower() else "vale"
+            eventos.registrar(servico, "erro_salvar_item", "erro", resumo, ref=f"Evento {ev_limpo}", detalhe=detalhe)
+            logger.info(f"      [EVENTO] Erro registrado no evento {ev_limpo} (logs/eventos.jsonl): {resumo}")
+        except Exception as e_reg:
+            logger.warning(f"      ⚠️ Não foi possível registrar erro no eventos.jsonl: {e_reg}")
+
+    def _capturar_screenshot_seguro(self):
+        try:
+            if hasattr(self, 'driver') and self.driver:
+                return self.driver.get_screenshot_as_png()
+        except Exception as e_sc:
+            logger.warning(f"Não foi possível capturar screenshot da tela: {e_sc}")
+        return None
+
+    def _notificar_erro_resposta(self, evento, erro, etapa="Processamento da Resposta", print_bytes=None, campos_vazios=None, item_num=None, itens_sucesso=None, total_itens=1):
+        if getattr(self, '_email_erro_enviado', False):
+            return
+        try:
+            try:
+                from bots.relatorio_email import enviar_email_erro_resposta
+            except ImportError:
+                try:
+                    from relatorio_email import enviar_email_erro_resposta
+                except ImportError:
+                    from ..relatorio_email import enviar_email_erro_resposta
+
+            nome_bot = "Coupa Bot" if "coupa" in self.__class__.__name__.lower() else "Vale Bot"
+            cfg = getattr(self, 'config', {}) or {}
+            if not print_bytes:
+                print_bytes = self._capturar_screenshot_seguro()
+
+            enviou = enviar_email_erro_resposta(
+                nome_bot=nome_bot,
+                evento=str(evento),
+                erro_detalhado=str(erro),
+                etapa=etapa,
+                campos_vazios=campos_vazios,
+                item_num=item_num,
+                print_bytes=print_bytes,
+                config=cfg,
+                logger_inst=logger,
+                itens_sucesso=itens_sucesso,
+                total_itens=total_itens,
+                destinatario_obrigatorio="vendas7@venturainformatica.com.br"
+            )
+            if enviou:
+                self._email_erro_enviado = True
+                logger.info(f"      [EMAIL] E-mail de alerta com print enviado para vendas7@venturainformatica.com.br (Evento {evento}).")
+        except Exception as e_mail:
+            logger.warning(f"      [AVISO] Erro ao disparar e-mail de alerta de resposta: {e_mail}")
+
+    def _enviar_email_erro_item(self, evento, item_num, erro_portal, campos_vazios, itens_sucesso=None, total_itens=1, print_bytes=None):
+        try:
+            if not print_bytes:
+                print_bytes = self._capturar_screenshot_seguro()
+            try:
+                from bots.relatorio_email import enviar_email_erro_salvar_item
+            except ImportError:
+                try:
+                    from relatorio_email import enviar_email_erro_salvar_item
+                except ImportError:
+                    from ..relatorio_email import enviar_email_erro_salvar_item
+
+            nome_bot = "Coupa Bot" if "coupa" in self.__class__.__name__.lower() else "Vale Bot"
+            cfg = getattr(self, 'config', {}) or {}
+            itens_ok = list(itens_sucesso or [])
+            enviou = enviar_email_erro_salvar_item(
+                nome_bot=nome_bot,
+                evento=str(evento),
+                item_num=item_num,
+                erro_portal=erro_portal,
+                campos_vazios=campos_vazios,
+                config=cfg,
+                logger_inst=logger,
+                itens_sucesso=itens_ok,
+                total_itens=total_itens,
+                print_bytes=print_bytes,
+                destinatario_obrigatorio="vendas7@venturainformatica.com.br"
+            )
+            if enviou:
+                self._email_erro_enviado = True
+                logger.info(f"      [EMAIL] E-mail de alerta com print enviado para vendas7@venturainformatica.com.br reportando o erro no Item {item_num}.")
+            else:
+                logger.warning(f"      [EMAIL] Não foi possível enviar e-mail de alerta para o Item {item_num}.")
+        except Exception as e_mail:
+            logger.warning(f"      [AVISO] Erro ao disparar e-mail de alerta de salvamento: {e_mail}")
+
+    def _tratar_erro_validacao_item(self, linha, idx, evento, itens, preco_alvo, prazo_alvo, ncm_alvo, origem_alvo, icms_alvo, btn_salvar_item, itens_sucesso):
+        logger.warning(f"      [AVISO] Detectado erro de validação do Coupa no Item {idx+1}: 'Resolva todos os erros e tente outra vez'.")
+        
+        # 1. Garante que a barra lateral de campos do item esteja expandida
+        try:
+            btn_expandir = linha.find_elements(By.CSS_SELECTOR, "div.s-expandSidebar, img.s-expandLines")
+            if btn_expandir:
+                self.driver.execute_script("arguments[0].click();", btn_expandir[0])
+                time.sleep(1.5)
+        except Exception:
+            pass
+
+        # 2. Inspeciona campos para identificar os que estão em branco
+        campos_iniciais = self._inspecionar_campos_linha(
+            linha=linha,
+            preco_alvo=preco_alvo,
+            prazo_alvo=prazo_alvo,
+            ncm_alvo=ncm_alvo,
+            origem_alvo=origem_alvo,
+            icms_alvo=icms_alvo
+        )
+        campos_em_branco = [k for k, v in campos_iniciais.items() if v.get('vazio')]
+        logger.info(f"      [INFO] Item {idx+1} campos em branco identificados: {', '.join(campos_em_branco) if campos_em_branco else 'nenhum explicitamente vazio'}.")
+
+        # 3. Preenche novamente os campos em branco
+        self._repreencher_campos_vazios_linha(linha, campos_iniciais, idx)
+
+        # 4. Tenta salvar o item novamente
+        try:
+            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn_salvar_item)
+            time.sleep(0.3)
+            self.driver.execute_script("arguments[0].click();", btn_salvar_item)
+            time.sleep(2.5)
+            self._verificar_e_resolver_captcha()
+        except Exception as e_re_save:
+            logger.warning(f"      ⚠️ Erro ao clicar em Salvar na nova tentativa do Item {idx+1}: {e_re_save}")
+
+        # 5. Verifica se o erro persiste ou se ainda restaram campos em branco
+        erro_persistiu = self._detectar_erro_salvar_item(linha)
+        campos_reinspecionados = self._inspecionar_campos_linha(
+            linha=linha,
+            preco_alvo=preco_alvo,
+            prazo_alvo=prazo_alvo,
+            ncm_alvo=ncm_alvo,
+            origem_alvo=origem_alvo,
+            icms_alvo=icms_alvo
+        )
+        campos_ainda_vazios = [k for k, v in campos_reinspecionados.items() if v.get('vazio')]
+
+        if erro_persistiu or campos_ainda_vazios:
+            campos_invalidos = [
+                k for k, v in campos_reinspecionados.items()
+                if v.get('vazio') or v.get('invalido_portal') or v.get('ncm_inexistente') or v.get('origem_inexistente')
+            ]
+            campos_finais = campos_ainda_vazios or campos_invalidos or campos_em_branco or ["Campos obrigatórios do item não aceitos pelo portal"]
+            motivos_curtos = self._gerar_motivos_curtos_item(
+                campos_finais=campos_finais,
+                campos_inspecionados=campos_reinspecionados,
+                preco_alvo=preco_alvo,
+                prazo_alvo=prazo_alvo,
+                ncm_alvo=ncm_alvo,
+                origem_alvo=origem_alvo,
+                icms_alvo=icms_alvo
+            )
+            if not hasattr(self, '_ultimos_motivos_curtos_itens'):
+                self._ultimos_motivos_curtos_itens = {}
+            self._ultimos_motivos_curtos_itens[idx] = motivos_curtos
+            logger.error(f"      [ERRO] Falha no salvamento do Item {idx+1}: persistiu 'Resolva todos os erros e tente outra vez'. Campo(s) vazio(s): {', '.join(campos_finais)} | Motivo: {', '.join(motivos_curtos)}")
+            
+            # Registra no evento (eventos.py)
+            self._registrar_erro_no_evento(evento, idx + 1, "Resolva todos os erros e tente outra vez", campos_finais)
+            
+            # Envia e-mail de alerta
+            self._enviar_email_erro_item(evento, idx + 1, "Resolva todos os erros e tente outra vez", campos_finais, itens_sucesso, len(itens))
+
+            return False, campos_finais
+
+        logger.info(f"      [OK] Item {idx+1} salvo com sucesso após repreenchimento dos campos em branco!")
+        return True, []
+
+    def _anexar_datasheets_no_item(self, linha, idx, caminhos_arquivos):
+        """Anexa um ou mais arquivos de datasheet diretamente dentro da linha do item clicando em
+        <button class="s-addFile buttonAsLink" type="button" aria-label="Adicionar anexo de arquivo" aria-haspopup="dialog"><span>Arquivo</span></button>.
+        """
+        if not caminhos_arquivos:
+            return
+        for path in caminhos_arquivos:
+            if not path or not os.path.exists(path):
+                continue
+            try:
+                botoes_add_file = linha.find_elements(
+                    By.CSS_SELECTOR,
+                    "button.s-addFile.buttonAsLink, button.s-addFile, button[aria-label='Adicionar anexo de arquivo']"
+                )
+                if not botoes_add_file:
+                    try:
+                        botoes_add_file = linha.find_elements(
+                            By.XPATH,
+                            ".//button[contains(@class, 's-addFile') or @aria-label='Adicionar anexo de arquivo' or .//span[normalize-space(text())='Arquivo']]"
+                        )
+                    except Exception:
+                        botoes_add_file = []
+
+                try:
+                    inputs_antes = list(self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']"))
+                except Exception:
+                    inputs_antes = []
+
+                # Intercepta clique programático em <input type="file"> para evitar abrir janela nativa do SO
+                try:
+                    self.driver.execute_script("""
+                        window.__ultimoInputFileClicado = null;
+                        if (!window.__hookInputFileInstalado) {
+                            window.__hookInputFileInstalado = true;
+                            const origClick = HTMLInputElement.prototype.click;
+                            HTMLInputElement.prototype.click = function() {
+                                if (this && this.type === 'file') {
+                                    window.__ultimoInputFileClicado = this;
+                                    return;
+                                }
+                                return origClick.apply(this, arguments);
+                            };
+                        }
+                    """)
+                except Exception:
+                    pass
+
+                if botoes_add_file:
+                    btn_add_file = botoes_add_file[0]
+                    try:
+                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn_add_file)
+                        time.sleep(0.3)
+                    except Exception:
+                        pass
+                    try:
+                        self.driver.execute_script("arguments[0].click();", btn_add_file)
+                    except Exception:
+                        try:
+                            btn_add_file.click()
+                        except Exception:
+                            pass
+                    logger.info(f"      📎 Botão 'Adicionar anexo de arquivo' (button.s-addFile) clicado no Item {idx+1}.")
+                    time.sleep(1.5)
+
+                inp_alvo = None
+
+                # 1. Verifica se o clique em button.s-addFile acionou um <input type="file"> via JS
+                try:
+                    inp_hook = self.driver.execute_script("return window.__ultimoInputFileClicado;")
+                    if inp_hook is not None and hasattr(inp_hook, 'send_keys'):
+                        inp_alvo = inp_hook
+                except Exception:
+                    pass
+
+                # 2. Procura <input type="file"> dentro da própria linha do item
+                if inp_alvo is None:
+                    try:
+                        inps_linha = linha.find_elements(By.CSS_SELECTOR, "input[type='file'][name='attachment[file]'], input[type='file']")
+                        if inps_linha:
+                            inp_alvo = inps_linha[-1]
+                    except Exception:
+                        pass
+
+                # 3. Procura <input type="file"> em modal/dialog aberto pelo botão (aria-haspopup="dialog")
+                if inp_alvo is None:
+                    try:
+                        inps_dialog = self.driver.find_elements(
+                            By.CSS_SELECTOR,
+                            "[role='dialog'] input[type='file'], .ui-dialog input[type='file'], .modal input[type='file'], .s-attachmentDialog input[type='file']"
+                        )
+                        if inps_dialog:
+                            inp_alvo = inps_dialog[-1]
+                    except Exception:
+                        pass
+
+                # 4. Procura qualquer novo <input type="file"> criado na página após clicar em button.s-addFile
+                if inp_alvo is None:
+                    try:
+                        inputs_depois = list(self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']"))
+                        novos_inputs = [i for i in inputs_depois if i not in inputs_antes]
+                        if novos_inputs:
+                            inp_alvo = novos_inputs[-1]
+                        elif inputs_depois:
+                            inp_alvo = inputs_depois[-1]
+                    except Exception:
+                        pass
+
+                if inp_alvo is not None:
+                    inp_alvo.send_keys(path)
+                    logger.info(f"      ✅ Datasheet anexado no Item {idx+1}: {os.path.basename(path)}")
+                    time.sleep(3.5)
+
+                    # Se abriu um modal de anexo com botão de confirmação/upload, clica para concluir
+                    try:
+                        botoes_confirmar_modal = self.driver.find_elements(
+                            By.CSS_SELECTOR,
+                            "[role='dialog'] button.primary, .ui-dialog button.primary, .ui-dialog .ui-dialog-buttonpane button.primary, button.s-uploadAttachment, button.s-attachFile"
+                        )
+                        for b_conf in botoes_confirmar_modal:
+                            try:
+                                if b_conf.is_displayed():
+                                    self.driver.execute_script("arguments[0].click();", b_conf)
+                                    time.sleep(1.5)
+                                    break
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                else:
+                    logger.warning(f"      ⚠️ Nenhum campo input[type='file'] encontrado para anexar Datasheet no Item {idx+1}.")
+            except Exception as e_ds_it:
+                logger.warning(f"      ⚠️ Erro ao anexar Datasheet no Item {idx+1} ({path}): {e_ds_it}")
+
     def responder_evento(self, dados):
         evento = str(dados.get('evento', '')).strip()
         lista_precos = dados.get('precos', [])
@@ -372,16 +1574,36 @@ class RespostaMixin:
         lista_ncms = dados.get('ncms', [])
         lista_origens = dados.get('origens', [])
         lista_icms = dados.get('icms', [])
+        itens = dados.get('itens', lista_precos or [])
+        datasheet_por_linha = bool(dados.get('datasheet_por_linha', False))
+        raw_ds_por_item = dados.get('datasheets_por_item', []) or []
         
         pasta_anexos = tempfile.mkdtemp(prefix='maestro-resposta-')   # apagada no fim, com ou sem erro
         falhas = []
+        motivos_curtos_evento = []
+        self._ultimos_motivos_curtos_itens = {}
+        itens_salvos_sucesso = []
         prints_itens_map = {}
+        self._email_erro_enviado = False
+        self._cliente_evento_atual = "Vale"
 
         logger.info(f"🚀 Iniciando Resposta do Evento {evento}...")
 
         try:
             ds_paths = [self._gravar_anexo(pasta_anexos, f) for f in dados.get('datasheets', [])]
             dav_paths = [self._gravar_anexo(pasta_anexos, f) for f in dados.get('davs', [])]
+            ds_por_item_paths = []
+            if datasheet_por_linha and isinstance(raw_ds_por_item, list):
+                for lista_arq_it in raw_ds_por_item:
+                    if isinstance(lista_arq_it, list):
+                        ds_por_item_paths.append([
+                            p for p in (self._gravar_anexo(pasta_anexos, f) for f in lista_arq_it) if p
+                        ])
+                    elif isinstance(lista_arq_it, dict):
+                        p = self._gravar_anexo(pasta_anexos, lista_arq_it)
+                        ds_por_item_paths.append([p] if p else [])
+                    else:
+                        ds_por_item_paths.append([])
 
             # 1. ROTA DIRETA PARA SOURCING (À PROVA DE FALHAS)
             self.sio.emit('relatar_progresso', {'mensagem': f" Acessando diretamente a página de Sourcing..."})
@@ -404,6 +1626,7 @@ class RespostaMixin:
                 logger.info(f"   ⚠️ Evento {evento} não encontrado no cliente 'Vale'. Mudando para 'Vale Base Metals'...")
                 self.sio.emit('relatar_progresso', {'mensagem': f"🔄 Evento {evento} não encontrado na Vale. Mudando cliente para Vale Base Metals..."})
                 self._selecionar_cliente_sourcing("Vale Base Metals")
+                self._cliente_evento_atual = "Vale Base Metals"
                 link_evento = self._pesquisar_link_evento(evento)
 
             # 3. Entra no evento
@@ -502,9 +1725,12 @@ class RespostaMixin:
             time.sleep(4)
 
             # 5. Anexar MÚLTIPLOS arquivos
-            logger.info(f" Injetando PDFs ({len(ds_paths)} Datasheets, {len(dav_paths)} DAVs)...")
+            logger.info(
+                f" Injetando PDFs ({len(ds_paths)} Datasheets gerais, {len(dav_paths)} DAVs, "
+                f"datasheet_por_linha={datasheet_por_linha})..."
+            )
             
-            if ds_paths:
+            if ds_paths and not datasheet_por_linha:
                 for path in ds_paths:
                     try:
                         inputs_arquivo = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file'][name='attachment[file]']")
@@ -547,8 +1773,10 @@ class RespostaMixin:
                 for idx in range(total_linhas):
                     se_tem_preco = idx < len(lista_precos) and str(lista_precos[idx]).strip() != ""
                     se_tem_prazo = idx < len(lista_prazos) and str(lista_prazos[idx]).strip() != ""
+                    ds_item_atual = ds_por_item_paths[idx] if (datasheet_por_linha and idx < len(ds_por_item_paths)) else []
+                    se_tem_ds_item = bool(ds_item_atual)
                     
-                    if se_tem_preco or se_tem_prazo:
+                    if se_tem_preco or se_tem_prazo or se_tem_ds_item:
                         linhas_atuais = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
                         if idx >= len(linhas_atuais):
                             break
@@ -563,6 +1791,9 @@ class RespostaMixin:
                             time.sleep(2) # PAUSA: Espera a animação do Coupa abrir os campos
                         except: 
                             pass 
+
+                        if se_tem_ds_item:
+                            self._anexar_datasheets_no_item(linha, idx, ds_item_atual)
                         
                         try:
                             # Função interna reescrita para evitar bloqueio por Rate Limit (Bombardeio AJAX)
@@ -585,151 +1816,69 @@ class RespostaMixin:
                                     logger.info(f"      ✅ {nome_log} preenchido com '{valor_fixo}'")
                                     time.sleep(1.5) # O FREIO MÁGICO: Dá 1.5s para o servidor processar antes de ir pro próximo imposto
 
-                            # Preencher NCM da Planilha Base (ComboBox - custom_field_9)
+                            eh_vale_metais = self._eh_linha_vale_metais(linha, self._cliente_evento_atual)
                             ncm_atual = str(lista_ncms[idx]).strip() if idx < len(lista_ncms) else ""
-                            if ncm_atual:
-                                ncm_input = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_9")
-                                if ncm_input:
-                                    ncm_input[0].clear()
-                                    time.sleep(0.3)
-                                    ncm_input[0].send_keys(ncm_atual)
-                                    time.sleep(1.5) # Mais tempo para o AJAX do dropdown do NCM carregar
-                                    ncm_input[0].send_keys(Keys.ARROW_DOWN)
-                                    time.sleep(0.5)
-                                    ncm_input[0].send_keys(Keys.ENTER)
-                                    logger.info(f"      ✅ NCM da planilha preenchido: {ncm_atual}")
-                                    time.sleep(1.5) # Freio após injetar NCM
-
-                            # Impostos Fixos
-                            preencher_cf("input.s-custom_field_8", "3", "COFINS (%)")    # Campo 8
-                            preencher_cf("input.s-custom_field_7", "0,65", "PIS (%)")    # Campo 7
-                            preencher_cf("input.s-custom_field_6", "0", "IPI (%)")       # Campo 6
-                            preencher_cf("input.s-custom_field_3", "0", "ISS (%)")       # Campo 3 (0 para material)
-
-                            # Preencher ICMS se o utilizador informou (Campo 4)
-                            icms_atual = str(lista_icms[idx]).strip() if idx < len(lista_icms) else ""
-                            if icms_atual:
-                                preencher_cf("input.s-custom_field_4", icms_atual, "ICMS (%)")
-
-                            # Preencher Origem (ComboBox - Campo 1: input.ComboBox__input.s-custom_field_1 com aria-owns="custom_field_1_..._results")
                             origem_atual = str(lista_origens[idx]).strip() if idx < len(lista_origens) else ""
-                            if origem_atual:
-                                cfs_origem = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_1")
-                                if cfs_origem:
-                                    inp_origem = cfs_origem[0]
-                                    try:
-                                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", inp_origem)
-                                        self.driver.execute_script("arguments[0].click();", inp_origem)
-                                        time.sleep(0.3)
-                                    except Exception:
-                                        pass
-                                    inp_origem.clear()
-                                    time.sleep(0.3)
-                                    inp_origem.send_keys(origem_atual)
-                                    time.sleep(1.5)
-                                    # Seleciona a opção correspondente ao número digitado na lista de resultados (aria-owns="custom_field_1_..._results")
-                                    selecionou_origem = False
-                                    try:
-                                        m_num = re.match(r'^(\d+)', origem_atual)
-                                        num_origem = m_num.group(1) if m_num else origem_atual
-                                        owns_id = inp_origem.get_attribute("aria-owns") or ""
-                                        opcoes_origem = []
-                                        if owns_id:
-                                            opcoes_origem = self.driver.find_elements(By.CSS_SELECTOR, f"#{owns_id} li.ComboBox__resultItem, #{owns_id} li")
-                                        if not opcoes_origem:
-                                            opcoes_origem = [
-                                                li for li in self.driver.find_elements(By.CSS_SELECTOR, "li.ComboBox__resultItem")
-                                                if li.is_displayed()
-                                            ]
-                                        opcao_alvo = None
-                                        for li in opcoes_origem:
-                                            txt_li = (getattr(li, 'text', '') or '').strip()
-                                            if not txt_li:
-                                                continue
-                                            if txt_li.lower() == origem_atual.lower() or re.match(rf'^{re.escape(num_origem)}(?:\b|\s|-|\.)', txt_li):
-                                                opcao_alvo = li
-                                                break
-                                        if opcao_alvo is None and opcoes_origem:
-                                            for li in opcoes_origem:
-                                                txt_li = (getattr(li, 'text', '') or '').strip()
-                                                if txt_li.startswith(num_origem):
-                                                    opcao_alvo = li
-                                                    break
-                                        if opcao_alvo is not None:
-                                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'nearest'}); arguments[0].click();", opcao_alvo)
-                                            selecionou_origem = True
-                                        else:
-                                            selecionou_js = self.driver.execute_script("""
-                                                const inp = arguments[0];
-                                                const valor = String(arguments[1] || '').trim();
-                                                const m = valor.match(/^(\\d+)/);
-                                                const numAlvo = m ? m[1] : valor;
-                                                const ownsId = inp && inp.getAttribute ? inp.getAttribute('aria-owns') : '';
-                                                let itens = [];
-                                                if (ownsId) {
-                                                    const ul = document.getElementById(ownsId);
-                                                    if (ul) itens = Array.from(ul.querySelectorAll('li.ComboBox__resultItem, li[role="option"], li'));
-                                                }
-                                                if (!itens.length) {
-                                                    itens = Array.from(document.querySelectorAll('li.ComboBox__resultItem'))
-                                                        .filter(el => el.offsetWidth > 0 || el.offsetHeight > 0);
-                                                }
-                                                const norm = s => String(s || '').trim();
-                                                let alvo = itens.find(li => {
-                                                    const t = norm(li.innerText || li.textContent);
-                                                    if (!t) return false;
-                                                    if (t.toLowerCase() === valor.toLowerCase()) return true;
-                                                    const mLi = t.match(/^(\\d+)\\b/);
-                                                    return mLi && mLi[1] === numAlvo;
-                                                });
-                                                if (!alvo && itens.length) {
-                                                    alvo = itens.find(li => norm(li.innerText || li.textContent).startsWith(numAlvo)) || itens[0];
-                                                }
-                                                if (alvo) {
-                                                    alvo.scrollIntoView({ block: 'nearest' });
-                                                    alvo.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-                                                    alvo.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-                                                    alvo.click();
-                                                    return true;
-                                                }
-                                                return false;
-                                            """, inp_origem, origem_atual)
-                                            selecionou_origem = (selecionou_js is True and bool(owns_id or opcoes_origem))
-                                    except Exception:
-                                        selecionou_origem = False
+                            icms_atual = str(lista_icms[idx]).strip() if idx < len(lista_icms) else ""
 
-                                    if not selecionou_origem:
-                                        inp_origem.send_keys(Keys.ARROW_DOWN)
-                                        time.sleep(0.4)
-                                        inp_origem.send_keys(Keys.ENTER)
-                                    logger.info(f"      ✅ Origem preenchida e selecionada: {origem_atual}")
-                                    time.sleep(1.5) # Freio após injetar Origem
+                            if eh_vale_metais:
+                                logger.info(f"      [VALE METAIS] Preenchendo campos do Item {idx+1} na sequência: NCM -> ORIGEM -> COFINS -> IPI -> ICMS -> PRAZO -> PREÇO POR UNIDADE...")
+                                # 1. NCM (ComboBox - custom_field_8)
+                                if ncm_atual:
+                                    ncm_input = linha.find_elements(By.CSS_SELECTOR, "input.ComboBox__input.s-custom_field_8") or linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_8")
+                                    if ncm_input:
+                                        self._preencher_ncm_combobox(ncm_input[0], ncm_atual)
+                                        logger.info(f"      ✅ NCM (Vale Metais - s-custom_field_8) preenchido: {ncm_atual}")
+                                        time.sleep(1.5)
+
+                                # 2. ORIGEM (ComboBox - custom_field_9)
+                                if origem_atual:
+                                    cfs_origem = linha.find_elements(By.CSS_SELECTOR, "input.ComboBox__input.s-custom_field_9") or linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_9")
+                                    if cfs_origem:
+                                        self._selecionar_origem_dropdown(linha, cfs_origem[0], origem_atual)
+                                        logger.info(f"      ✅ Origem (Vale Metais - s-custom_field_9) preenchida e selecionada: {origem_atual}")
+                                        time.sleep(1.5)
+
+                                # 3. COFINS % (custom_field_7)
+                                preencher_cf("input.s-custom_field_7", "3", "COFINS (%)")
+
+                                # 4. IPI % (custom_field_5 - obrigatório *)
+                                preencher_cf("input.s-custom_field_5", "0", "IPI (%)")
+
+                                # 5. ICMS % (custom_field_3)
+                                preencher_cf("input.s-custom_field_3", icms_atual if icms_atual else "0", "ICMS (%)")
+                            else:
+                                # Layout Vale Padrão
+                                # 1. NCM da Planilha Base (ComboBox - custom_field_9)
+                                if ncm_atual:
+                                    ncm_input = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_9")
+                                    if ncm_input:
+                                        self._preencher_ncm_combobox(ncm_input[0], ncm_atual)
+                                        logger.info(f"      ✅ NCM da planilha preenchido: {ncm_atual}")
+                                        time.sleep(1.5)
+
+                                # 2. Impostos Fixos
+                                preencher_cf("input.s-custom_field_8", "3", "COFINS (%)")    # Campo 8
+                                preencher_cf("input.s-custom_field_7", "0,65", "PIS (%)")    # Campo 7
+                                preencher_cf("input.s-custom_field_6", "0", "IPI (%)")       # Campo 6
+                                preencher_cf("input.s-custom_field_3", "0", "ISS (%)")       # Campo 3 (0 para material)
+
+                                # 3. ICMS se o utilizador informou (Campo 4)
+                                if icms_atual:
+                                    preencher_cf("input.s-custom_field_4", icms_atual, "ICMS (%)")
+
+                                # 4. Origem (ComboBox - Campo 1: input.ComboBox__input.s-custom_field_1)
+                                if origem_atual:
+                                    cfs_origem = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_1")
+                                    if cfs_origem:
+                                        self._selecionar_origem_dropdown(linha, cfs_origem[0], origem_atual)
+                                        logger.info(f"      ✅ Origem preenchida e selecionada: {origem_atual}")
+                                        time.sleep(1.5)
 
                         except Exception as e:
                             logger.warning(f"       Erro ao processar formulário extra do Coupa: {e}")
 
-                        if se_tem_preco:
-                            preco_atual = str(lista_precos[idx]).strip()
-                            try:
-                                input_preco = linha.find_element(By.CSS_SELECTOR, "input.s-price_amount_input")
-                                try:
-                                    input_preco.clear()
-                                    time.sleep(0.3)
-                                    input_preco.send_keys(preco_atual)
-                                    input_preco.send_keys(Keys.TAB)
-                                except:
-                                    self.driver.execute_script("""
-                                        arguments[0].value = arguments[1];
-                                        arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-                                        arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
-                                        arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
-                                    """, input_preco, preco_atual)
-                                logger.info(f"      ✅ Preço {preco_atual} inserido.")
-                                time.sleep(1.5) # Freio após injetar o Preço
-                            except Exception as e:
-                                falhas.append(f"item {idx+1} (preço)")
-                                logger.warning(f"      ⚠️ Falha ao inserir preço: {e}")
-
+                        # 6. PRAZO (Tempo de espera (dias) - s-lead_time_input)
                         if se_tem_prazo:
                             prazo_atual = str(lista_prazos[idx]).strip()
                             try:
@@ -763,7 +1912,34 @@ class RespostaMixin:
                                 time.sleep(1.5) # Freio após injetar o Prazo
                             except Exception as e:
                                 falhas.append(f"item {idx+1} (prazo)")
+                                m_prz = "Prazo inválido" if prazo_atual else "Faltou o prazo"
+                                motivos_curtos_evento.append(f"Item {idx+1}: {m_prz}" if total_linhas > 1 else m_prz)
                                 logger.warning(f"      ⚠️ Falha ao inserir prazo: {e}")
+
+                        # 7. PREÇO POR UNIDADE (por último - s-price_amount_input)
+                        if se_tem_preco:
+                            preco_atual = str(lista_precos[idx]).strip()
+                            try:
+                                input_preco = linha.find_element(By.CSS_SELECTOR, "input.s-price_amount_input")
+                                try:
+                                    input_preco.clear()
+                                    time.sleep(0.3)
+                                    input_preco.send_keys(preco_atual)
+                                    input_preco.send_keys(Keys.TAB)
+                                except:
+                                    self.driver.execute_script("""
+                                        arguments[0].value = arguments[1];
+                                        arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+                                        arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+                                        arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
+                                    """, input_preco, preco_atual)
+                                logger.info(f"      ✅ Preço {preco_atual} inserido.")
+                                time.sleep(1.5) # Freio após injetar o Preço
+                            except Exception as e:
+                                falhas.append(f"item {idx+1} (preço)")
+                                m_prc = "Valor errado" if preco_atual else "Faltou o valor"
+                                motivos_curtos_evento.append(f"Item {idx+1}: {m_prc}" if total_linhas > 1 else m_prc)
+                                logger.warning(f"      ⚠️ Falha ao inserir preço: {e}")
 
                         # Captura print da área dos campos preenchidos do item
                         preco_log = str(lista_precos[idx]).strip() if se_tem_preco else ""
@@ -791,6 +1967,48 @@ class RespostaMixin:
                                 logger.info(f"      💾 Item {idx+1} salvo (button.s-save).")
                                 time.sleep(2.5)
                                 self._verificar_e_resolver_captcha()
+
+                                # VERIFICAÇÃO DE ERRO DO COUPA: Resolva todos os erros e tente outra vez
+                                if self._detectar_erro_salvar_item(linha):
+                                    preco_alvo_it = str(lista_precos[idx]).strip() if idx < len(lista_precos) else ""
+                                    prazo_alvo_it = str(lista_prazos[idx]).strip() if idx < len(lista_prazos) else ""
+                                    ncm_alvo_it = str(lista_ncms[idx]).strip() if idx < len(lista_ncms) else ""
+                                    origem_alvo_it = str(lista_origens[idx]).strip() if idx < len(lista_origens) else ""
+                                    icms_alvo_it = str(lista_icms[idx]).strip() if idx < len(lista_icms) else ""
+
+                                    sucesso_retry, campos_vazios_ret = self._tratar_erro_validacao_item(
+                                        linha=linha,
+                                        idx=idx,
+                                        evento=evento,
+                                        itens=itens,
+                                        preco_alvo=preco_alvo_it,
+                                        prazo_alvo=prazo_alvo_it,
+                                        ncm_alvo=ncm_alvo_it,
+                                        origem_alvo=origem_alvo_it,
+                                        icms_alvo=icms_alvo_it,
+                                        btn_salvar_item=btn_salvar_item,
+                                        itens_sucesso=itens_salvos_sucesso
+                                    )
+                                    if not sucesso_retry:
+                                        motivos_it = (
+                                            getattr(self, '_ultimos_motivos_curtos_itens', {}).get(idx)
+                                            or self._gerar_motivos_curtos_item(
+                                                campos_finais=campos_vazios_ret,
+                                                campos_inspecionados={},
+                                                preco_alvo=preco_alvo_it,
+                                                prazo_alvo=prazo_alvo_it,
+                                                ncm_alvo=ncm_alvo_it,
+                                                origem_alvo=origem_alvo_it,
+                                                icms_alvo=icms_alvo_it
+                                            )
+                                        )
+                                        for m_it in motivos_it:
+                                            motivos_curtos_evento.append(f"Item {idx+1}: {m_it}" if total_linhas > 1 else m_it)
+                                        falhas.append(f"item {idx+1} (erro ao salvar: campo(s) vazio(s) [{', '.join(campos_vazios_ret)}] - 'Resolva todos os erros e tente outra vez')")
+                                    else:
+                                        itens_salvos_sucesso.append(idx + 1)
+                                else:
+                                    itens_salvos_sucesso.append(idx + 1)
                         except Exception as e_save_it:
                             logger.warning(f"      ⚠️ Aviso ao clicar em Salvar no Item {idx+1}: {e_save_it}")
                     else:
@@ -807,6 +2025,46 @@ class RespostaMixin:
                 self.driver.execute_script("arguments[0].click();", btn_salvar)
                 time.sleep(3)
                 self._verificar_e_resolver_captcha()
+
+                if self._detectar_erro_salvar_item():
+                    logger.warning("[AVISO] Detectado erro no salvamento final: 'Resolva todos os erros e tente outra vez'.")
+                    campos_vazios_finais_linhas = []
+                    linhas_f = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
+                    for i_f, l_f in enumerate(linhas_f):
+                        preco_f = str(lista_precos[i_f]).strip() if i_f < len(lista_precos) else ""
+                        prazo_f = str(lista_prazos[i_f]).strip() if i_f < len(lista_prazos) else ""
+                        ncm_f = str(lista_ncms[i_f]).strip() if i_f < len(lista_ncms) else ""
+                        origem_f = str(lista_origens[i_f]).strip() if i_f < len(lista_origens) else ""
+                        icms_f = str(lista_icms[i_f]).strip() if i_f < len(lista_icms) else ""
+                        ins = self._inspecionar_campos_linha(
+                            l_f,
+                            preco_alvo=preco_f,
+                            prazo_alvo=prazo_f,
+                            ncm_alvo=ncm_f,
+                            origem_alvo=origem_f,
+                            icms_alvo=icms_f
+                        )
+                        vazios_l = [
+                            k for k, v in ins.items()
+                            if v.get('vazio') or v.get('invalido_portal') or v.get('ncm_inexistente') or v.get('origem_inexistente')
+                        ]
+                        if vazios_l:
+                            campos_vazios_finais_linhas.append(f"Item {i_f+1} ({', '.join(vazios_l)})")
+                            motivos_l = self._gerar_motivos_curtos_item(
+                                campos_finais=vazios_l,
+                                campos_inspecionados=ins,
+                                preco_alvo=preco_f,
+                                prazo_alvo=prazo_f,
+                                ncm_alvo=ncm_f,
+                                origem_alvo=origem_f,
+                                icms_alvo=icms_f
+                            )
+                            for m_l in motivos_l:
+                                motivos_curtos_evento.append(f"Item {i_f+1}: {m_l}" if len(linhas_f) > 1 else m_l)
+                    campos_reportar = campos_vazios_finais_linhas or ["Campos obrigatórios do rascunho não aceitos pelo portal"]
+                    self._registrar_erro_no_evento(evento, 1, "Resolva todos os erros e tente outra vez", campos_reportar)
+                    self._enviar_email_erro_item(evento, 1, "Resolva todos os erros e tente outra vez", campos_reportar, itens_salvos_sucesso, len(itens))
+                    falhas.append(f"salvamento final recusado pelo portal ('Resolva todos os erros e tente outra vez'). Campo(s) que ficou(ram) vazio(s): {', '.join(campos_reportar)}")
             except NoSuchElementException:
                 if not salvou_algum_item:
                     raise Exception("Botão Salvar não encontrado: o rascunho não foi salvo.")
@@ -843,6 +2101,18 @@ class RespostaMixin:
 
         except Exception as e:
             logger.error(f"❌ Erro ao responder evento: {e}")
+            erro_curto = self._resumir_erro_curto(str(e), motivos_curtos_evento)
+            print_erro = self._capturar_screenshot_seguro()
+            if not getattr(self, '_email_erro_enviado', False):
+                self._notificar_erro_resposta(
+                    evento=evento,
+                    erro=f"{erro_curto} — {str(e)}" if erro_curto and erro_curto not in str(e) else str(e),
+                    etapa="Processamento da Resposta",
+                    print_bytes=print_erro,
+                    campos_vazios=motivos_curtos_evento or None,
+                    itens_sucesso=itens_salvos_sucesso,
+                    total_itens=len(dados.get('precos', [])) or 1
+                )
             # Se der erro, garante que fecha a aba extra e volta pra principal antes de liberar o próximo da fila
             try:
                 if len(self.driver.window_handles) > 1:
@@ -850,7 +2120,12 @@ class RespostaMixin:
                     self.driver.switch_to.window(self.driver.window_handles[0])
             except Exception:
                 pass
-            self.sio.emit('tarefa_concluida', {'evento': f'Evento {evento}', 'sucesso': False, 'erro': str(e)})
+            self.sio.emit('tarefa_concluida', {
+                'evento': f'Evento {evento}',
+                'sucesso': False,
+                'erro': erro_curto,
+                'erro_detalhado': str(e)
+            })
         finally:
             shutil.rmtree(pasta_anexos, ignore_errors=True)
 

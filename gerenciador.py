@@ -953,6 +953,59 @@ def forcar_troca(portal, espera_s=30):
     sio.emit('comando_direto', {'modo': 'ligar_robo', 'portal': portal})
 
 
+
+_timer_inatividade_resposta = None
+_trava_timer_inatividade = threading.Lock()
+TEMPO_ESPERA_INATIVIDADE_RESPOSTA = 600  # 10 minutos (600 segundos)
+
+def cancelar_timer_inatividade_resposta():
+    global _timer_inatividade_resposta
+    with _trava_timer_inatividade:
+        if _timer_inatividade_resposta is not None:
+            try:
+                _timer_inatividade_resposta.cancel()
+            except Exception:
+                pass
+            _timer_inatividade_resposta = None
+            logger.info("⏱️ Novo comando recebido pelo robô: timer de 10 minutos resetado.")
+
+def agendar_timer_inatividade_resposta(portal):
+    global _timer_inatividade_resposta
+    with _trava_timer_inatividade:
+        if _timer_inatividade_resposta is not None:
+            try:
+                _timer_inatividade_resposta.cancel()
+            except Exception:
+                pass
+            _timer_inatividade_resposta = None
+
+        def _fechar_navegador_inatividade():
+            global bot_coupa, bot_vale, portal_atual
+            portal_alvo = portal or portal_atual or 'coupa'
+            logger.info(f"⏳ Passaram-se 10 minutos sem novas cotações/eventos para responder. Fechando o navegador do robô {portal_alvo.upper()} por inatividade...")
+            try:
+                bot = bot_coupa if portal_alvo == 'coupa' else bot_vale
+                if bot and getattr(bot, 'driver', None) is not None:
+                    try:
+                        bot.driver.quit()
+                    except Exception as e_q:
+                        logger.warning(f"Erro ao fechar driver: {e_q}")
+                if portal_alvo == 'coupa':
+                    bot_coupa = None
+                elif portal_alvo == 'vale':
+                    bot_vale = None
+                sio.emit('sou_o_robo')
+                sio.emit('relatar_progresso', {'mensagem': f"💤 Navegador do robô {portal_alvo.upper()} fechado após 10 minutos sem novas cotações para responder."})
+                logger.info(f"✅ Navegador do robô {portal_alvo.upper()} fechado com sucesso após 10 minutos de inatividade.")
+            except Exception as e_fech:
+                logger.error(f"Erro ao fechar navegador por inatividade: {e_fech}")
+
+        logger.info(f"⏳ Cotação respondida. Aguardando 10 minutos por novas cotações antes de fechar o navegador do robô {portal.upper()}...")
+        sio.emit('relatar_progresso', {'mensagem': f"⏳ Cotação respondida. O robô {portal.upper()} aguardará 10 minutos por novas respostas antes de fechar o navegador."})
+        _timer_inatividade_resposta = threading.Timer(TEMPO_ESPERA_INATIVIDADE_RESPOSTA, _fechar_navegador_inatividade)
+        _timer_inatividade_resposta.daemon = True
+        _timer_inatividade_resposta.start()
+
 @sio.on('comando_para_robo')
 def comando_para_robo(dados):
     global bot_coupa, bot_vale, bot_findes, portal_atual, processo_me, bot_ariba, rodando_monitor_me, rodando_monitor_ariba, rodando_monitor_coupa, rodando_monitor_vale
@@ -1189,13 +1242,38 @@ WshShell.SendKeys "~"
                         if not getattr(bot, 'is_ready', False) and callable(getattr(bot, 'iniciar_e_logar', None)):
                             erro_login = (getattr(getattr(bot, 'sio', None), 'ultima_conclusao', None) or {}).get('erro') or 'Falha ao iniciar e logar no robô.'
                             logger.error(f"{portal}: não foi possível logar para responder o evento {dados.get('evento', '')}: {erro_login}")
+                            try:
+                                print_login = None
+                                if hasattr(bot, 'driver') and getattr(bot, 'driver', None):
+                                    try:
+                                        print_login = bot.driver.get_screenshot_as_png()
+                                    except Exception:
+                                        pass
+                                from bots.relatorio_email import enviar_email_erro_resposta
+                                enviar_email_erro_resposta(
+                                    nome_bot=f"{portal.capitalize()} Bot",
+                                    evento=str(dados.get('evento', '')),
+                                    erro_detalhado=f"Falha de autenticação ao tentar responder o evento: {erro_login}",
+                                    etapa="Login no Portal para Responder",
+                                    print_bytes=print_login,
+                                    config=CONFIG_GLOBAL,
+                                    destinatario_obrigatorio="vendas7@venturainformatica.com.br"
+                                )
+                            except Exception as e_login_mail:
+                                logger.warning(f"Aviso ao enviar e-mail de falha no login de resposta: {e_login_mail}")
                             sio.emit('tarefa_concluida', {
                                 'evento': f"Evento {dados.get('evento', '')}",
                                 'sucesso': False,
                                 'erro': erro_login
                             })
                             return
-                    bot.iniciar_tarefa(modo, dados)
+                    try:
+                        bot.iniciar_tarefa(modo, dados)
+                    finally:
+                        if modo == 'responder':
+                            agendar_fn = globals().get('agendar_timer_inatividade_resposta')
+                            if callable(agendar_fn):
+                                agendar_fn(portal)
 
                 if modo != 'responder' and pedido_repetido(anterior, pedido):
                     # Clique duplo ou ordem igual à última da fila (21/10: duas verificações da Vale): não roda de novo.
