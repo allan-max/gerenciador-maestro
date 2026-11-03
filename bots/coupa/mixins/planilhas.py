@@ -63,101 +63,23 @@ class PlanilhasMixin:
         except: return None
 
     def enviar_relatorio_email(self):
-        import smtplib
-        from email.mime.text import MIMEText
-        from email.mime.multipart import MIMEMultipart
-        
         if getattr(self, 'relatorio_email_stats', None) is None:
             return
 
-        remetente = self.config.get("SMTP_USER", os.environ.get("SMTP_USER", ""))
-        senha = self.config.get("SMTP_PASSWORD", os.environ.get("SMTP_PASSWORD", ""))
-        
-        emails_destino_raw = self.config.get("emails_relatorio", os.environ.get("EMAILS_RELATORIO", ""))
-        destinatarios = [e.strip() for e in emails_destino_raw.split(',') if e.strip()]
-        
-        if not destinatarios:
-            logger.warning("Nenhum email de destino configurado em emails_relatorio.")
-            return
-
-        assunto = "Relatório de Cotações - Coupa Bot"
-        
-        sem_desc_nums = ", ".join(self.relatorio_email_stats.get('sem_descricao', [])) if self.relatorio_email_stats.get('sem_descricao') else "Nenhuma"
-        falt_info_nums = ", ".join(self.relatorio_email_stats.get('faltando_info', [])) if self.relatorio_email_stats.get('faltando_info') else "Nenhuma"
-        reabertas_nums = ", ".join(self.relatorio_email_stats.get('reabertas_ou_data_mudou', [])) if self.relatorio_email_stats.get('reabertas_ou_data_mudou') else "Nenhuma"
-        sem_itens_nums = ", ".join(self.relatorio_email_stats.get('eventos_sem_itens', [])) if self.relatorio_email_stats.get('eventos_sem_itens') else "Nenhuma"
-        erros_plan_nums = ", ".join(self.relatorio_email_stats.get('erros_planilha', [])) if self.relatorio_email_stats.get('erros_planilha') else "Nenhuma"
-        
-        tempo_total = 0
-        if 'hora_inicio_extracao' in self.relatorio_email_stats:
-            tempo_total = int(time.time() - self.relatorio_email_stats['hora_inicio_extracao'])
-            minutos, segundos = divmod(tempo_total, 60)
-            tempo_str = f"{minutos}m {segundos}s"
-        else:
-            tempo_str = "Desconhecido"
-
-        erros_ext_nums = ", ".join(self.relatorio_email_stats.get('erros_extracao', [])) if self.relatorio_email_stats.get('erros_extracao') else "Nenhuma"
-        erro_critico = self.relatorio_email_stats.get('erro_critico_bot')
-
-        vendedores_str = "\n".join([f"- {num}: {vend}" for num, vend in self.relatorio_email_stats.get('vendedores_atribuidos', {}).items()])
-        if not vendedores_str: vendedores_str = "Nenhum vendedor atribuído nesta rodada."
-
-        corpo = f"""Relatório de Extração de Cotações Finalizado
-
-Tempo total de execução: {tempo_str}
-Total de cotações extraídas: {self.relatorio_email_stats.get('total_cotacoes', 0)}
-
---- VENDEDORES SUGERIDOS PELO ROBÔ ---
-{vendedores_str}
-
---- ERROS CRÍTICOS DO ROBÔ ---
-{"Nenhum erro fatal ocorreu." if not erro_critico else f"⚠️ O robô encontrou uma falha grave e precisou ser interrompido:\n{erro_critico}"}
-
---- PROBLEMAS DE EXTRAÇãO ---
-Cotações em que o robô não conseguiu acessar ou extrair ({len(self.relatorio_email_stats.get('erros_extracao', []))}):
-{erros_ext_nums}
-
-Cotações sem itens detectados ({len(self.relatorio_email_stats.get('eventos_sem_itens', []))}):
-{sem_itens_nums}
-
-Cotações que falharam ao salvar na planilha ({len(self.relatorio_email_stats.get('erros_planilha', []))}):
-{erros_plan_nums}
-
---- ALERTAS DE CONTEÚDO ---
-Cotações sem descrição ({len(self.relatorio_email_stats.get('sem_descricao', []))}):
-{sem_desc_nums}
-
-Cotações com informações faltantes (ex: Vencimento, Local) ({len(self.relatorio_email_stats.get('faltando_info', []))}):
-{falt_info_nums}
-
-Cotações reabertas ou com mudança de data ({len(self.relatorio_email_stats.get('reabertas_ou_data_mudou', []))}):
-{reabertas_nums}
-
-Atenciosamente,
-Coupa Bot
-"""
         try:
-            msg = MIMEMultipart()
-            msg['From'] = remetente
-            msg['To'] = ", ".join(destinatarios)
-            msg['Subject'] = assunto
-            msg.attach(MIMEText(corpo, 'plain'))
-
+            from bots.relatorio_email import enviar_email_relatorio
+        except ImportError:
             try:
-                server = smtplib.SMTP_SSL('email-ssl.com.br', 465, timeout=30)
-                server.login(remetente, senha)
-                server.sendmail(remetente, destinatarios, msg.as_string())
-                server.quit()
-            except Exception as e1:
-                logger.warning(f"Erro no SMTP_SSL: {e1}. Tentando STARTTLS na porta 587...")
-                server = smtplib.SMTP('email-ssl.com.br', 587, timeout=30)
-                server.starttls()
-                server.login(remetente, senha)
-                server.sendmail(remetente, destinatarios, msg.as_string())
-                server.quit()
-            logger.info(f"Email de relatrio enviado com sucesso para {', '.join(destinatarios)}")
-        except Exception as e:
-            logger.error(f"Erro ao enviar email de relatrio: {e}")
+                from relatorio_email import enviar_email_relatorio
+            except ImportError:
+                from ..relatorio_email import enviar_email_relatorio
+
+        enviar_email_relatorio(
+            nome_bot="Coupa Bot",
+            stats=self.relatorio_email_stats,
+            config=getattr(self, 'config', {}),
+            logger_inst=logger
+        )
 
     def buscar_vendedor_por_evento(self, nums_evento: list):
         arq = getattr(self, 'ARQUIVO_PLANILHA_CONTROLE', None)

@@ -1764,6 +1764,9 @@ def comando_registrar_vendedor_cotacao(dados):
     client_id = dados.get('clientId')
     vendedor = dados.get('vendedor', '').strip()
     cotacoes_raw = dados.get('cotacoes', '')
+    if str(dados.get('origem', '')).lower() == 'anmyna' or str(dados.get('planilha', '')).lower() == 'anmyna':
+        sio.emit('retorno_registro_vendedor_cotacao', {'sucesso': False, 'erro': 'A atribuição de vendedor da ANMYNA não deve alterar a planilha VALE.', 'clientId': client_id})
+        return
 
     if not vendedor or not cotacoes_raw:
         sio.emit('retorno_registro_vendedor_cotacao', {'sucesso': False, 'erro': 'Vendedor ou cotaes vazias', 'clientId': client_id})
@@ -1893,6 +1896,9 @@ def comando_registrar_vendedor_cotacao(dados):
 def comando_registrar_cotacao_manual(dados):
     client_id = dados.get('clientId')
     cotacoes = dados.get('cotacoes', [])
+    if str(dados.get('origem', '')).lower() == 'anmyna' or str(dados.get('planilha', '')).lower() == 'anmyna':
+        sio.emit('retorno_registro_cotacao_manual', {'sucesso': False, 'erro': 'Cotações ANMYNA não devem ser registradas na planilha VALE.', 'clientId': client_id})
+        return
 
     if not cotacoes:
         sio.emit('retorno_registro_cotacao_manual', {'sucesso': False, 'erro': 'Nenhuma cotação recebida', 'clientId': client_id})
@@ -1931,6 +1937,9 @@ def comando_registrar_cotacao_manual(dados):
 def comando_registrar_pedido_manual(dados):
     client_id = dados.get('clientId')
     pedidos = dados.get('pedidos', [])
+    if str(dados.get('origem', '')).lower() == 'anmyna' or str(dados.get('planilha', '')).lower() == 'anmyna':
+        sio.emit('resposta_registro_pedido_manual', {'sucesso': False, 'erro': 'A planilha ANMYNA não trabalha com pedidos.', 'clientId': client_id})
+        return
 
     if not pedidos:
         sio.emit('resposta_registro_pedido_manual', {'sucesso': False, 'erro': 'Nenhum pedido enviado.', 'clientId': client_id})

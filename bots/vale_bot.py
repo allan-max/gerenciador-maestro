@@ -44,6 +44,18 @@ from docx.shared import Pt, RGBColor, Cm
 import base64
 
 logger = logging.getLogger("ValeApp")
+
+try:
+    from bots.recomendacao_vendedor import selecionar_alvos_comparacao_item
+except ImportError:
+    from recomendacao_vendedor import selecionar_alvos_comparacao_item
+
+
+try:
+    from bots.validacao_cotacao import validar_itens_evento, contem_expected_quantity
+except ImportError:
+    from validacao_cotacao import validar_itens_evento, contem_expected_quantity
+
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 
@@ -757,101 +769,20 @@ class ValeScraper(RespostaMixin):
             self.sio.emit('tarefa_concluida', {'evento': 'Lote de Extração Vale', 'sucesso': False, 'erro': str(e)})
 
     def enviar_relatorio_email(self):
-        import smtplib
-        from email.mime.text import MIMEText
-        from email.mime.multipart import MIMEMultipart
-        
         if getattr(self, 'relatorio_email_stats', None) is None:
             return
 
-        remetente = self.config.get("SMTP_USER", os.environ.get("SMTP_USER", ""))
-        senha = self.config.get("SMTP_PASSWORD", os.environ.get("SMTP_PASSWORD", ""))
-        
-        emails_destino_raw = self.config.get("emails_relatorio", os.environ.get("EMAILS_RELATORIO", ""))
-        destinatarios = [e.strip() for e in emails_destino_raw.split(',') if e.strip()]
-        
-        if not destinatarios:
-            logger.warning("Nenhum email de destino configurado em emails_relatorio.")
-            return
-
-        assunto = "Relatório de Cotações - Vale Bot"
-        
-        sem_desc_nums = ", ".join(self.relatorio_email_stats.get('sem_descricao', [])) if self.relatorio_email_stats.get('sem_descricao') else "Nenhuma"
-        falt_info_nums = ", ".join(self.relatorio_email_stats.get('faltando_info', [])) if self.relatorio_email_stats.get('faltando_info') else "Nenhuma"
-        reabertas_nums = ", ".join(self.relatorio_email_stats.get('reabertas_ou_data_mudou', [])) if self.relatorio_email_stats.get('reabertas_ou_data_mudou') else "Nenhuma"
-        sem_itens_nums = ", ".join(self.relatorio_email_stats.get('eventos_sem_itens', [])) if self.relatorio_email_stats.get('eventos_sem_itens') else "Nenhuma"
-        erros_plan_nums = ", ".join(self.relatorio_email_stats.get('erros_planilha', [])) if self.relatorio_email_stats.get('erros_planilha') else "Nenhuma"
-        
-        tempo_total = 0
-        if 'hora_inicio_extracao' in self.relatorio_email_stats:
-            tempo_total = int(time.time() - self.relatorio_email_stats['hora_inicio_extracao'])
-            minutos, segundos = divmod(tempo_total, 60)
-            tempo_str = f"{minutos}m {segundos}s"
-        else:
-            tempo_str = "Desconhecido"
-
-        erros_ext_nums = ", ".join(self.relatorio_email_stats.get('erros_extracao', [])) if self.relatorio_email_stats.get('erros_extracao') else "Nenhuma"
-        erro_critico = self.relatorio_email_stats.get('erro_critico_bot')
-
-        vendedores_str = "\n".join([f"- {num}: {vend}" for num, vend in self.relatorio_email_stats.get('vendedores_atribuidos', {}).items()])
-        if not vendedores_str: vendedores_str = "Nenhum vendedor atribuído nesta rodada."
-
-        corpo = f"""Relatório de Extração de Cotações Finalizado
-
-Tempo total de execução: {tempo_str}
-Total de cotações extraídas: {self.relatorio_email_stats.get('total_cotacoes', 0)}
-
---- VENDEDORES SUGERIDOS PELO ROBÔ ---
-{vendedores_str}
-
---- ERROS CRÍTICOS DO ROBÔ ---
-{"Nenhum erro fatal ocorreu." if not erro_critico else f"⚠️ O robô encontrou uma falha grave e precisou ser interrompido:\n{erro_critico}"}
-
---- PROBLEMAS DE EXTRAÇÃO ---
-Cotações em que o robô não conseguiu acessar ou extrair ({len(self.relatorio_email_stats.get('erros_extracao', []))}):
-{erros_ext_nums}
-
-Cotações sem itens detectados ({len(self.relatorio_email_stats.get('eventos_sem_itens', []))}):
-{sem_itens_nums}
-
-Cotações que falharam ao salvar na planilha ({len(self.relatorio_email_stats.get('erros_planilha', []))}):
-{erros_plan_nums}
-
---- ALERTAS DE CONTEÚDO ---
-Cotações sem descrição ({len(self.relatorio_email_stats.get('sem_descricao', []))}):
-{sem_desc_nums}
-
-Cotações com informações faltantes (ex: Vencimento, Local) ({len(self.relatorio_email_stats.get('faltando_info', []))}):
-{falt_info_nums}
-
-Cotações reabertas ou com mudança de data ({len(self.relatorio_email_stats.get('reabertas_ou_data_mudou', []))}):
-{reabertas_nums}
-
-Atenciosamente,
-Vale Bot
-"""
         try:
-            msg = MIMEMultipart()
-            msg['From'] = remetente
-            msg['To'] = ", ".join(destinatarios)
-            msg['Subject'] = assunto
-            msg.attach(MIMEText(corpo, 'plain'))
+            from bots.relatorio_email import enviar_email_relatorio
+        except ImportError:
+            from relatorio_email import enviar_email_relatorio
 
-            try:
-                server = smtplib.SMTP_SSL('email-ssl.com.br', 465, timeout=10)
-                server.login(remetente, senha)
-                server.sendmail(remetente, destinatarios, msg.as_string())
-                server.quit()
-            except Exception as e1:
-                logger.warning(f"Erro no SMTP_SSL: {e1}. Tentando SMTP com STARTTLS em smtp.locaweb.com.br...")
-                server = smtplib.SMTP('smtp.locaweb.com.br', 587, timeout=10)
-                server.starttls()
-                server.login(remetente, senha)
-                server.sendmail(remetente, destinatarios, msg.as_string())
-                server.quit()
-            logger.info(f"Email de relatório enviado com sucesso para {', '.join(destinatarios)}")
-        except Exception as e:
-            logger.error(f"Erro ao enviar email de relatório: {e}")
+        enviar_email_relatorio(
+            nome_bot="Vale Bot",
+            stats=self.relatorio_email_stats,
+            config=getattr(self, 'config', {}),
+            logger_inst=logger
+        )
 
     # ============================ 4. EXTRAÃ‡ÃƒO DO EVENTO (Interno) ============================
     def _filter_desc(self, t):
@@ -995,6 +926,118 @@ Vale Bot
                 except: pass
         except: pass
         return None
+
+    def _extrair_itens_linhas(self, linhas):
+        itens = []
+        tem_anexo_geral = False
+        for i, l in enumerate(linhas):
+            try:
+                btn_expandir = l.find_element(By.CSS_SELECTOR, "img.s-expandLines, div.s-expandSidebar")
+                ActionChains(self.driver).click(btn_expandir).perform()
+                time.sleep(0.3)
+            except: pass
+            
+            try:
+                l = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")[i]
+            except: pass
+            
+            try:
+                if l.find_elements(By.CSS_SELECTOR, "li.attachment.attachmentFile.s-attachmentFile"):
+                    tem_anexo_geral = True
+            except: pass
+            
+            tit = "Item"; desc = ""; qtd = "0"; loc = "N/A"
+            
+            # 1. Título e Descrição
+            try: tit = l.find_element(By.CSS_SELECTOR, "div.s-description p.s-textField").text.strip()
+            except: pass
+            try: 
+                d = l.find_elements(By.CSS_SELECTOR, "p.s-textField")
+                if len(d) > 1: desc = self._filter_desc(d[1].text)
+            except: pass
+            
+            # Nova verificação: Texto de compra do material
+            if not desc.strip() or desc.strip().lower() == "nenhum":
+                try:
+                    dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra')]")
+                    dd = dt.find_element(By.XPATH, "following-sibling::dd")
+                    desc = self._filter_desc(dd.text)
+                except: pass
+            
+            # Nova verificação: Item Text
+            if not desc.strip() or desc.strip().lower() == "nenhum":
+                try:
+                    dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Item Text')]")
+                    dd = dt.find_element(By.XPATH, "following-sibling::dd")
+                    desc = self._filter_desc(dd.text)
+                except: pass
+
+            # Nova verificação: Material Purchase Text
+            if not desc.strip() or desc.strip().lower() == "nenhum":
+                try:
+                    dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Material Purchase Text')]")
+                    dd = dt.find_element(By.XPATH, "following-sibling::dd")
+                    desc = self._filter_desc(dd.text)
+                except: pass
+            
+            # 2. Quantidade (BLINDADO CONTRA PREÇOS "BRL")
+            try: 
+                elementos_unidade = l.find_elements(By.CSS_SELECTOR, "p.valueWithUnit")
+                for q in elementos_unidade:
+                    texto_q = q.text.strip()
+                    if "BRL" not in texto_q and "R$" not in texto_q and "USD" not in texto_q:
+                        qtd = texto_q
+                        break
+            except: pass
+            
+            # 3. Local de Entrega (BUSCA ROBUSTA POR PALAVRA-CHAVE)
+            try:
+                elemento_local = l.find_element(By.XPATH, ".//*[contains(text(), 'Local de entrega:')]")
+                loc = self.parse_local(elemento_local.text)
+            except: 
+                try: loc = self.parse_local(l.find_element(By.CSS_SELECTOR, "li.attachmentText").text)
+                except: pass
+            
+            # Nova verificação: Endereço de entrega detalhado
+            if loc == "N/A" or not loc.strip():
+                try:
+                    address_label = l.find_element(By.XPATH, ".//div[contains(@class, 's-fieldLabel') and contains(text(), 'Endereço de entrega')]")
+                    address_box = address_label.find_element(By.XPATH, "following-sibling::div[contains(@class, 'addressLines')]")
+                    
+                    linhas_end = address_box.text.split('\n')
+                    for linha in linhas_end:
+                        if re.search(r'\d{5}-\d{3}', linha):
+                            cidade_estado = re.sub(r'.*?\d{5}-\d{3}\s*', '', linha).strip()
+                            if cidade_estado:
+                                loc = re.sub(r'\s+', ' ', cidade_estado)
+                                break
+                    
+                    if loc == "N/A" or not loc.strip():
+                        loc = re.sub(r'\s+', ' ', address_box.text)
+                except: pass
+            
+            # Novas extrações solicitadas
+            texto_item_extra = ""
+            try:
+                dt_ti = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto do item') or contains(text(), 'Item Text')]")
+                dd_ti = dt_ti.find_element(By.XPATH, "following-sibling::dd")
+                txt_ti = dd_ti.text.strip()
+                if txt_ti.lower() not in ['nenhum', 'none', 'n/a', '']:
+                    texto_item_extra = txt_ti
+            except: pass
+
+            texto_compra_extra = ""
+            try:
+                dt_tc = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra') or contains(text(), 'Material Purchase Text')]")
+                dd_tc = dt_tc.find_element(By.XPATH, "following-sibling::dd")
+                txt_tc = self._filter_desc(dd_tc.text)
+                if txt_tc.lower() not in ['nenhum', 'none', 'n/a', '']:
+                    texto_compra_extra = txt_tc
+            except: pass
+            
+            logger.info(f"       Item {i+1}: {tit[:20]}... | Qtd: {qtd} | Local: {loc[:30]}...")
+            itens.append({"item_num": i+1, "titulo": tit, "descricao": desc, "quantidade": qtd, "local_entrega": loc, "texto_item": texto_item_extra, "texto_compra": texto_compra_extra})
+        return itens, tem_anexo_geral
 
     def extrair_dados_do_evento(self, url: str, num: str, ja_respondido: bool = False, is_negotiation: bool = False, re_extrair: bool = False, venc_tabela: str = ""):
         if self.evento_ja_processado(num) and not re_extrair: 
@@ -1145,23 +1188,39 @@ Vale Bot
                 except Exception: pass
 
             # ==========================================================
-            # 5. VERIFICAÃ‡ÃƒO DE SEGURANÃ‡A (0 ITENS) E RECUPERAÃ‡ÃƒO DE 2 TENTATIVAS
+# ==========================================================
+            # 5. EXTRAÇÃO E VALIDAÇÃO DOS ITENS (COM RETENTATIVAS OBRIGATÓRIAS)
+            # REGRA: Sempre que exibir 'Expected Quantity x Unit Price' ou itens não identificados,
+            # DEVE retentar extrair os itens antes de prosseguir para o próximo evento.
+            # Cada campo é validado individualmente a cada tentativa.
+            # Se persistir após múltiplas tentativas, envia e-mail de alerta e a cotação NÃO é processada com sucesso.
             # ==========================================================
-            linhas = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
-            
-            if len(linhas) == 0:
-                logger.warning("   ZERO itens na tela. Iniciando Loop de Recuperação Rigoroso...")
-                
-                for tentativa_recuperacao in range(2):
-                    logger.info(f"  Tentativa de Recuperação {tentativa_recuperacao + 1}/2...")
-                    
-                    time.sleep(4)
-                    self.garantir_logado(url)
-                    self.driver.switch_to.default_content()
-                    try: self.driver.switch_to.frame(self.driver.find_element(By.TAG_NAME, "iframe"))
-                    except: pass
+            MAX_TENTATIVAS_ITENS = 3
+            itens_validados = False
+            itens = []
+            tem_anexo_geral = False
+            ultimo_motivo_invalido = ""
+            teve_expected_quantity = False
 
-                    # 5.1 Loop Antigo (Tentar botÃµes de acesso alternativo)
+            for tentativa in range(1, MAX_TENTATIVAS_ITENS + 1):
+                logger.info(f"    🔍 Validação de Itens do evento {num} (Tentativa {tentativa}/{MAX_TENTATIVAS_ITENS})...")
+
+                if tentativa > 1:
+                    logger.warning(f"    ⏳ Recarregando página para nova tentativa de extração do evento {num}...")
+                    try:
+                        self.driver.refresh()
+                        time.sleep(6)
+                        try: self.driver.switch_to.alert.accept()
+                        except: pass
+                        self.garantir_logado(url)
+                        self.driver.switch_to.default_content()
+                        try: self.driver.switch_to.frame(self.driver.find_element(By.TAG_NAME, "iframe"))
+                        except: pass
+                    except Exception: pass
+
+                linhas = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
+
+                if len(linhas) == 0:
                     xpath_fallback = [
                         "//a[contains(@class, 'blue rollover button') and contains(@href, 'response_id')]",
                         "//a[contains(., 'VENTURA COMERCIO VAREJISTA')]",
@@ -1174,178 +1233,83 @@ Vale Bot
                     for xpath in xpath_fallback:
                         try:
                             botoes = self.driver.find_elements(By.XPATH, xpath)
-                            if botoes and (botoes[0].is_displayed() or self.driver.execute_script("return arguments[0].offsetWidth > 0;", botoes[0])): 
-                                logger.info("       Clicando em botão de acesso alternativo...")
+                            if botoes:
                                 self.driver.execute_script("arguments[0].click();", botoes[0])
                                 time.sleep(4)
                                 break
                         except: pass
-                        
+
                     self.garantir_logado(url)
                     self.driver.switch_to.default_content()
                     try: self.driver.switch_to.frame(self.driver.find_element(By.TAG_NAME, "iframe"))
                     except: pass
                     linhas = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
-                    if len(linhas) > 0: break # Achou os itens, sucesso!
 
-                    # 5.2 Se ainda não achou, FORÃ‡A O FLUXO COMPLETO DO PRETENDO (O pedido do usuário)
-                    logger.info("       Ainda 0 itens. Forçando seleção manual de 'Pretendo' -> 'Enviar' -> 'Data' -> 'Inserir Resposta'...")
+                if len(linhas) == 0:
                     try:
                         dropdowns = self.driver.find_elements(By.ID, "participation")
                         if dropdowns:
-                            logger.info("         ✅ Dropdown 'Pretendo' encontrado! Selecionando...")
-                            try:
-                                Select(dropdowns[0]).select_by_value("true")
-                            except Exception:
-                                self.driver.execute_script("arguments[0].value='true'; arguments[0].dispatchEvent(new Event('change', {bubbles: true}));", dropdowns[0])
+                            try: Select(dropdowns[0]).select_by_value("true")
+                            except: self.driver.execute_script("arguments[0].value='true'; arguments[0].dispatchEvent(new Event('change', {bubbles: true}));", dropdowns[0])
                             time.sleep(1)
-                            
                             btn_enviar = self.driver.find_elements(By.CSS_SELECTOR, "button.submitIntend")
                             if btn_enviar:
-                                logger.info("         ✅ Clicando em 'Enviar'...")
                                 self.driver.execute_script("arguments[0].click();", btn_enviar[0])
                                 time.sleep(3)
                                 try: self.driver.switch_to.alert.accept()
-                                except NoAlertPresentException: pass
-                    except Exception as e: pass
+                                except: pass
+                    except: pass
 
-                    # Pegar data se disponivel
-                    venc_recup = self.capturar_end_time_elemento()
-                    if venc_recup:
-                        vencimento = venc_recup
-                        logger.info(f"        Vencimento copiado na recuperação: {vencimento}")
-
-                    # Clicar Inserir resposta RIGOROSAMENTE AGORA (como pedido)
                     try:
-                        btn_inserir = self.driver.find_elements(By.ID, "quote_response_submit")
-                        if btn_inserir and btn_inserir[0].is_displayed():
-                            logger.info("         ðŸ“¥ Clicando em 'Inserir resposta'...")
-                            self.driver.execute_script("arguments[0].click();", btn_inserir[0])
+                        botoes_inserir = self.driver.find_elements(By.ID, "quote_response_submit")
+                        if botoes_inserir and botoes_inserir[0].is_displayed():
+                            self.driver.execute_script("arguments[0].click();", botoes_inserir[0])
                             time.sleep(4)
-                    except Exception: pass
-                    
+                    except: pass
+
                     self.garantir_logado(url)
                     self.driver.switch_to.default_content()
                     try: self.driver.switch_to.frame(self.driver.find_element(By.TAG_NAME, "iframe"))
                     except: pass
                     linhas = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
-                    if len(linhas) > 0: break # Achou os itens após o Pretendo, sucesso!
-            
-            # ðŸš¨ TRAVA DE SEGURANÃ‡A FINAL ðŸš¨
-            if len(linhas) == 0:
-                logger.error(f"    FALHA: Evento {num} carregou com 0 itens! Cancelando extração.")
+
+                if len(linhas) > 0:
+                    itens, tem_anexo = self._extrair_itens_linhas(linhas)
+                    if tem_anexo: tem_anexo_geral = True
+                else:
+                    itens = []
+
+                texto_tela = ""
+                try: texto_tela = self.driver.find_element(By.TAG_NAME, "body").text
+                except: pass
+
+                valido, motivo, tem_eq = validar_itens_evento(itens, texto_tela)
+                if tem_eq:
+                    teve_expected_quantity = True
+
+                if valido:
+                    logger.info(f"    ✅ Sucesso: {len(itens)} item(ns) identificados e validados no evento {num}!")
+                    itens_validados = True
+                    break
+                else:
+                    ultimo_motivo_invalido = motivo
+                    logger.warning(f"    ⚠️ Falha na validação do evento {num} (Tentativa {tentativa}/{MAX_TENTATIVAS_ITENS}): {motivo}")
+
+            if not itens_validados:
+                logger.error(f"   ❌ FALHA DEFINITIVA: Evento {num} persistiu sem itens válidos após {MAX_TENTATIVAS_ITENS} tentativas! ({ultimo_motivo_invalido})")
                 self.relatorio_email_stats.setdefault('eventos_sem_itens', []).append(num)
+                if teve_expected_quantity:
+                    self.relatorio_email_stats.setdefault('eventos_expected_quantity', []).append(num)
+
+                try:
+                    self.enviar_relatorio_email()
+                except Exception as e_mail:
+                    logger.warning(f"Erro ao disparar e-mail de alerta para evento {num}: {e_mail}")
+
                 self.driver.switch_to.default_content()
                 return "SKIPPED"
 
-            logger.info(f"  {len(linhas)} itens encontrados no evento {num}.")
-            
-            # ==========================================================
-            # 6. EXTRAÃ‡ÃƒO DOS ITENS (COM BLINDAGEM DE QTD E LOCAL)
-            # ==========================================================
-            itens = []
-            tem_anexo_geral = False
-            for i, l in enumerate(linhas):
-                try:
-                    btn_expandir = l.find_element(By.CSS_SELECTOR, "img.s-expandLines, div.s-expandSidebar")
-                    ActionChains(self.driver).click(btn_expandir).perform()
-                    time.sleep(0.3)
-                except: pass
-                
-                l = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")[i]
-                
-                try:
-                    if l.find_elements(By.CSS_SELECTOR, "li.attachment.attachmentFile.s-attachmentFile"):
-                        tem_anexo_geral = True
-                except: pass
-                
-                tit = "Item"; desc = ""; qtd = "0"; loc = "N/A"
-                
-                try: tit = l.find_element(By.CSS_SELECTOR, "div.s-description p.s-textField").text.strip()
-                except: pass
-                try: 
-                    d = l.find_elements(By.CSS_SELECTOR, "p.s-textField")
-                    if len(d) > 1: desc = self._filter_desc(d[1].text)
-                except: pass
-                
-                if not desc.strip() or desc.strip().lower() == "nenhum":
-                    try:
-                        dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra')]")
-                        dd = dt.find_element(By.XPATH, "following-sibling::dd")
-                        desc = self._filter_desc(dd.text)
-                    except: pass
-
-                if not desc.strip() or desc.strip().lower() == "nenhum":
-                    try:
-                        dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Item Text')]")
-                        dd = dt.find_element(By.XPATH, "following-sibling::dd")
-                        desc = self._filter_desc(dd.text)
-                    except: pass
-
-                if not desc.strip() or desc.strip().lower() == "nenhum":
-                    try:
-                        dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Material Purchase Text')]")
-                        dd = dt.find_element(By.XPATH, "following-sibling::dd")
-                        desc = self._filter_desc(dd.text)
-                    except: pass
-                
-                try: 
-                    elementos_unidade = l.find_elements(By.CSS_SELECTOR, "p.valueWithUnit")
-                    for q in elementos_unidade:
-                        texto_q = q.text.strip()
-                        if "BRL" not in texto_q and "R$" not in texto_q and "USD" not in texto_q:
-                            qtd = texto_q
-                            break
-                except: pass
-                
-                try:
-                    elemento_local = l.find_element(By.XPATH, ".//*[contains(text(), 'Local de entrega:')]")
-                    loc = self.parse_local(elemento_local.text)
-                except: 
-                    try: loc = self.parse_local(l.find_element(By.CSS_SELECTOR, "li.attachmentText").text)
-                    except: pass
-                
-                if loc == "N/A" or not loc.strip():
-                    try:
-                        address_label = l.find_element(By.XPATH, ".//div[contains(@class, 's-fieldLabel') and contains(text(), 'Endereço de entrega')]")
-                        address_box = address_label.find_element(By.XPATH, "following-sibling::div[contains(@class, 'addressLines')]")
-                        
-                        linhas_end = address_box.text.split('\n')
-                        for linha in linhas_end:
-                            if re.search(r'\d{5}-\d{3}', linha):
-                                cidade_estado = re.sub(r'.*?\d{5}-\d{3}\s*', '', linha).strip()
-                                if cidade_estado:
-                                    loc = re.sub(r'\s+', ' ', cidade_estado)
-                                    break
-                        
-                        if loc == "N/A" or not loc.strip():
-                            loc = re.sub(r'\s+', ' ', address_box.text)
-                    except: pass
-                
-                # Novas extrações solicitadas
-                texto_item_extra = ""
-                try:
-                    dt_ti = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto do item') or contains(text(), 'Item Text')]")
-                    dd_ti = dt_ti.find_element(By.XPATH, "following-sibling::dd")
-                    txt_ti = dd_ti.text.strip()
-                    if txt_ti.lower() not in ['nenhum', 'none', 'n/a', '']:
-                        texto_item_extra = txt_ti
-                except: pass
-
-                texto_compra_extra = ""
-                try:
-                    dt_tc = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra') or contains(text(), 'Material Purchase Text')]")
-                    dd_tc = dt_tc.find_element(By.XPATH, "following-sibling::dd")
-                    txt_tc = self._filter_desc(dd_tc.text)
-                    if txt_tc.lower() not in ['nenhum', 'none', 'n/a', '']:
-                        texto_compra_extra = txt_tc
-                except: pass
-                
-                logger.info(f"       Item {i+1}: {tit[:20]}... | Qtd: {qtd} | Local: {loc[:30]}...")
-                itens.append({"item_num": i+1, "titulo": tit, "descricao": desc, "quantidade": qtd, "local_entrega": loc, "texto_item": texto_item_extra, "texto_compra": texto_compra_extra})
-
-            # ==========================================================
-            # REFORÇO OBRIGATÓRIO DA DATA DE VENCIMENTO (Aba Informações)
+                        # REFORÇO OBRIGATÓRIO DA DATA DE VENCIMENTO (Aba Informações)
             # ==========================================================
             logger.info("       🔍 Confirmando a data de vencimento exata na aba de Informações...")
             try:
@@ -1795,17 +1759,16 @@ Vale Bot
                             return f"Ultimo Vendedor: {row['vendedor']} ({row['data']}) - Motivo: Similaridade em {nome_etapa} ({ratio*100:.1f}%)"
             return None
 
-        # ETAPA 2: Texto do Item
-        res = buscar_por_similaridade(texto_item_list, "Texto do Item")
-        if res: return res
-        
-        # ETAPA 3: Descricao
-        res = buscar_por_similaridade(descricao_list, "Descricao")
-        if res: return res
-        
-        # ETAPA 4: Texto de Compra
-        res = buscar_por_similaridade(texto_compra_list, "Texto de Compra")
-        if res: return res
+        # ETAPA 2: Comparação de Itens com as regras de prioridade:
+        # 1. Prioridade principal: ITEM TEXT (texto do item).
+        # 2. Exceção DESCRIÇÃO: apenas se NÃO houver ITEM TEXT no evento.
+        # 3. Exceção Marca/Modelo: se marca e modelo foram encontrados na DESCRIÇÃO na busca prévia, a DESCRIÇÃO tem prioridade.
+        # Regra Crítica: Em todos os outros casos, comparação baseada EXCLUSIVAMENTE no ITEM TEXT.
+        alvos_rotulados = selecionar_alvos_comparacao_item(item_dict, dados_ia)
+        for desc_alvo, rotulo in alvos_rotulados:
+            res = buscar_por_similaridade([desc_alvo], rotulo)
+            if res:
+                return res
         
         logger.info(f"   ? Nenhum vendedor similar encontrado no historico para este item.")
         return None
