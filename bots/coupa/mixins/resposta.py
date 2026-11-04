@@ -517,27 +517,43 @@ class RespostaMixin:
         5. ICMS %: input.s-custom_field_3
         6. PRAZO: input.s-lead_time_input
         7. PREÇO POR UNIDADE: input.s-price_amount_input
+        (Nota: no Vale Base Metals também existe input.s-custom_field_1, que é 'Preço Líquido', um input comum e NÃO ComboBox.)
+
+        No perfil VALE normal:
+        - Origem é input.ComboBox__input.s-custom_field_1 (ComboBox)
+        - COFINS é input.s-custom_field_8 (campo de texto comum, NÃO é ComboBox)
+        - NCM é input.ComboBox__input.s-custom_field_9 (ComboBox)
         """
         try:
+            cli = str(cliente_evento or getattr(self, '_cliente_evento_atual', '') or '').strip().lower()
             if linha is not None:
-                cf8_combo = linha.find_elements(By.CSS_SELECTOR, "input.ComboBox__input.s-custom_field_8")
-                if cf8_combo:
-                    return True
-                cf8 = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_8")
+                cf8 = (
+                    linha.find_elements(By.CSS_SELECTOR, "input.ComboBox__input.s-custom_field_8")
+                    or linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_8")
+                )
                 if cf8:
                     cls8 = str(cf8[0].get_attribute("class") or "")
                     role8 = str(cf8[0].get_attribute("role") or "")
                     owns8 = str(cf8[0].get_attribute("aria-owns") or "")
                     if "ComboBox__input" in cls8 or role8.lower() == "combobox" or owns8:
                         return True
-                cf5 = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_5")
-                if cf5:
+                    # Se s-custom_field_8 existe mas NÃO é ComboBox, é o campo COFINS (%) do perfil VALE normal
+                    return False
+
+                # Se s-custom_field_1 for um ComboBox, é o campo Origem do perfil VALE normal
+                cf1 = (
+                    linha.find_elements(By.CSS_SELECTOR, "input.ComboBox__input.s-custom_field_1")
+                    or linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_1")
+                )
+                if cf1:
+                    cls1 = str(cf1[0].get_attribute("class") or "")
+                    role1 = str(cf1[0].get_attribute("role") or "")
+                    owns1 = str(cf1[0].get_attribute("aria-owns") or "")
+                    if "ComboBox__input" in cls1 or role1.lower() == "combobox" or owns1:
+                        return False
+
+                if cli in ("vale base metals", "vale metais", "vale base metais"):
                     return True
-                cli = str(cliente_evento or getattr(self, '_cliente_evento_atual', '') or '').strip().lower()
-                if cli in ("vale base metals", "vale metais"):
-                    cf1 = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_1")
-                    if not cf1:
-                        return True
         except Exception:
             pass
         return False
@@ -803,16 +819,16 @@ class RespostaMixin:
             except Exception:
                 pass
 
-            # 6. Prazo (Tempo de espera (dias): s-lead_time_input)
+            # 6. Prazo (Tempo de espera (dias): s-lead_time_input / id^='lead_time_' / name^='lead_time_')
             try:
-                inp_prazo = linha.find_elements(By.CSS_SELECTOR, "input.s-lead_time_input")
-                if inp_prazo:
-                    val = self._obter_valor_input(inp_prazo[0])
+                el_prazo = self._localizar_input_prazo(linha)
+                if el_prazo is not None:
+                    val = self._obter_valor_input(el_prazo)
                     resultado['Prazo'] = {
                         'nome': 'Prazo',
-                        'elemento': inp_prazo[0],
+                        'elemento': el_prazo,
                         'vazio': (val == ""),
-                        'invalido_portal': self._campo_tem_erro_portal(inp_prazo[0]),
+                        'invalido_portal': self._campo_tem_erro_portal(el_prazo),
                         'valor_atual': val,
                         'valor_alvo': prazo_alvo,
                         'tipo': 'prazo'
@@ -961,14 +977,14 @@ class RespostaMixin:
 
             # 8. Prazo
             try:
-                inp_prazo = linha.find_elements(By.CSS_SELECTOR, "input.s-lead_time_input")
-                if inp_prazo:
-                    val = self._obter_valor_input(inp_prazo[0])
+                el_prazo = self._localizar_input_prazo(linha)
+                if el_prazo is not None:
+                    val = self._obter_valor_input(el_prazo)
                     resultado['Prazo'] = {
                         'nome': 'Prazo',
-                        'elemento': inp_prazo[0],
+                        'elemento': el_prazo,
                         'vazio': (val == ""),
-                        'invalido_portal': self._campo_tem_erro_portal(inp_prazo[0]),
+                        'invalido_portal': self._campo_tem_erro_portal(el_prazo),
                         'valor_atual': val,
                         'valor_alvo': prazo_alvo,
                         'tipo': 'prazo'
@@ -1023,7 +1039,14 @@ class RespostaMixin:
             pass
         try:
             inp_origem.clear()
-            time.sleep(0.3)
+            time.sleep(0.2)
+            if self._obter_valor_input(inp_origem):
+                try:
+                    inp_origem.send_keys(Keys.CONTROL, "a")
+                    inp_origem.send_keys(Keys.BACKSPACE)
+                    time.sleep(0.2)
+                except Exception:
+                    pass
             inp_origem.send_keys(origem_atual)
             time.sleep(1.5)
             selecionou_origem = False
@@ -1110,7 +1133,29 @@ class RespostaMixin:
         except Exception as e_ori:
             logger.warning(f"      ⚠️ Erro ao selecionar dropdown de origem: {e_ori}")
 
+    def _formatar_ncm(self, ncm_bruto):
+        """
+        Formata o NCM colocando ponto nos dois últimos pares de dois dígitos:
+        Ex: '85411019' -> '8541.10.19', '85234900' -> '8523.49.00'.
+        Se já estiver com os pontos nos dois últimos pares (ex: '8523.49.00'), mantém como está.
+        """
+        s = str(ncm_bruto or "").strip()
+        if not s:
+            return ""
+        # Remove sufixo decimal .0 caso venha como float do Excel/pandas (ex: "85411019.0")
+        s = re.sub(r'^(\d{5,})[.,]0+$', r'\1', s)
+        # Se já tiver ponto nos dois últimos pares de dois dígitos (ex: "8523.49.00"), mantém como está
+        if re.match(r'^\d+\.\d{2}\.\d{2}$', s):
+            return s
+        digitos = re.sub(r'\D', '', s)
+        if len(digitos) >= 5:
+            return f"{digitos[:-4]}.{digitos[-4:-2]}.{digitos[-2:]}"
+        return s
+
     def _preencher_ncm_combobox(self, inp_ncm, ncm_atual):
+        ncm_formatado = self._formatar_ncm(ncm_atual)
+        if not ncm_formatado:
+            return False
         try:
             self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", inp_ncm)
             self.driver.execute_script("arguments[0].click();", inp_ncm)
@@ -1118,8 +1163,15 @@ class RespostaMixin:
         except Exception:
             pass
         inp_ncm.clear()
-        time.sleep(0.3)
-        inp_ncm.send_keys(ncm_atual)
+        time.sleep(0.2)
+        if self._obter_valor_input(inp_ncm):
+            try:
+                inp_ncm.send_keys(Keys.CONTROL, "a")
+                inp_ncm.send_keys(Keys.BACKSPACE)
+                time.sleep(0.2)
+            except Exception:
+                pass
+        inp_ncm.send_keys(ncm_formatado)
         time.sleep(1.5)
         selecionou_ncm = False
         tinha_owns = False
@@ -1128,13 +1180,13 @@ class RespostaMixin:
             if owns_id:
                 tinha_owns = True
                 opcoes_ncm = self.driver.find_elements(By.CSS_SELECTOR, f"#{owns_id} li.ComboBox__resultItem, #{owns_id} li")
-                ncm_limpo = re.sub(r'\D', '', ncm_atual)
+                ncm_limpo = re.sub(r'\D', '', ncm_formatado)
                 for li in opcoes_ncm:
                     txt_li = (getattr(li, 'text', '') or '').strip()
                     if not txt_li:
                         continue
                     txt_limpo = re.sub(r'\D', '', txt_li)
-                    if ncm_atual in txt_li or (ncm_limpo and txt_limpo.startswith(ncm_limpo)):
+                    if ncm_formatado in txt_li or (ncm_limpo and txt_limpo.startswith(ncm_limpo)):
                         self.driver.execute_script("arguments[0].scrollIntoView({block: 'nearest'}); arguments[0].click();", li)
                         selecionou_ncm = True
                         break
@@ -1154,6 +1206,160 @@ class RespostaMixin:
             time.sleep(0.5)
             inp_ncm.send_keys(Keys.ENTER)
         return selecionou_ncm
+
+    def _normalizar_prazo_dias(self, prazo_bruto):
+        """Extrai o número inteiro de dias para o campo s-numberInput s-lead_time_input."""
+        s = str(prazo_bruto or "").strip()
+        if not s:
+            return ""
+        # Se vier como float do Excel/pandas (ex: "15.0" ou "15,0") ou com unidade ("15 dias")
+        m_int_dec = re.match(r'^(\d+)(?:[.,]0+)?(?:\s*(?:d|dia|dias))?$', s, re.IGNORECASE)
+        if m_int_dec:
+            return m_int_dec.group(1)
+        m_dig = re.search(r'\d+', s)
+        return m_dig.group(0) if m_dig else s
+
+    def _localizar_input_prazo(self, linha, idx=None):
+        """
+        Localiza o campo de prazo de entrega (Tempo de espera (dias)) na linha do item,
+        compatível com Vale padrão e Vale Base Metals:
+        <input type="text" id="lead_time_831667_8" class="s-numberInput s-lead_time_input" name="lead_time_831667" ...>
+        """
+        seletores = (
+            "input.s-lead_time_input",
+            "input.s-numberInput.s-lead_time_input",
+            "input[id^='lead_time_']",
+            "input[name^='lead_time_']",
+            "div.s-lead_time input.s-numberInput",
+            "div.s-lead_time input",
+        )
+        alvos_busca = []
+        if linha is not None:
+            alvos_busca.append(linha)
+        if idx is not None and hasattr(self, 'driver') and self.driver is not None:
+            try:
+                linhas_dom = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
+                if 0 <= idx < len(linhas_dom) and linhas_dom[idx] is not linha:
+                    alvos_busca.append(linhas_dom[idx])
+            except Exception:
+                pass
+
+        for escopo in alvos_busca:
+            for sel in seletores:
+                try:
+                    encontrados = escopo.find_elements(By.CSS_SELECTOR, sel)
+                    if encontrados:
+                        for c in encontrados:
+                            try:
+                                if c.is_displayed():
+                                    return c
+                            except Exception:
+                                pass
+                        return encontrados[0]
+                except Exception:
+                    continue
+
+        if linha is not None:
+            try:
+                return linha.find_element(By.CSS_SELECTOR, "input.s-lead_time_input")
+            except Exception:
+                pass
+        return None
+
+    def _preencher_prazo_item(self, linha, prazo_bruto, idx=None, el_prazo=None):
+        """
+        Preenche de forma resiliente o campo de prazo de entrega (lead_time / s-lead_time_input)
+        no Coupa / Vale / Vale Base Metals:
+        1. Rola até o campo, dá foco e clica;
+        2. Faz clear() + send_keys(prazo) + Keys.TAB diretamente no elemento;
+        3. Confere se o valor realmente permaneceu no input; caso contrário, usa ActionChains e
+           o setter nativo de HTMLInputElement (React _valueTracker + eventos input/change/blur).
+        """
+        prazo_atual = self._normalizar_prazo_dias(prazo_bruto)
+        if not prazo_atual:
+            return False
+
+        input_prazo = el_prazo if el_prazo is not None else self._localizar_input_prazo(linha, idx=idx)
+        if input_prazo is None:
+            raise NoSuchElementException("Campo de prazo (input.s-lead_time_input / lead_time) não encontrado na linha.")
+
+        # 1. Garante visibilidade e foco real no elemento (fecha dropdowns abertos de NCM/Origem)
+        try:
+            self.driver.execute_script(
+                "arguments[0].scrollIntoView({block: 'center'}); arguments[0].focus(); arguments[0].click();",
+                input_prazo
+            )
+            time.sleep(0.25)
+        except Exception:
+            pass
+
+        # 2. Preenchimento direto via WebDriver (mesmo padrão estável dos campos de impostos e preço)
+        preencheu_direto = False
+        try:
+            input_prazo.clear()
+            time.sleep(0.2)
+            input_prazo.send_keys(prazo_atual)
+            input_prazo.send_keys(Keys.TAB)
+            preencheu_direto = True
+            time.sleep(0.25)
+        except Exception:
+            preencheu_direto = False
+
+        def _valor_bate(el_ref):
+            try:
+                v_lido = str(self._obter_valor_input(el_ref) or "").strip()
+                if not v_lido:
+                    return False
+                return re.sub(r'\D', '', v_lido) == re.sub(r'\D', '', prazo_atual)
+            except Exception:
+                return False
+
+        # 3. Se o envio direto falhou ou o campo continuou vazio, tenta também via ActionChains
+        if not preencheu_direto or not _valor_bate(input_prazo):
+            novo_el = self._localizar_input_prazo(linha, idx=idx)
+            if novo_el is not None:
+                input_prazo = novo_el
+            try:
+                ActionChains(self.driver) \
+                    .move_to_element(input_prazo) \
+                    .click() \
+                    .pause(0.2) \
+                    .key_down(Keys.CONTROL).send_keys('a').key_up(Keys.CONTROL) \
+                    .send_keys(Keys.BACKSPACE) \
+                    .send_keys(prazo_atual) \
+                    .send_keys(Keys.TAB) \
+                    .perform()
+                time.sleep(0.25)
+            except Exception:
+                pass
+
+        # 4. Sincronização garantida com o estado interno do React/Coupa (s-numberInput / _valueTracker)
+        try:
+            self.driver.execute_script("""
+                const el = arguments[0];
+                const val = String(arguments[1] || '');
+                if (!el || typeof el.dispatchEvent !== 'function') return;
+                const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                if (el._valueTracker) {
+                    el._valueTracker.setValue('');
+                }
+                if (desc && desc.set) {
+                    desc.set.call(el, val);
+                } else {
+                    el.value = val;
+                }
+                if (el.setAttribute) el.setAttribute('value', val);
+                let evInput = new Event('input', { bubbles: true });
+                evInput.simulated = true;
+                el.dispatchEvent(evInput);
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                el.dispatchEvent(new Event('blur', { bubbles: true }));
+            """, input_prazo, prazo_atual)
+            time.sleep(0.25)
+        except Exception:
+            pass
+
+        return True
 
     def _repreencher_campos_vazios_linha(self, linha, campos_inspecionados, idx):
         """
@@ -1198,30 +1404,7 @@ class RespostaMixin:
                     time.sleep(1.0)
 
                 elif tipo == 'prazo':
-                    try:
-                        ActionChains(self.driver) \
-                            .move_to_element(el) \
-                            .click() \
-                            .pause(0.2) \
-                            .key_down(Keys.CONTROL).send_keys('a').key_up(Keys.CONTROL) \
-                            .send_keys(Keys.BACKSPACE) \
-                            .send_keys(valor_alvo) \
-                            .send_keys(Keys.TAB) \
-                            .perform()
-                    except Exception:
-                        pass
-                    self.driver.execute_script("""
-                        let el = arguments[0];
-                        let val = arguments[1];
-                        let lastValue = el.value;
-                        el.value = val;
-                        let event = new Event('input', { bubbles: true });
-                        event.simulated = true;
-                        if (el._valueTracker) { el._valueTracker.setValue(lastValue); }
-                        el.dispatchEvent(event);
-                        el.dispatchEvent(new Event('change', { bubbles: true }));
-                        el.dispatchEvent(new Event('blur', { bubbles: true }));
-                    """, el, valor_alvo)
+                    self._preencher_prazo_item(linha, valor_alvo, idx=idx, el_prazo=el)
                     time.sleep(1.0)
 
                 elif tipo == 'ncm':
@@ -1567,6 +1750,228 @@ class RespostaMixin:
             except Exception as e_ds_it:
                 logger.warning(f"      ⚠️ Erro ao anexar Datasheet no Item {idx+1} ({path}): {e_ds_it}")
 
+    def _marcar_containers_anexo_topo(self):
+        """
+        Identifica e marca no DOM os containers exclusivos dos campos de anexo do topo:
+        índice 0 = Datasheet geral, índice 1 = DAV geral.
+        Garante que jamais englobe campos de texto/preço/impostos ou linhas de itens (.s-itemsAndServicesLine).
+        """
+        try:
+            self.driver.execute_script("""
+                const todosInputs = Array.from(
+                    document.querySelectorAll("input[type='file'][name='attachment[file]']")
+                ).filter(inp => !inp.closest('.s-itemsAndServicesLine'));
+
+                todosInputs.forEach((inp, idx) => {
+                    inp.setAttribute('data-maestro-top-input', String(idx));
+                    let atual = inp.parentElement;
+                    let melhorContainer = inp.parentElement;
+                    while (atual && atual !== document.body) {
+                        const inputsFileDentro = atual.querySelectorAll("input[type='file'][name='attachment[file]']");
+                        const temLinhaItem = atual.querySelector('.s-itemsAndServicesLine');
+                        const temInputsDados = atual.querySelector(
+                            "input[type='text']:not([type='file']), input.s-numberInput, input.s-moneyInput, input.ComboBox__input, select, textarea"
+                        );
+                        if (inputsFileDentro.length > 1 || temLinhaItem || temInputsDados) {
+                            break;
+                        }
+                        melhorContainer = atual;
+                        atual = atual.parentElement;
+                    }
+                    if (melhorContainer) {
+                        melhorContainer.setAttribute('data-maestro-top-anexo', String(idx));
+                    }
+                });
+            """)
+        except Exception:
+            pass
+
+    def _limpar_anexos_topo_campo(self, indice_campo, nome_campo):
+        """
+        Limpa apenas os arquivos já anexados anteriormente no campo de anexo do topo (0 = Datasheet, 1 = DAV),
+        evitando acúmulo de PDFs antigos sem apagar nenhuma outra informação do evento.
+        """
+        seletores_excluir = (
+            "a.rollover_icon.delete_icon, "
+            "a.s-deleteAttachment, button.s-deleteAttachment, "
+            "a.delete_attachment, button.delete_attachment, "
+            "a.remove_attachment, button.s-removeAttachment, "
+            ".s-attachmentDelete, a.delete, button.delete, "
+            "a[aria-label*='Excluir'], button[aria-label*='Excluir'], "
+            "a[aria-label*='Remover'], button[aria-label*='Remover'], "
+            "a[aria-label*='Delete'], button[aria-label*='Delete'], "
+            "a[aria-label*='Remove'], button[aria-label*='Remove'], "
+            "a[title*='Excluir'], button[title*='Excluir'], "
+            "a[title*='Remover'], button[title*='Remover'], "
+            "a[title*='Delete'], button[title*='Delete']"
+        )
+        try:
+            self._marcar_containers_anexo_topo()
+            botoes_remover = []
+
+            # 1. Busca botões de remoção dentro do container exclusivo marcado no DOM
+            try:
+                containers = self.driver.find_elements(
+                    By.CSS_SELECTOR, f"[data-maestro-top-anexo='{indice_campo}']"
+                )
+                if containers:
+                    botoes_remover = containers[0].find_elements(By.CSS_SELECTOR, seletores_excluir)
+            except Exception:
+                botoes_remover = []
+
+            # 2. Se o input de arquivo em si expuser elementos de exclusão (ou via container pai seguro)
+            if not botoes_remover:
+                try:
+                    inputs_arquivo = self.driver.find_elements(
+                        By.CSS_SELECTOR, "input[type='file'][name='attachment[file]']"
+                    )
+                    if len(inputs_arquivo) > indice_campo:
+                        inp_ref = inputs_arquivo[indice_campo]
+                        if hasattr(inp_ref, 'find_elements'):
+                            botoes_remover = inp_ref.find_elements(By.CSS_SELECTOR, seletores_excluir)
+                except Exception:
+                    botoes_remover = []
+
+            if botoes_remover:
+                logger.info(
+                    f"   🧹 Limpando {len(botoes_remover)} anexo(s) antigo(s) do campo {nome_campo} no topo..."
+                )
+                try:
+                    self.driver.execute_script("window.confirm = function() { return true; };")
+                except Exception:
+                    pass
+
+                for btn_rem in botoes_remover:
+                    try:
+                        self.driver.execute_script(
+                            "arguments[0].scrollIntoView({block: 'center'}); arguments[0].click();",
+                            btn_rem
+                        )
+                        time.sleep(0.8)
+                        try:
+                            self.driver.switch_to.alert.accept()
+                            time.sleep(0.4)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
+            # Limpa também o valor pendente do próprio <input type="file"> do campo
+            try:
+                inputs_arquivo = self.driver.find_elements(
+                    By.CSS_SELECTOR, "input[type='file'][name='attachment[file]']"
+                )
+                if len(inputs_arquivo) > indice_campo:
+                    inp_alvo = inputs_arquivo[indice_campo]
+                    if hasattr(inp_alvo, 'clear'):
+                        try:
+                            inp_alvo.clear()
+                        except Exception:
+                            pass
+                    try:
+                        self.driver.execute_script("try { arguments[0].value = ''; } catch(e) {}", inp_alvo)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception as e_limp:
+            logger.warning(f"   ⚠️ Aviso ao limpar campo de {nome_campo} no topo: {e_limp}")
+
+    def _anexar_arquivos_topo_campo(self, indice_campo, caminhos_arquivos, nome_campo):
+        """
+        Limpa o campo do topo correspondente (somente porque o usuário anexou arquivos para ele no Maestro)
+        e anexa 1 ou mais arquivos PDF (suportando múltiplos Datasheets ou múltiplos DAVs).
+        """
+        arquivos_validos = [p for p in (caminhos_arquivos or []) if p]
+        if not arquivos_validos:
+            return
+
+        # Só limpa o campo do topo porque o usuário anexou arquivo(s) para este campo no Maestro
+        self._limpar_anexos_topo_campo(indice_campo, nome_campo)
+
+        for idx_arq, path in enumerate(arquivos_validos):
+            try:
+                self._marcar_containers_anexo_topo()
+
+                # Instala hook para impedir abertura de janela nativa do sistema operacional
+                try:
+                    self.driver.execute_script("""
+                        window.__ultimoInputFileClicado = null;
+                        if (!window.__hookInputFileInstalado) {
+                            window.__hookInputFileInstalado = true;
+                            const origClick = HTMLInputElement.prototype.click;
+                            HTMLInputElement.prototype.click = function() {
+                                if (this && this.type === 'file') {
+                                    window.__ultimoInputFileClicado = this;
+                                    return;
+                                }
+                                return origClick.apply(this, arguments);
+                            };
+                        }
+                    """)
+                except Exception:
+                    pass
+
+                inp_alvo = None
+
+                # 1. Procura no container exclusivo do campo (Datasheet=0 ou DAV=1)
+                try:
+                    containers = self.driver.find_elements(
+                        By.CSS_SELECTOR, f"[data-maestro-top-anexo='{indice_campo}']"
+                    )
+                    if containers:
+                        cont = containers[0]
+                        if idx_arq > 0:
+                            # Ao anexar o 2º, 3º... arquivo, se houver botão "Arquivo" / "Adicionar anexo" no container, clica nele
+                            botoes_add = cont.find_elements(
+                                By.CSS_SELECTOR,
+                                "button.s-addFile, a.add_attachment, button.s-addAttachment, a.s-addFile, button[aria-label*='Adicionar anexo']"
+                            )
+                            if botoes_add:
+                                try:
+                                    self.driver.execute_script("arguments[0].click();", botoes_add[0])
+                                    time.sleep(1.0)
+                                except Exception:
+                                    pass
+                        try:
+                            inp_hook = self.driver.execute_script("return window.__ultimoInputFileClicado;")
+                            if inp_hook is not None and hasattr(inp_hook, 'send_keys'):
+                                inp_alvo = inp_hook
+                        except Exception:
+                            pass
+
+                        if inp_alvo is None:
+                            inps_cont = cont.find_elements(
+                                By.CSS_SELECTOR, "input[type='file'][name='attachment[file]'], input[type='file']"
+                            )
+                            if inps_cont:
+                                inp_alvo = inps_cont[-1]
+                except Exception:
+                    pass
+
+                # 2. Fallback direto pelos inputs de anexo do topo
+                if inp_alvo is None:
+                    inputs_arquivo = self.driver.find_elements(
+                        By.CSS_SELECTOR, "input[type='file'][name='attachment[file]']"
+                    )
+                    if len(inputs_arquivo) > indice_campo:
+                        inp_alvo = inputs_arquivo[indice_campo]
+                    elif inputs_arquivo:
+                        inp_alvo = inputs_arquivo[0]
+
+                if inp_alvo is not None:
+                    # Reseta value='' antes de cada send_keys para permitir múltiplos arquivos seguidos no mesmo input
+                    if idx_arq > 0:
+                        try:
+                            self.driver.execute_script("try { arguments[0].value = ''; } catch(e) {}", inp_alvo)
+                        except Exception:
+                            pass
+                    inp_alvo.send_keys(path)
+                    logger.info(f"   ✅ {nome_campo} ({idx_arq + 1}/{len(arquivos_validos)}) anexado: {os.path.basename(path)}")
+                    time.sleep(4)
+            except Exception as e:
+                logger.warning(f" Erro ao anexar {nome_campo} ({path}): {e}")
+
     def responder_evento(self, dados):
         evento = str(dados.get('evento', '')).strip()
         lista_precos = dados.get('precos', [])
@@ -1724,31 +2129,17 @@ class RespostaMixin:
                 
             time.sleep(4)
 
-            # 5. Anexar MÚLTIPLOS arquivos
+            # 5. Anexar MÚLTIPLOS arquivos (limpando o respectivo campo do topo apenas se o usuário anexou arquivo para ele)
             logger.info(
                 f" Injetando PDFs ({len(ds_paths)} Datasheets gerais, {len(dav_paths)} DAVs, "
                 f"datasheet_por_linha={datasheet_por_linha})..."
             )
             
             if ds_paths and not datasheet_por_linha:
-                for path in ds_paths:
-                    try:
-                        inputs_arquivo = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file'][name='attachment[file]']")
-                        if len(inputs_arquivo) > 0:
-                            inputs_arquivo[0].send_keys(path)
-                            time.sleep(4) # AUMENTADO: Dá tempo da barra de upload do Coupa processar o arquivo
-                    except Exception as e:
-                        logger.warning(f" Erro ao anexar Datasheet ({path}): {e}")
+                self._anexar_arquivos_topo_campo(0, ds_paths, "Datasheet")
             
             if dav_paths:
-                for path in dav_paths:
-                    try:
-                        inputs_arquivo = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file'][name='attachment[file]']")
-                        if len(inputs_arquivo) > 1:
-                            inputs_arquivo[1].send_keys(path)
-                            time.sleep(4) # AUMENTADO: Evita que a requisição de salvamento atropele o upload
-                    except Exception as e:
-                        logger.warning(f" Erro ao anexar DAV ({path}): {e}")
+                self._anexar_arquivos_topo_campo(1, dav_paths, "DAV")
             
             time.sleep(5) 
 
@@ -1817,12 +2208,30 @@ class RespostaMixin:
                                     time.sleep(1.5) # O FREIO MÁGICO: Dá 1.5s para o servidor processar antes de ir pro próximo imposto
 
                             eh_vale_metais = self._eh_linha_vale_metais(linha, self._cliente_evento_atual)
-                            ncm_atual = str(lista_ncms[idx]).strip() if idx < len(lista_ncms) else ""
+                            ncm_atual = self._formatar_ncm(lista_ncms[idx]) if idx < len(lista_ncms) else ""
                             origem_atual = str(lista_origens[idx]).strip() if idx < len(lista_origens) else ""
                             icms_atual = str(lista_icms[idx]).strip() if idx < len(lista_icms) else ""
 
                             if eh_vale_metais:
                                 logger.info(f"      [VALE METAIS] Preenchendo campos do Item {idx+1} na sequência: NCM -> ORIGEM -> COFINS -> IPI -> ICMS -> PRAZO -> PREÇO POR UNIDADE...")
+                                # 0. No Vale Base Metals, s-custom_field_1 é 'Preço Líquido' e NÃO deve ser preenchido.
+                                # Se houver algum valor residual nele, limpa o campo.
+                                try:
+                                    cf1_preco_liq = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_1")
+                                    if cf1_preco_liq:
+                                        val_cf1 = self._obter_valor_input(cf1_preco_liq[0])
+                                        if val_cf1:
+                                            cf1_preco_liq[0].clear()
+                                            self.driver.execute_script("""
+                                                arguments[0].value = '';
+                                                arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+                                                arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+                                                arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
+                                            """, cf1_preco_liq[0])
+                                            logger.info("      🧹 Campo Preço Líquido (s-custom_field_1) limpo no Vale Metais.")
+                                except Exception:
+                                    pass
+
                                 # 1. NCM (ComboBox - custom_field_8)
                                 if ncm_atual:
                                     ncm_input = linha.find_elements(By.CSS_SELECTOR, "input.ComboBox__input.s-custom_field_8") or linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_8")
@@ -1878,36 +2287,11 @@ class RespostaMixin:
                         except Exception as e:
                             logger.warning(f"       Erro ao processar formulário extra do Coupa: {e}")
 
-                        # 6. PRAZO (Tempo de espera (dias) - s-lead_time_input)
+                        # 6. PRAZO (Tempo de espera (dias) - s-lead_time_input / lead_time)
                         if se_tem_prazo:
-                            prazo_atual = str(lista_prazos[idx]).strip()
+                            prazo_atual = self._normalizar_prazo_dias(lista_prazos[idx])
                             try:
-                                input_prazo = linha.find_element(By.CSS_SELECTOR, "input.s-lead_time_input")
-                                try:
-                                    ActionChains(self.driver) \
-                                        .move_to_element(input_prazo) \
-                                        .click() \
-                                        .pause(0.3) \
-                                        .key_down(Keys.CONTROL).send_keys('a').key_up(Keys.CONTROL) \
-                                        .send_keys(Keys.BACKSPACE) \
-                                        .send_keys(prazo_atual) \
-                                        .send_keys(Keys.TAB) \
-                                        .perform()
-                                    
-                                    time.sleep(0.5)
-                                except:
-                                    self.driver.execute_script("""
-                                        let el = arguments[0];
-                                        let val = arguments[1];
-                                        let lastValue = el.value;
-                                        el.value = val;
-                                        let event = new Event('input', { bubbles: true });
-                                        event.simulated = true;
-                                        if (el._valueTracker) { el._valueTracker.setValue(lastValue); }
-                                        el.dispatchEvent(event);
-                                        el.dispatchEvent(new Event('change', { bubbles: true }));
-                                        el.dispatchEvent(new Event('blur', { bubbles: true }));
-                                    """, input_prazo, prazo_atual)
+                                self._preencher_prazo_item(linha, prazo_atual, idx=idx)
                                 logger.info(f"      ✅ Prazo {prazo_atual} inserido.")
                                 time.sleep(1.5) # Freio após injetar o Prazo
                             except Exception as e:
@@ -1940,6 +2324,19 @@ class RespostaMixin:
                                 m_prc = "Valor errado" if preco_atual else "Faltou o valor"
                                 motivos_curtos_evento.append(f"Item {idx+1}: {m_prc}" if total_linhas > 1 else m_prc)
                                 logger.warning(f"      ⚠️ Falha ao inserir preço: {e}")
+
+                        # Verificação extra do Prazo antes de salvar (caso AJAX do Coupa tenha limpado lead_time após o preço/impostos)
+                        if se_tem_prazo:
+                            try:
+                                prazo_esperado = self._normalizar_prazo_dias(lista_prazos[idx])
+                                el_prz_check = self._localizar_input_prazo(linha, idx=idx)
+                                val_prz_atual = self._obter_valor_input(el_prz_check) if el_prz_check is not None else ""
+                                if el_prz_check is not None and re.sub(r'\D', '', str(val_prz_atual or '')) != re.sub(r'\D', '', prazo_esperado):
+                                    logger.info(f"      🔄 Reconfirmando preenchimento do Prazo ({prazo_esperado}) antes de salvar o Item {idx+1}...")
+                                    self._preencher_prazo_item(linha, prazo_esperado, idx=idx, el_prazo=el_prz_check)
+                                    time.sleep(0.8)
+                            except Exception:
+                                pass
 
                         # Captura print da área dos campos preenchidos do item
                         preco_log = str(lista_precos[idx]).strip() if se_tem_preco else ""

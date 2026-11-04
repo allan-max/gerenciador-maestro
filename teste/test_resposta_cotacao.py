@@ -338,8 +338,8 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
             })
 
         self.assertEqual(buscas_ncm_coupa, [], 'Não deve mais copiar o NCM do item no Coupa')
-        self.assertIn('84137090', ncms_digitados)
-        self.assertIn('84842000', ncms_digitados)
+        self.assertIn('8413.70.90', ncms_digitados)
+        self.assertIn('8484.20.00', ncms_digitados)
         self.assertEqual(origens_digitadas, ['0', '2'])
         self.assertEqual(
             opcoes_origem_clicadas,
@@ -498,6 +498,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
                 self.idx = idx
                 self.screenshot_as_png = f'PNG_VM_{idx}'.encode('utf-8')
                 self.campos = {
+                    'preco_liquido': InputValeMetais('PRECO_LIQUIDO', 'input.s-custom_field_1', cls='s-custom_field_1'),
                     'ncm': InputValeMetais(
                         'NCM',
                         'input.ComboBox__input.s-custom_field_8',
@@ -518,6 +519,8 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
                     'prazo': InputValeMetais('PRAZO', 'input.s-lead_time_input', cls='s-numberInput s-lead_time_input'),
                     'preco': InputValeMetais('PRECO', 'input.s-price_amount_input', cls='s-moneyInput s-price_amount_input'),
                 }
+                # Simula valor residual em Preço Líquido (s-custom_field_1) que deve ser limpo e nunca preenchido
+                self.campos['preco_liquido'].valor = '2'
 
             def find_element(self, by, value):
                 if 's-lead_time_input' in value:
@@ -527,6 +530,8 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
                 return InputValeMetais('OUTRO', value)
 
             def find_elements(self, by, value):
+                if value == 'input.s-custom_field_1':
+                    return [self.campos['preco_liquido']]
                 if value in ('input.ComboBox__input.s-custom_field_8', 'input.s-custom_field_8'):
                     return [self.campos['ncm']]
                 if value in ('input.ComboBox__input.s-custom_field_9', 'input.s-custom_field_9'):
@@ -607,7 +612,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
         self.assertEqual(
             ordem_preenchimento,
             [
-                ('NCM', 'input.ComboBox__input.s-custom_field_8', '84818099'),
+                ('NCM', 'input.ComboBox__input.s-custom_field_8', '8481.80.99'),
                 ('ORIGEM', 'input.ComboBox__input.s-custom_field_9', '0'),
                 ('COFINS', 'input.s-custom_field_7', '3'),
                 ('IPI', 'input.s-custom_field_5', '0'),
@@ -619,6 +624,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
         )
         self.assertIn('84818099 - Outras torneiras e válvulas', opcoes_clicadas)
         self.assertIn('0 - Nacional, exceto as indicadas nos códigos 3, 4, 5 e 8', opcoes_clicadas)
+        self.assertEqual(bot.driver.linhas[0].campos['preco_liquido'].valor, '')
 
         # Valida também que _inspecionar_campos_linha reconhece todos os 7 campos do Vale Metais preenchidos
         inspecao = bot._inspecionar_campos_linha(
@@ -841,6 +847,301 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
             preco_alvo='100,00', prazo_alvo='10', ncm_alvo='', origem_alvo='0',
         )
         self.assertEqual(motivos_sem_ncm, ['Faltou o NCM'])
+
+    def test_preencher_prazo_vale_base_metais_lead_time_resiliente(self):
+        import os
+        import re
+        import shutil
+        import base64
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys
+        from selenium.common.exceptions import NoSuchElementException
+        from test_fase0 import LOGGER, Relogio, carregar
+
+        raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
+        ns = carregar(
+            raiz / 'bots/coupa/mixins/resposta.py',
+            {'RespostaMixin'},
+            os=os, re=re, time=Relogio(), tempfile=tempfile, shutil=shutil, base64=base64,
+            By=By, Keys=Keys, NoSuchElementException=NoSuchElementException,
+            ActionChains=lambda d: SimpleNamespace(
+                move_to_element=lambda el: SimpleNamespace(
+                    click=lambda: SimpleNamespace(
+                        pause=lambda t: SimpleNamespace(
+                            key_down=lambda k: SimpleNamespace(
+                                send_keys=lambda s: SimpleNamespace(
+                                    key_up=lambda k2: SimpleNamespace(
+                                        send_keys=lambda b: SimpleNamespace(
+                                            send_keys=lambda v: SimpleNamespace(
+                                                send_keys=lambda tb: SimpleNamespace(perform=lambda: setattr(el, 'valor', str(v)))
+                                            )
+                                        )
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            ),
+            WebDriverWait=lambda d, t: SimpleNamespace(until=lambda cond: cond(d)),
+            EC=SimpleNamespace(presence_of_element_located=lambda loc: (lambda d: d.find_element(*loc))),
+        )
+        bot = type('Bot', (ns['RespostaMixin'],), {})()
+
+        # Normaliza valores vindos do Excel/usuário ("15.0", "15 dias", "20")
+        self.assertEqual(bot._normalizar_prazo_dias('15.0'), '15')
+        self.assertEqual(bot._normalizar_prazo_dias('15,0'), '15')
+        self.assertEqual(bot._normalizar_prazo_dias('15 dias'), '15')
+        self.assertEqual(bot._normalizar_prazo_dias('30'), '30')
+
+        # Formata o NCM colocando ponto nos dois últimos pares se ainda não tiver
+        self.assertEqual(bot._formatar_ncm('85411019'), '8541.10.19')
+        self.assertEqual(bot._formatar_ncm('85234900'), '8523.49.00')
+        self.assertEqual(bot._formatar_ncm('8523.49.00'), '8523.49.00')
+        self.assertEqual(bot._formatar_ncm('8541.10.19'), '8541.10.19')
+        self.assertEqual(bot._formatar_ncm('85411019.0'), '8541.10.19')
+
+        # Simula <input type="text" id="lead_time_831667_8" class="s-numberInput s-lead_time_input" name="lead_time_831667" value="">
+        scripts_executados = []
+
+        class InputLeadTimeValeMetais:
+            def __init__(self):
+                self.id = 'lead_time_831667_8'
+                self.name = 'lead_time_831667'
+                self.cls = 's-numberInput s-lead_time_input'
+                self.valor = ''
+                self.chamadas_send_keys = []
+
+            def is_displayed(self):
+                return True
+
+            def clear(self):
+                self.valor = ''
+
+            def send_keys(self, v):
+                s = str(v)
+                self.chamadas_send_keys.append(s)
+                if s.isdigit():
+                    self.valor = s
+
+            def get_attribute(self, attr):
+                if attr == 'value':
+                    return self.valor
+                if attr == 'id':
+                    return self.id
+                if attr == 'name':
+                    return self.name
+                if attr == 'class':
+                    return self.cls
+                return ''
+
+        inp_lt = InputLeadTimeValeMetais()
+
+        class LinhaMock:
+            def find_elements(self, by, sel):
+                if 's-lead_time_input' in sel or 'lead_time_' in sel:
+                    return [inp_lt]
+                return []
+
+        bot.driver = SimpleNamespace(
+            execute_script=lambda s, *a: scripts_executados.append((s, a)) or (a[0].valor if a and hasattr(a[0], 'valor') else ''),
+            find_elements=lambda by, sel: [],
+        )
+
+        linha = LinhaMock()
+        ok = bot._preencher_prazo_item(linha, '15.0', idx=0)
+        self.assertTrue(ok)
+        self.assertEqual(inp_lt.valor, '15')
+        self.assertIn('15', inp_lt.chamadas_send_keys)
+        self.assertTrue(
+            any('_valueTracker' in s for s, _ in scripts_executados),
+            'Deve sincronizar o _valueTracker do React/Coupa para garantir que o prazo não seja apagado ao salvar'
+        )
+
+    def test_limpa_dav_e_datasheet_no_topo_somente_quando_anexados_e_permite_multiplos_datasheets(self):
+        import os
+        import re
+        import shutil
+        import base64
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys
+        from selenium.common.exceptions import NoSuchElementException
+        from test_fase0 import LOGGER, Relogio, carregar
+
+        raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
+        ns = carregar(
+            raiz / 'bots/coupa/mixins/resposta.py',
+            {'RespostaMixin'},
+            os=os, re=re, time=Relogio(), tempfile=tempfile, shutil=shutil, base64=base64,
+            By=By, Keys=Keys, NoSuchElementException=NoSuchElementException,
+            ActionChains=lambda d: SimpleNamespace(),
+            WebDriverWait=lambda d, t: SimpleNamespace(until=lambda cond: cond(d)),
+            EC=SimpleNamespace(presence_of_element_located=lambda loc: (lambda d: d.find_element(*loc))),
+        )
+
+        excluidos_topo = []
+        arquivos_ds_enviados = []
+        arquivos_dav_enviados = []
+
+        class BotaoDeleteMock:
+            def __init__(self, campo):
+                self.campo = campo
+
+        class InputFileTopoMock:
+            def __init__(self, campo, destino_lista):
+                self.campo = campo
+                self.destino_lista = destino_lista
+                self.btn_delete = BotaoDeleteMock(campo)
+
+            def clear(self):
+                pass
+
+            def find_elements(self, by, sel):
+                if 'delete' in sel or 'Excluir' in sel:
+                    return [self.btn_delete]
+                return []
+
+            def send_keys(self, path):
+                self.destino_lista.append(os.path.basename(str(path)))
+
+        inp_ds = InputFileTopoMock('datasheet', arquivos_ds_enviados)
+        inp_dav = InputFileTopoMock('dav', arquivos_dav_enviados)
+
+        bot = type('Bot', (ns['RespostaMixin'],), {})()
+        bot.driver = SimpleNamespace(
+            switch_to=SimpleNamespace(alert=SimpleNamespace(accept=lambda: None)),
+            execute_script=lambda s, *a: (
+                excluidos_topo.append(a[0].campo)
+                if ('click()' in s and a and hasattr(a[0], 'campo'))
+                else None
+            ),
+            find_elements=lambda by, sel: (
+                [inp_ds, inp_dav] if sel == "input[type='file'][name='attachment[file]']" else []
+            ),
+        )
+
+        # Caso 1: Usuário NÃO anexou DAV no Maestro, mas anexou 2 Datasheets -> limpa só Datasheet e anexa os 2 Datasheets
+        bot._anexar_arquivos_topo_campo(0, ['/tmp/ds_parte1.pdf', '/tmp/ds_parte2.pdf'], 'Datasheet')
+        bot._anexar_arquivos_topo_campo(1, [], 'DAV')
+
+        self.assertEqual(
+            excluidos_topo,
+            ['datasheet'],
+            'Só deve limpar o campo de Datasheet no topo (pois o usuário não anexou DAV ainda)'
+        )
+        self.assertEqual(
+            arquivos_ds_enviados,
+            ['ds_parte1.pdf', 'ds_parte2.pdf'],
+            'Deve permitir anexar mais de um Datasheet no campo de Datasheet do topo'
+        )
+        self.assertEqual(arquivos_dav_enviados, [])
+
+        # Caso 2: Usuário anexou um DAV -> agora limpa o campo de DAV no topo e anexa o novo DAV
+        bot._anexar_arquivos_topo_campo(1, ['/tmp/dav_novo.pdf'], 'DAV')
+        self.assertEqual(excluidos_topo, ['datasheet', 'dav'])
+        self.assertEqual(arquivos_dav_enviados, ['dav_novo.pdf'])
+
+    def test_perfil_vale_normal_nao_confunde_com_vale_metais_mesmo_com_custom_field_5(self):
+        import os
+        import re
+        import shutil
+        import base64
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys
+        from selenium.common.exceptions import NoSuchElementException
+        from test_fase0 import LOGGER, Relogio, carregar
+
+        raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
+        ns = carregar(
+            raiz / 'bots/coupa/mixins/resposta.py',
+            {'RespostaMixin'},
+            os=os, re=re, time=Relogio(), tempfile=tempfile, shutil=shutil, base64=base64,
+            By=By, Keys=Keys, NoSuchElementException=NoSuchElementException,
+            ActionChains=lambda d: SimpleNamespace(),
+            WebDriverWait=lambda d, t: SimpleNamespace(until=lambda cond: cond(d)),
+            EC=SimpleNamespace(presence_of_element_located=lambda loc: (lambda d: d.find_element(*loc))),
+        )
+
+        preenchidos = {}
+
+        class CampoValeNormal:
+            def __init__(self, nome, cls, role='', aria_owns=''):
+                self.nome = nome
+                self.cls = cls
+                self.role = role
+                self.aria_owns = aria_owns
+                self.valor = ''
+
+            def clear(self):
+                self.valor = ''
+
+            def is_displayed(self):
+                return True
+
+            def send_keys(self, v):
+                s = str(v)
+                if s.strip() and s not in ('\ue004', '\ue015', '\ue007', '\ue009', '\ue003', 'a'):
+                    self.valor = s
+                    preenchidos[self.nome] = s
+
+            def get_attribute(self, attr):
+                if attr == 'class':
+                    return self.cls
+                if attr == 'role':
+                    return self.role
+                if attr == 'aria-owns':
+                    return self.aria_owns
+                if attr == 'value':
+                    return self.valor
+                return ''
+
+        class LinhaValeNormalComCF5:
+            def __init__(self):
+                self.campos = {
+                    'ncm_cf9': CampoValeNormal('ncm_cf9', 'ComboBox__input s-custom_field_9', role='combobox', aria_owns='cf9_res'),
+                    'cofins_cf8': CampoValeNormal('cofins_cf8', 's-custom_field_8'),
+                    'pis_cf7': CampoValeNormal('pis_cf7', 's-custom_field_7'),
+                    'ipi_cf6': CampoValeNormal('ipi_cf6', 's-custom_field_6'),
+                    'outro_cf5': CampoValeNormal('outro_cf5', 's-custom_field_5'),
+                    'icms_cf4': CampoValeNormal('icms_cf4', 's-custom_field_4'),
+                    'iss_cf3': CampoValeNormal('iss_cf3', 's-custom_field_3'),
+                    'origem_cf1': CampoValeNormal('origem_cf1', 'ComboBox__input s-custom_field_1', role='combobox', aria_owns='cf1_res'),
+                    'prazo': CampoValeNormal('prazo', 's-numberInput s-lead_time_input'),
+                    'preco': CampoValeNormal('preco', 's-moneyInput s-price_amount_input'),
+                }
+
+            def find_element(self, by, sel):
+                if 's-lead_time_input' in sel:
+                    return self.campos['prazo']
+                if 's-price_amount_input' in sel:
+                    return self.campos['preco']
+                return CampoValeNormal('outro', sel)
+
+            def find_elements(self, by, sel):
+                mapa = {
+                    'input.s-custom_field_9': [self.campos['ncm_cf9']],
+                    'input.ComboBox__input.s-custom_field_9': [self.campos['ncm_cf9']],
+                    'input.s-custom_field_8': [self.campos['cofins_cf8']],
+                    'input.ComboBox__input.s-custom_field_8': [],
+                    'input.s-custom_field_7': [self.campos['pis_cf7']],
+                    'input.s-custom_field_6': [self.campos['ipi_cf6']],
+                    'input.s-custom_field_5': [self.campos['outro_cf5']],
+                    'input.s-custom_field_4': [self.campos['icms_cf4']],
+                    'input.s-custom_field_3': [self.campos['iss_cf3']],
+                    'input.s-custom_field_1': [self.campos['origem_cf1']],
+                    'input.s-lead_time_input': [self.campos['prazo']],
+                    'input.s-price_amount_input': [self.campos['preco']],
+                    'button.s-save': [CampoValeNormal('salvar', 'button.s-save')],
+                }
+                return mapa.get(sel, [])
+
+        linha_vale = LinhaValeNormalComCF5()
+        bot = type('Bot', (ns['RespostaMixin'],), {})()
+        bot._cliente_evento_atual = 'Vale'
+        self.assertFalse(
+            bot._eh_linha_vale_metais(linha_vale, 'Vale'),
+            'No perfil VALE normal (mesmo existindo s-custom_field_5), _eh_linha_vale_metais deve retornar False'
+        )
 
 
 if __name__ == '__main__':
