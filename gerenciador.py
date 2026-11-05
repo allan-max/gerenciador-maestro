@@ -761,13 +761,14 @@ def validar_login(dados):
             dash_acc = bool(usuarios[email].get('dashboard_access', False))
             is_adm = bool(usuarios[email].get('admin', False))
             port_acc = bool(usuarios[email].get('portais_access', False)) or dash_acc or is_adm
+            plan_acc = bool(usuarios[email].get('planilha_access', False)) or is_adm
             sio.emit('resultado_login', {
                 'sucesso': True, 
                 'user': email, 
                 'isAdmin': is_adm, 
                 'isDev': bool(usuarios[email].get('dev', False)), 
                 'hasDashboardAccess': dash_acc,
-                'hasPlanilhaAccess': False,
+                'hasPlanilhaAccess': plan_acc,
                 'hasPortaisAccess': port_acc,
                 'vendedor': usuarios[email].get('vendedor', ''),
                 'clientId': cid
@@ -1498,6 +1499,7 @@ def admin_alterar_acesso_dashboard(dados):
             'acesso': acesso,
             'portais_access': bool(usuarios[email].get('portais_access', False)),
             'dashboard_access': bool(usuarios[email].get('dashboard_access', False)),
+            'planilha_access': bool(usuarios[email].get('planilha_access', False)),
             'clientId': client_id
         })
     except Exception as e:

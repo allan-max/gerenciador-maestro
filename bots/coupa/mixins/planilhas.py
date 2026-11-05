@@ -131,6 +131,14 @@ class PlanilhasMixin:
                     it['historico_match'] = match_hist
                     m = re.search(r'Ultimo Vendedor:\s*([^\(]+)', match_hist)
                     if m: vendedores_deste_evento.add(m.group(1).strip())
+                try:
+                    from bots.classificador_tecnologia import analisar_item_tecnologia
+                except ImportError:
+                    try:
+                        from classificador_tecnologia import analisar_item_tecnologia
+                    except ImportError:
+                        from ..classificador_tecnologia import analisar_item_tecnologia
+                analisar_item_tecnologia(it, txt_completo, dados_ia)
             
             if not hasattr(self, 'relatorio_email_stats'): self.relatorio_email_stats = {}
             if 'vendedores_atribuidos' not in self.relatorio_email_stats: self.relatorio_email_stats['vendedores_atribuidos'] = {}
@@ -317,6 +325,15 @@ class PlanilhasMixin:
                     if item.get('historico_match'):
                         p_hist = doc.add_paragraph()
                         p_hist.add_run(item['historico_match']).bold = True
+                    if item.get('onde_encontrar'):
+                        try:
+                            from bots.classificador_tecnologia import adicionar_paragrafo_onde_encontrar
+                        except ImportError:
+                            try:
+                                from classificador_tecnologia import adicionar_paragrafo_onde_encontrar
+                            except ImportError:
+                                from ..classificador_tecnologia import adicionar_paragrafo_onde_encontrar
+                        adicionar_paragrafo_onde_encontrar(doc, item)
             
             doc.save(os.path.join(pasta, nome))
             logger.info(f"    Doc Salvo Compactado: {nome}")

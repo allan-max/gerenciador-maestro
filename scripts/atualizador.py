@@ -25,6 +25,7 @@ import eventos         # noqa: E402
 import instancia_unica  # noqa: E402
 
 DADOS = ('CONFIG.json', '.env', 'banco_usuarios.json', 'banco_ips_bloqueados.json')   # do servidor: produção vence
+DADOS_PORTAL = ('.env', 'dados/prints_respostas.json', 'dados/erros_respostas.json')
 PORTAL_PM2 = 'Site-Maestro'
 ESTADO_VALIDO_S = 120           # gerenciador.estado mais velho que isso = gerenciador não está rodando
 AVISO_ESPERA_S = 2 * 3600       # atualização esperando robôs há mais que isso: avisa na Atividade (e continua esperando)
@@ -166,33 +167,43 @@ def novidade(repo, rodar=rodar):
 def avancar(repo, remoto, protegidos=(), rodar=rodar):
     codigo, saida = git(repo, 'merge', '--ff-only', remoto, rodar=rodar)
     if codigo:
-        presos = [f for f in protegidos if f in saida]
+        presos = [f for f in protegidos if f in saida or f.replace('/', os.sep) in saida]
         if not presos:
             raise Falha(f"git recusou atualizar {repo}: {saida.strip()[:300]}")
         for nome in presos:   # há cópia: devolvida logo depois do merge
             if git(repo, 'ls-files', '--error-unmatch', nome, rodar=rodar)[0] == 0:
                 git(repo, 'checkout', '--', nome, rodar=rodar)    # versionado e alterado no servidor
             else:
-                os.remove(os.path.join(repo, nome))               # o commit novo passou a versionar o arquivo
+                caminho_preso = os.path.join(repo, *nome.split('/'))
+                if os.path.exists(caminho_preso):
+                    os.remove(caminho_preso)                      # o commit novo passou a versionar o arquivo
         codigo, saida = git(repo, 'merge', '--ff-only', remoto, rodar=rodar)
         if codigo:
             raise Falha(f"git recusou atualizar {repo}: {saida.strip()[:300]}")
 
 
-def guardar_dados(repo):
-    destino = os.path.join(pasta(), f"backup-{datetime.now():%Y%m%d-%H%M%S}")
+def guardar_dados(repo, nomes=DADOS):
+    destino = os.path.join(pasta(), f"backup-{datetime.now():%Y%m%d-%H%M%S}-{os.path.basename(str(repo).rstrip('/\\')) or 'repo'}")
     os.makedirs(destino, exist_ok=True)
-    for nome in DADOS:
-        if os.path.exists(os.path.join(repo, nome)):
-            shutil.copy2(os.path.join(repo, nome), destino)
+    for nome in nomes:
+        origem_arq = os.path.join(repo, *nome.split('/'))
+        if os.path.exists(origem_arq):
+            dest_arq = os.path.join(destino, *nome.split('/'))
+            os.makedirs(os.path.dirname(dest_arq), exist_ok=True)
+            shutil.copy2(origem_arq, dest_arq)
     for velho in sorted(d for d in os.listdir(pasta()) if d.startswith('backup-'))[:-BACKUPS_GUARDADOS]:
         shutil.rmtree(os.path.join(pasta(), velho), ignore_errors=True)
     return destino
 
 
 def devolver_dados(repo, copia):
-    for nome in os.listdir(copia):
-        shutil.copy2(os.path.join(copia, nome), os.path.join(repo, nome))
+    for raiz_atual, _, arquivos in os.walk(copia):
+        rel_dir = os.path.relpath(raiz_atual, copia)
+        for nome in arquivos:
+            origem_arq = os.path.join(raiz_atual, nome)
+            dest_arq = os.path.join(repo, nome) if rel_dir == '.' else os.path.join(repo, rel_dir, nome)
+            os.makedirs(os.path.dirname(dest_arq), exist_ok=True)
+            shutil.copy2(origem_arq, dest_arq)
 
 
 # ---------- gerenciador ----------
@@ -307,13 +318,18 @@ def atualizar_portal(rodar=rodar, espera=time.sleep):
         return
     atual, remoto = nova
     deps = any(n.startswith('package') for n in git(repo, 'diff', '--name-only', atual, remoto, rodar=rodar)[1].split())
-    avancar(repo, remoto, (), rodar)
+    copia = guardar_dados(repo, DADOS_PORTAL)
+    try:
+        avancar(repo, remoto, DADOS_PORTAL, rodar)
+    finally:
+        devolver_dados(repo, copia)
     try:
         _instalar_e_reiniciar(repo, deps, rodar)
         if not portal_de_pe(rodar, espera):
             raise Falha("o site não ficou de pé depois do restart")
     except Falha as e:
         git(repo, 'reset', '--hard', atual, rodar=rodar)
+        devolver_dados(repo, copia)
         motivo = str(e)
         try:
             _instalar_e_reiniciar(repo, deps, rodar)

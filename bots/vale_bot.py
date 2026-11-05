@@ -1472,6 +1472,11 @@ class ValeScraper(RespostaMixin):
                     it['historico_match'] = match_hist
                     m = re.search(r'Ultimo Vendedor:\s*([^\(]+)', match_hist)
                     if m: vendedores_deste_evento.add(m.group(1).strip())
+                try:
+                    from bots.classificador_tecnologia import analisar_item_tecnologia
+                except ImportError:
+                    from classificador_tecnologia import analisar_item_tecnologia
+                analisar_item_tecnologia(it, txt_completo, dados_ia)
             
             if not hasattr(self, 'relatorio_email_stats'): self.relatorio_email_stats = {}
             if 'vendedores_atribuidos' not in self.relatorio_email_stats: self.relatorio_email_stats['vendedores_atribuidos'] = {}
@@ -1660,6 +1665,12 @@ class ValeScraper(RespostaMixin):
                     if item.get('historico_match'):
                         p_hist = doc.add_paragraph()
                         p_hist.add_run(item['historico_match']).bold = True
+                    if item.get('onde_encontrar'):
+                        try:
+                            from bots.classificador_tecnologia import adicionar_paragrafo_onde_encontrar
+                        except ImportError:
+                            from classificador_tecnologia import adicionar_paragrafo_onde_encontrar
+                        adicionar_paragrafo_onde_encontrar(doc, item)
             
             doc.save(os.path.join(pasta, nome))
             logger.info(f"   Doc Salvo Compactado: {nome}")
@@ -1844,6 +1855,21 @@ class ValeScraper(RespostaMixin):
         return None
 
     def extrair_dados_gemini(self, texto_item):
+        """Pipeline em 3 níveis: 1º Banco de Dados -> 2º Regex -> 3º Claude Structured Outputs (com fallback Gemini/Groq)."""
+        try:
+            from bots.extrator_item import extrair_dados_item_hibrido
+        except ImportError:
+            from extrator_item import extrair_dados_item_hibrido
+        pasta_db = getattr(self, 'PASTA_DATABASE', getattr(self, 'config', {}).get('pasta_database', None))
+        if not isinstance(pasta_db, str):
+            pasta_db = None
+        return extrair_dados_item_hibrido(
+            texto_item,
+            caminho_json=pasta_db,
+            fallback_ia_fn=self._extrair_dados_gemini_legado
+        )
+
+    def _extrair_dados_gemini_legado(self, texto_item):
         """Motor Principal: Usa o Gemini. Se der limite (429), joga pra Groq no resto do dia."""
         hoje = datetime.now().date()
         

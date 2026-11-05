@@ -176,6 +176,20 @@ class PortalTest(Repos):
         self.assertEqual(self.comandos.count([atualizador.PM2, 'restart']), 2)       # o novo e a volta
         self.assertEqual(self.eventos[-1][2], 'erro')
 
+    def test_dados_prints_e_erros_modificados_no_servidor_nao_bloqueiam_merge(self):
+        (self.dev / 'dados').mkdir(exist_ok=True)
+        self.commit(self.dev, {'dados/prints_respostas.json': '{}'}, 'adiciona prints')
+        self.atualizar()
+        (self.portal / 'dados' / 'prints_respostas.json').write_text('{"301283": ["print_prod"]}', encoding='utf-8')
+        novo = self.commit(self.dev, {'dados/prints_respostas.json': None, 'server.js': 'v3'}, 'remove prints do git')
+        self.atualizar()
+        self.assertEqual(git(self.portal, 'rev-parse', 'HEAD'), novo)
+        self.assertEqual((self.portal / 'server.js').read_text(encoding='utf-8'), 'v3')
+        self.assertEqual(
+            (self.portal / 'dados' / 'prints_respostas.json').read_text(encoding='utf-8'),
+            '{"301283": ["print_prod"]}'
+        )
+
 
 class ChaveTest(unittest.TestCase):
     def test_liga_desliga_pelo_painel(self):

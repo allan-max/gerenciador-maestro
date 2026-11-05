@@ -139,6 +139,24 @@ class InteligenciaMixin:
         return None
 
     def extrair_dados_gemini(self, texto_item):
+        """Pipeline em 3 níveis: 1º Banco de Dados -> 2º Regex -> 3º Claude Structured Outputs (com fallback Gemini/Groq)."""
+        try:
+            from bots.extrator_item import extrair_dados_item_hibrido
+        except ImportError:
+            try:
+                from extrator_item import extrair_dados_item_hibrido
+            except ImportError:
+                from ..extrator_item import extrair_dados_item_hibrido
+        pasta_db = getattr(self, 'PASTA_DATABASE', getattr(self, 'config', {}).get('pasta_database', None))
+        if not isinstance(pasta_db, str):
+            pasta_db = None
+        return extrair_dados_item_hibrido(
+            texto_item,
+            caminho_json=pasta_db,
+            fallback_ia_fn=self._extrair_dados_gemini_legado
+        )
+
+    def _extrair_dados_gemini_legado(self, texto_item):
         """Usa o Gemini para extrair dados. Se der limite excedido (429), joga pra Groq."""
         
         hoje = datetime.now().date()
