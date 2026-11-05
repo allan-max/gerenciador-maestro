@@ -91,7 +91,8 @@ class LoginTest(unittest.TestCase):
         emitidos = []
         bot = SimpleNamespace(driver=driver, LOGIN_URL='https://login', aguardando_clique=threading.Event(), solicitacao_parada=False,
                               coordenadas_clique={}, sio=SimpleNamespace(emit=lambda e, d: emitidos.append(d['mensagem'])))
-        with self.assertRaises(ns['LoginTimeout']) as erro, patch.object(LOGGER, 'handle') as log:
+        with self.assertRaises(ns['LoginTimeout']) as erro, patch.object(LOGGER, 'handle') as log, \
+                patch.dict('os.environ', {'PORTAL_SENHA': 'senha-de-teste'}):
             metodo['fazer_login_hibrido'](bot)
         # Novo login no meio do ciclo passa por vários "except" que engolem o erro: a parada encerra o ciclo mesmo assim
         self.assertTrue(bot.solicitacao_parada)
@@ -112,6 +113,19 @@ class LoginTest(unittest.TestCase):
                 self.assertTrue(motivo.startswith('LOGIN_TIMEOUT'))
                 self.assertEqual(log.call_count, 1)   # mesmo erro repetido não enche o log
                 self.assertLess(decorrido, 610)
+
+
+    def test_sem_portal_senha_no_env_o_login_falha_sem_abrir_o_portal(self):
+        # a senha não fica mais no código (o repositório é público): sem .env o login para com um aviso claro
+        for caminho, classe in ((ARQ_COUPA_LOGIN, 'AutenticacaoMixin'), (ARQ_VALE, 'ValeScraper')):
+            with self.subTest(caminho.name):
+                ns = carregar(caminho, {'LOGIN_TIMEOUT_S', 'CAPTCHA_TIMEOUT_S', 'LoginTimeout'}, None,
+                              time=Relogio(), os=__import__('os'), By=By, ActionChains=None)
+                metodo = carregar(caminho, {'fazer_login_hibrido'}, classe, **{k: v for k, v in ns.items() if k != '__builtins__'})
+                bot = SimpleNamespace(driver=DriverQuebrado(), LOGIN_URL='https://login', solicitacao_parada=False)
+                with patch.dict('os.environ', {'PORTAL_SENHA': ''}), self.assertRaises(RuntimeError) as erro:
+                    metodo['fazer_login_hibrido'](bot)
+                self.assertIn('PORTAL_SENHA', str(erro.exception))
 
 
 class ImportReLocalTest(unittest.TestCase):

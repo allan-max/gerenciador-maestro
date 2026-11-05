@@ -9,6 +9,7 @@ import time
 from datetime import date, datetime
 
 import ambiente
+from trava_arquivo import trava_arquivo
 
 logger = logging.getLogger(__name__)
 
@@ -169,10 +170,12 @@ class PlanilhaManager:
                 f.write(novo)
                 f.flush()
                 os.fsync(f.fileno())
-            with open(caminho, 'rb') as f:
-                if f.read() != original:
-                    raise RuntimeError('Outro serviço alterou a base; gravação cancelada. Tente novamente.')
-            os.replace(temporario, caminho)
+            # trava combinada com o cotafrete (trava_arquivo.py): ninguém grava entre a conferência e a troca
+            with trava_arquivo(caminho):
+                with open(caminho, 'rb') as f:
+                    if f.read() != original:
+                        raise RuntimeError('Outro serviço alterou a base; gravação cancelada. Tente novamente.')
+                os.replace(temporario, caminho)
             self._originais[caminho] = novo
             self._carregado[caminho] = novo
             stat = os.stat(caminho)

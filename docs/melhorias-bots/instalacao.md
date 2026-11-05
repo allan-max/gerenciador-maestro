@@ -47,6 +47,7 @@ Vários merges dentro dos mesmos 5 minutos são aplicados juntos, numa única ro
 
 Avisos:
 - Não sobrescreva nem apague `CONFIG.json`, `.env`, `banco_usuarios.json`, `banco_ips_bloqueados.json`, a pasta `logs\` ou `gerenciador.instancia`.
+- O `.env` de produção precisa ter `PORTAL_SENHA` (login dos robôs Coupa e Vale): a senha não fica mais no código. Ver `docs/env-e-contas.md`.
 - No `.env` de produção, o `URL_SERVIDOR` **não** pode apontar para `localhost` ou `127.0.0.1`, e o `MAESTRO_TESTE` **não** pode estar definido. Nesses casos o gerenciador entra em modo teste e grava em `base_teste\`.
 
 ## 4. Configurações (dashboard2 → Configurações, gravadas no `CONFIG.json`)

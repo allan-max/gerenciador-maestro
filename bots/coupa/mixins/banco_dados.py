@@ -133,24 +133,24 @@ class Banco_dadosMixin:
                 "vencimento_tabela": vencimento_tabela
             }
             
-            with open(self.ARQUIVO_JSONL, 'a', encoding='utf-8') as f: 
-                f.write(json.dumps(novo) + '\n')
+            ambiente.acrescentar_jsonl(self.ARQUIVO_JSONL, novo)
             self.db_eventos[numero] = novo
         except Exception: logger.exception(f'Falha ao gravar o evento {numero} no JSONL')
 
     def atualizar_status_respondido_jsonl(self, numero: str):
         # Relê antes de regravar: senão eventos removidos pelo gerenciador ("não encontradas") voltam
-        self.carregar_banco_dados()
-        if numero not in self.db_eventos: return
-        self.db_eventos[numero]['respondido'] = True
-        try:
-            ambiente.exigir_trava(self.ARQUIVO_JSONL)
-            with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=os.path.dirname(self.ARQUIVO_JSONL),
-                                             prefix='maestro-', suffix='.tmp', delete=False) as f:
-                for _, d in self.db_eventos.items(): f.write(json.dumps(d) + '\n')
-            os.replace(f.name, self.ARQUIVO_JSONL)
-        except Exception:
-            logger.exception(f'Falha ao marcar {numero} como respondido no JSONL')
+        with ambiente.TRAVA_JSONL:   # nenhuma linha nova entra entre a releitura e a troca do arquivo
+            self.carregar_banco_dados()
+            if numero not in self.db_eventos: return
+            self.db_eventos[numero]['respondido'] = True
+            try:
+                ambiente.exigir_trava(self.ARQUIVO_JSONL)
+                with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=os.path.dirname(self.ARQUIVO_JSONL),
+                                                 prefix='maestro-', suffix='.tmp', delete=False) as f:
+                    for _, d in self.db_eventos.items(): f.write(json.dumps(d) + '\n')
+                os.replace(f.name, self.ARQUIVO_JSONL)
+            except Exception:
+                logger.exception(f'Falha ao marcar {numero} como respondido no JSONL')
 
     def evento_ja_processado(self, num: str) -> bool: return num in self.db_eventos
 

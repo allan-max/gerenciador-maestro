@@ -38,3 +38,12 @@ Os 14 testes passaram localmente e também usando arquivos descartáveis no comp
 ## Limites
 
 Outros serviços que gravam diretamente no mesmo JSON ainda podem danificá-lo. A verificação anterior à troca não é um bloqueio distribuído e não elimina todas as corridas entre processos. Cotações e pedidos são arquivos independentes, sem transação conjunta. Não há teste de desligamento do servidor, queda de energia ou perda do SMB no momento exato da substituição.
+
+## Trava com o cotafrete (21/10/2026)
+
+A conferência final e o `os.replace` de `planilha_manager._salvar_arquivo` rodam sob `trava_arquivo.py`: arquivo
+`<JSON>.lock` na mesma pasta da base, 1 byte travado na posição 0 (`msvcrt.locking`), nova tentativa a cada 0,2 s
+por até 30 s. É o mesmo formato do serviço de NF do cotafrete (`cruzar_nf/arquivo_pedidos.py`, `trava_pedidos`), que
+grava a NF no `PEDIDOS.json` por fora. Se a trava não sai em 30 s, nada é gravado e a operação devolve erro. Os
+arquivos `.lock` ficam na pasta `Banco-de-dados` e nunca devem ser apagados com o sistema rodando. Mudar o formato aqui
+exige mudar lá também.
