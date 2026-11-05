@@ -1,0 +1,19 @@
+# Normaliza quebras de linha: o repositório guarda tudo em LF.
+# No Windows o git converte para CRLF ao baixar (core.autocrlf), sem gerar conflito.
+* text=auto
+
+# Scripts do Windows precisam de CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binários: nunca mexer
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.xlsx binary
+*.xls binary
+*.pdf binary
+*.zip binary
+*.ps1 text eol=crlf
