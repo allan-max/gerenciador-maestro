@@ -69,6 +69,7 @@ class AutenticacaoMixin:
         ops.add_argument("--no-sandbox")
         ops.add_argument("--disable-dev-shm-usage")
         ops.add_argument("--window-size=1920,1080")
+        ops.add_argument("--remote-allow-origins=*")
         ops.add_argument("--start-maximized")
         anterior = getattr(self, 'driver', None)
         if anterior is not None:   # religar o mesmo robô: fecha o navegador dele antes de abrir outro
@@ -84,7 +85,10 @@ class AutenticacaoMixin:
 
     def fazer_login_hibrido(self):
         logger.info(" Iniciando Login Inteligente. Acompanhe pelo Painel Web!")
-        self.driver.get(self.LOGIN_URL)
+        try:
+            self.driver.get(self.LOGIN_URL)
+        except Exception as e_nav:
+            logger.warning(f"Aviso ao carregar URL de login inicial: {e_nav}")
         ultimo_print = 0
         ultimo_clique_botao = 0 # <--- NOVO: Controle para evitar flood de cliques
         inicio_captcha = None
@@ -94,33 +98,45 @@ class AutenticacaoMixin:
         senha = os.environ.get("PORTAL_SENHA") or ""   # só do .env: senha no código fica pública no GitHub
         if not senha:
             raise RuntimeError("PORTAL_SENHA não configurada no .env do gerenciador.")
+        captcha_pendente = False
 
         while True:
-            time.sleep(0.3)
+            if not captcha_pendente:
+                time.sleep(0.3)
+            else:
+                time.sleep(0.001)
             if time.time() > limite_login:
                 self.solicitacao_parada = True   # quem engolir o erro ainda para o ciclo no próximo evento
                 self.motivo_abandono = 'Login não concluído (captcha ou portal fora do ar).'
                 raise LoginTimeout(f"LOGIN_TIMEOUT: login não concluiu em {LOGIN_TIMEOUT_S // 60} min")
-            if len(self.driver.window_handles) > 1:
-                self.driver.switch_to.window(self.driver.window_handles[-1])
-
-            if "sessions/new" not in self.driver.current_url:
-                # ANTES DE COMEMORAR: Verifica se o portal jogou o botão de confirmação na tela
-                try:
-                    botoes_finais = self.driver.find_elements(By.ID, "login_button")
-                    if botoes_finais and botoes_finais[0].is_displayed():
-                        logger.info(" Botão 'Log in' azul de confirmação detectado! Clicando...")
-                        self.driver.execute_script("arguments[0].click();", botoes_finais[0])
-                        time.sleep(4)
-                        continue # Volta para o loop para garantir que avançou de vez
-                except: 
-                    pass
-                
-                # Se não tem botão na tela, aí sim o login acabou!
-                logger.info("✅ Login concluído com sucesso!")
-                return True
-
             try:
+                if len(self.driver.window_handles) > 1:
+                    self.driver.switch_to.window(self.driver.window_handles[-1])
+
+                url_atual = self.driver.current_url or ""
+                if url_atual.startswith("data:") or url_atual == "about:blank":
+                    self.driver.get(self.LOGIN_URL)
+                    time.sleep(1)
+                    continue
+
+                if "sessions/new" not in url_atual:
+                    # ANTES DE COMEMORAR: Verifica se o portal jogou o botão de confirmação na tela
+                    try:
+                        botoes_finais = self.driver.find_elements(By.ID, "login_button")
+                        if botoes_finais and botoes_finais[0].is_displayed():
+                            logger.info(" Botão 'Log in' azul de confirmação detectado! Clicando...")
+                            self.driver.execute_script("arguments[0].click();", botoes_finais[0])
+                            time.sleep(4)
+                            continue # Volta para o loop para garantir que avançou de vez
+                    except: 
+                        pass
+                    
+                    # Se não tem botão na tela, aí sim o login acabou!
+                    if inicio_captcha is not None:
+                        self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
+                    logger.info("✅ Login concluído com sucesso!")
+                    return True
+
                 self.driver.switch_to.default_content()
 
                 frames = self.driver.find_elements(By.TAG_NAME, "iframe")
@@ -153,36 +169,105 @@ class AutenticacaoMixin:
                 if captcha_pendente:
                     if inicio_captcha is None:
                         inicio_captcha = time.time()
+                        self.sio.emit('relatar_progresso', {'mensagem': '⚠️ Captcha detectado no login! Resolva na tela principal de Minhas Cotações...'})
                     elif time.time() - inicio_captcha > CAPTCHA_TIMEOUT_S:
                         self.sio.emit('relatar_progresso_coupa', {'mensagem': '❌ CAPTCHA EXPIRADO! (5 min sem solução). Fechando o robô.'})
                         raise LoginTimeout("CAPTCHA_TIMEOUT")
                         
                     elemento_alvo = iframe_desafio if (iframe_desafio and iframe_desafio.is_displayed()) else iframe_caixinha
                     if elemento_alvo:
-                        tempo_atual = time.time()
-                        if tempo_atual - ultimo_print > 2.0: # Manda print a cada 2 segundos em vez de metralhar
-                            try:
-                                png_bytes = elemento_alvo.screenshot_as_png
-                                from PIL import Image
-                                from io import BytesIO
-                                import base64
-                                img = Image.open(BytesIO(png_bytes))
-                                buffer = BytesIO()
-                                img.save(buffer, format="PNG")
-                                png_b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-                                self.sio.emit('imagem_captcha_do_robo', {'imagem': png_b64})
-                            except Exception as e:
-                                pass
-                            ultimo_print = tempo_atual
+                        ultimo_check_dom = time.time()
+                        rect = None
+                        try:
+                            rect = elemento_alvo.rect
+                        except Exception:
+                            rect = None
 
-                        if self.aguardando_clique.is_set():
-                            px = self.coordenadas_clique['x'] - (elemento_alvo.size['width'] / 2)
-                            py = self.coordenadas_clique['y'] - (elemento_alvo.size['height'] / 2)
-                            ActionChains(self.driver).move_to_element_with_offset(elemento_alvo, px, py).click().perform()
-                            self.aguardando_clique.clear()
+                        while True:
+                            # 1. Clique ultrarrápido (CDP direto em 5ms, sem pausar o stream)
+                            if self.aguardando_clique.is_set():
+                                try:
+                                    cx = int(self.coordenadas_clique.get('x', 0))
+                                    cy = int(self.coordenadas_clique.get('y', 0))
+                                    clique_ok = False
+                                    if rect and hasattr(self.driver, 'execute_cdp_cmd'):
+                                        try:
+                                            abs_x = int(rect['x'] + cx)
+                                            abs_y = int(rect['y'] + cy)
+                                            self.driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': abs_x, 'y': abs_y})
+                                            self.driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': abs_x, 'y': abs_y, 'button': 'left', 'clickCount': 1})
+                                            self.driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': abs_x, 'y': abs_y, 'button': 'left', 'clickCount': 1})
+                                            clique_ok = True
+                                        except Exception:
+                                            clique_ok = False
+                                    if not clique_ok:
+                                        larg = (rect or {}).get('width') or elemento_alvo.size['width']
+                                        alt = (rect or {}).get('height') or elemento_alvo.size['height']
+                                        px = cx - (larg / 2)
+                                        py = cy - (alt / 2)
+                                        ActionChains(self.driver).move_to_element_with_offset(elemento_alvo, px, py).click().perform()
+                                except Exception:
+                                    pass
+                                finally:
+                                    self.aguardando_clique.clear()
+
+                            # 2. Captura contínua e suave a 60 FPS (CDP JPEG acelerado com fallback)
+                            tempo_atual = time.time()
+                            if tempo_atual - ultimo_print >= (1.0 / 60.0): # 60 FPS (60 quadros por segundo)
+                                capturado = False
+                                if rect and hasattr(self.driver, 'execute_cdp_cmd'):
+                                    try:
+                                        clip = {
+                                            'x': float(rect.get('x', 0)),
+                                            'y': float(rect.get('y', 0)),
+                                            'width': float(rect.get('width', 400)),
+                                            'height': float(rect.get('height', 580)),
+                                            'scale': 1.0
+                                        }
+                                        res = self.driver.execute_cdp_cmd('Page.captureScreenshot', {
+                                            'format': 'jpeg',
+                                            'quality': 75,
+                                            'clip': clip
+                                        })
+                                        b64 = res.get('data')
+                                        if b64:
+                                            self.sio.emit('imagem_captcha_do_robo', {'imagem': f"data:image/jpeg;base64,{b64}"})
+                                            capturado = True
+                                    except Exception:
+                                        capturado = False
+                                if not capturado:
+                                    try:
+                                        png_bytes = getattr(elemento_alvo, 'screenshot_as_png', None)
+                                        if png_bytes:
+                                            png_b64 = base64.b64encode(png_bytes).decode('utf-8')
+                                            self.sio.emit('imagem_captcha_do_robo', {'imagem': png_b64})
+                                    except Exception:
+                                        pass
+                                ultimo_print = tempo_atual
+
+                            # 3. Timeout check
+                            if time.time() - inicio_captcha > CAPTCHA_TIMEOUT_S:
+                                self.sio.emit('relatar_progresso_coupa', {'mensagem': '❌ CAPTCHA EXPIRADO! (5 min sem solução). Fechando o robô.'})
+                                raise LoginTimeout("CAPTCHA_TIMEOUT")
+
+                            # 4. Verificação periódica do DOM a cada 400ms (não a cada frame de 16ms!)
+                            if time.time() - ultimo_check_dom >= 0.4:
+                                ultimo_check_dom = time.time()
+                                try:
+                                    if not elemento_alvo.is_displayed():
+                                        break
+                                    if elemento_alvo is iframe_caixinha:
+                                        break
+                                    rect = elemento_alvo.rect
+                                except Exception:
+                                    break
+
+                            time.sleep(0.001)
                     continue 
 
                 if captcha_ficou_verde:
+                    if inicio_captcha is not None:
+                        self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
                     # MUDANÇA: Adicionado o id='login_button' na varredura
                     botoes = self.driver.find_elements(By.XPATH, "//button[@type='submit' or @id='login-submit' or @id='login_button']")
                     for btn in botoes:
@@ -387,8 +472,8 @@ class AutenticacaoMixin:
                 logger.info("✅ Login concluído! Robô pronto para receber tarefas da nuvem.")
                 
                 # ðŸ‘‡ ESTA É A LINHA MãGICA QUE DESTRANCA O BOTãO NO SITE NA HORA ðŸ‘‡
-                self.sio.emit('tarefa_concluida', {'evento': 'Login do Robo', 'sucesso': True})
                 self.is_ready = True
+                self.sio.emit('tarefa_concluida', {'evento': 'Login do Robo', 'sucesso': True})
             else:
                 self.sio.emit('tarefa_concluida', {'evento': 'Login do Robo', 'sucesso': False, 'erro': 'Falha na validação do login.'})
         except Exception as e:

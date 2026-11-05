@@ -7,7 +7,7 @@ from pathlib import Path
 
 from test_fase0 import carregar
 
-RAIZ = Path(__file__).parent
+RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
 
 
 class ConfigComBomTest(unittest.TestCase):

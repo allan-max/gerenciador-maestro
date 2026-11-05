@@ -203,15 +203,21 @@ def _python():
 
 
 def rodar_testes(repo, rodar=rodar):
-    codigo, saida = rodar([_python(), '-m', 'unittest', 'discover', '-p', 'test_*.py'], repo)
+    pasta_testes = 'teste' if os.path.isdir(os.path.join(repo, 'teste')) else '.'
+    codigo, saida = rodar([_python(), '-m', 'unittest', 'discover', '-s', pasta_testes, '-p', 'test_*.py'], repo)
     return codigo == 0, (saida.strip().splitlines() or [''])[-1]
+
+
+def _pythonw():
+    candidato = os.path.join(os.path.dirname(sys.executable), 'pythonw.exe' if os.name == 'nt' else 'python3')
+    return candidato if os.path.exists(candidato) else _python()
 
 
 def reiniciar_gerenciador(pid, rodar=rodar):
     if pid:
         rodar(['taskkill', '/PID', str(pid), '/T', '/F'], RAIZ, timeout=60)   # /T leva junto o Chrome dos robôs
         time.sleep(5)
-    subprocess.Popen(f'start "Maestro Gerenciador" "{_python()}" gerenciador.py', cwd=RAIZ, shell=True)
+    subprocess.Popen(f'start "" "{_pythonw()}" gerenciador.py', cwd=RAIZ, shell=True)
 
 
 def atualizar_gerenciador(rodar=rodar, testar=None, reiniciar=reiniciar_gerenciador):

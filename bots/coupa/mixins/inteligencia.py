@@ -1,3 +1,11 @@
+try:
+    from bots.recomendacao_vendedor import selecionar_alvos_comparacao_item
+except ImportError:
+    try:
+        from recomendacao_vendedor import selecionar_alvos_comparacao_item
+    except ImportError:
+        from ..recomendacao_vendedor import selecionar_alvos_comparacao_item
+
 # -*- coding: utf-8 -*-
 #!/usr/bin/env python3
 """
@@ -116,17 +124,16 @@ class InteligenciaMixin:
                             return f"Ultimo Vendedor: {row['vendedor']} ({row['data']}) - Motivo: Similaridade em {nome_etapa} ({ratio*100:.1f}%)"
             return None
 
-        # ETAPA 2: Texto do Item
-        res = buscar_por_similaridade(texto_item_list, "Texto do Item")
-        if res: return res
-        
-        # ETAPA 3: Descricao
-        res = buscar_por_similaridade(descricao_list, "Descricao")
-        if res: return res
-        
-        # ETAPA 4: Texto de Compra
-        res = buscar_por_similaridade(texto_compra_list, "Texto de Compra")
-        if res: return res
+        # ETAPA 2: Comparação de Itens com as regras de prioridade:
+        # 1. Prioridade principal: ITEM TEXT (texto do item).
+        # 2. Exceção DESCRIÇÃO: apenas se NÃO houver ITEM TEXT no evento.
+        # 3. Exceção Marca/Modelo: se marca e modelo foram encontrados na DESCRIÇÃO na busca prévia, a DESCRIÇÃO tem prioridade.
+        # Regra Crítica: Em todos os outros casos, comparação baseada EXCLUSIVAMENTE no ITEM TEXT.
+        alvos_rotulados = selecionar_alvos_comparacao_item(item_dict, dados_ia)
+        for desc_alvo, rotulo in alvos_rotulados:
+            res = buscar_por_similaridade([desc_alvo], rotulo)
+            if res:
+                return res
         
         logger.info(f"   ? Nenhum vendedor similar encontrado no historico para este item.")
         return None

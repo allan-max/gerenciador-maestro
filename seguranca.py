@@ -71,14 +71,6 @@ def eventos_findes(texto):
     return eventos
 
 
-def texto_vbs(texto):
-    """Conteúdo seguro entre aspas num VBScript (aspas dobradas; quebra de linha encerraria a string)."""
-    texto = str(texto)
-    if '\r' in texto or '\n' in texto:
-        raise ValueError('Quebra de linha não é permitida.')
-    return texto.replace('"', '""')
-
-
 NOME_IMPRESSORA = re.compile(r'^[\w ._()#,\\-]{1,100}$')   # sem aspas nem símbolos de linha de comando
 
 

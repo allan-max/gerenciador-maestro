@@ -18,7 +18,7 @@ from test_fase0 import LOGGER, Relogio, carregar
 from test_fase2 import FUT_REAL, PAS_REAL, BaseTemporaria
 from test_planilha_persistencia import namespace as ns_manager
 
-RAIZ = Path(__file__).parent
+RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
 ARQ_VALE = RAIZ / 'bots/vale_bot.py'
 METODOS = {'verificar_eventos', '_esperar_otp', '_otp_do_email', '_pendentes_vale', '_ler_lista_vale', '_relatorio_nao_encontradas_vale'}
 CONSTANTES = {'VALE_URL_VERIFICACAO_PADRAO', 'OTP_TIMEOUT_S', 'OTP_EMAIL_INTERVALO_S', 'JANELA_NAO_RESPONDIDO_DIAS'}

@@ -76,7 +76,8 @@ class CoupaScraper(UtilitariosMixin, Banco_dadosMixin, PlanilhasMixin, Autentica
         if ambiente.modo_teste():   # antes só "http://localhost:8000": o testar_local.bat (127.0.0.1) gravava na produção
             self.config["BASE_DIR"] = ambiente.BASE_TESTE
             self.config["pasta_coupa_vale"] = os.path.join(ambiente.BASE_TESTE, "eventos do coupa")
-            self.config["caminho_excel"] = os.path.join(ambiente.RAIZ, "teste.xlsx")
+            cand = os.path.join(ambiente.RAIZ, "teste", "teste.xlsx")
+            self.config["caminho_excel"] = cand if os.path.exists(cand) else os.path.join(ambiente.RAIZ, "teste.xlsx")
             for chave in ("PASTA_DATABASE", "PASTA_BLOQUEADOS", "caminho_database_coupa", "caminho_pedidos_json"):
                 self.config.pop(chave, None)
 

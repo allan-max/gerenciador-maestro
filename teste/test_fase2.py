@@ -20,7 +20,7 @@ import ambiente
 from test_fase0 import LOGGER, Relogio, carregar
 from test_planilha_persistencia import Manager, namespace as ns_manager
 
-RAIZ = Path(__file__).parent
+RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
 novo_status = ns_manager['novo_status']
 AGORA = datetime(2026, 10, 17, 10, 0)
 FUTURO, PASSADO, HOJE = '20/10/2026', '10/10/2026', '17/10/2026'   # em relação a AGORA

@@ -13,7 +13,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 # Carrega a classe sem executar o singleton que acessa o compartilhamento real.
-tree = ast.parse(Path(__file__).with_name('planilha_manager.py').read_text(encoding='utf-8'))
+RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
+tree = ast.parse((RAIZ / 'planilha_manager.py').read_text(encoding='utf-8'))
 namespace = dict(json=json, logging=logging, os=os, tempfile=tempfile,
                  threading=threading, datetime=datetime, logger=logging.getLogger('teste-persistencia'))
 definicoes = [n for n in tree.body if not (isinstance(n, ast.Assign) and any(
@@ -133,6 +134,8 @@ class PersistenciaTest(unittest.TestCase):
     def test_encerrar_processo_antes_troca_preserva_json_no_reinicio(self):
         anterior = self.cota.read_bytes()
         script = '''
+import sys
+sys.path.insert(0, 'teste')
 from test_planilha_persistencia import Manager
 import os, sys, threading, time
 from pathlib import Path
@@ -152,7 +155,7 @@ os.replace = antes_troca
 m.salvar()
 '''
         proc = subprocess.Popen([sys.executable, '-c', script, self.tmp.name],
-                                cwd=Path(__file__).parent, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                cwd=RAIZ, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         try:
             deadline = time.monotonic() + 10

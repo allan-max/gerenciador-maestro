@@ -44,6 +44,18 @@ from docx.shared import Pt, RGBColor, Cm
 import base64
 
 logger = logging.getLogger("ValeApp")
+
+try:
+    from bots.recomendacao_vendedor import selecionar_alvos_comparacao_item
+except ImportError:
+    from recomendacao_vendedor import selecionar_alvos_comparacao_item
+
+
+try:
+    from bots.validacao_cotacao import validar_itens_evento, contem_expected_quantity
+except ImportError:
+    from validacao_cotacao import validar_itens_evento, contem_expected_quantity
+
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 
@@ -71,7 +83,9 @@ OOPS_POR_PAUSA = 3
 PAUSA_OOPS_S = 600
 MAX_PAUSAS_OOPS = 3
 
-class ValeScraper:
+from bots.coupa.mixins.resposta import RespostaMixin
+
+class ValeScraper(RespostaMixin):
     def __init__(self, sio_instance, evento_clique, dict_coordenadas):
         # --- FERRAMENTAS DO MAESTRO ---
         self.sio = sio_instance
@@ -92,7 +106,8 @@ class ValeScraper:
         if ambiente.modo_teste():   # testes não tocam a base de produção
             self.config["BASE_DIR"] = ambiente.BASE_TESTE
             self.config["pasta_coupa_vale"] = os.path.join(ambiente.BASE_TESTE, "eventos do coupa")
-            self.config["caminho_excel"] = os.path.join(ambiente.RAIZ, "teste.xlsx")
+            cand = os.path.join(ambiente.RAIZ, "teste", "teste.xlsx")
+            self.config["caminho_excel"] = cand if os.path.exists(cand) else os.path.join(ambiente.RAIZ, "teste.xlsx")
             for chave in ("PASTA_DATABASE", "PASTA_BLOQUEADOS"):
                 self.config.pop(chave, None)
 
@@ -176,6 +191,7 @@ class ValeScraper:
         ops.add_argument("--no-sandbox")
         ops.add_argument("--disable-dev-shm-usage")
         ops.add_argument("--window-size=1920,1080")
+        ops.add_argument("--remote-allow-origins=*")
         anterior = getattr(self, 'driver', None)
         if anterior is not None:   # religar o mesmo robô: fecha o navegador dele antes de abrir outro
             try:
@@ -226,7 +242,10 @@ class ValeScraper:
     # ============================ 1. LOGIN HÃBRIDO ============================
     def fazer_login_hibrido(self):
         logger.info(" Iniciando Login Inteligente. Acompanhe pelo Painel Web!")
-        self.driver.get(self.LOGIN_URL)
+        try:
+            self.driver.get(self.LOGIN_URL)
+        except Exception as e_nav:
+            logger.warning(f"Aviso ao carregar URL de login inicial: {e_nav}")
         ultimo_print = 0
         ultimo_clique_botao = 0 # <--- NOVO: Controle para evitar flood de cliques
         inicio_captcha = None
@@ -236,33 +255,45 @@ class ValeScraper:
         senha = os.environ.get("PORTAL_SENHA") or ""   # só do .env: senha no código fica pública no GitHub
         if not senha:
             raise RuntimeError("PORTAL_SENHA não configurada no .env do gerenciador.")
+        captcha_pendente = False
 
         while True:
-            time.sleep(0.3)
+            if not captcha_pendente:
+                time.sleep(0.3)
+            else:
+                time.sleep(0.001)
             if time.time() > limite_login:
                 self.solicitacao_parada = True   # quem engolir o erro ainda para o ciclo no próximo evento
                 self.motivo_abandono = 'Login não concluído (captcha ou portal fora do ar).'
                 raise LoginTimeout(f"LOGIN_TIMEOUT: login não concluiu em {LOGIN_TIMEOUT_S // 60} min")
-            if len(self.driver.window_handles) > 1:
-                self.driver.switch_to.window(self.driver.window_handles[-1])
-
-            if "sessions/new" not in self.driver.current_url:
-                # ANTES DE COMEMORAR: Verifica se o portal jogou o botão de confirmação na tela
-                try:
-                    botoes_finais = self.driver.find_elements(By.ID, "login_button")
-                    if botoes_finais and botoes_finais[0].is_displayed():
-                        logger.info(" Botão 'Log in' azul de confirmação detectado! Clicando...")
-                        self.driver.execute_script("arguments[0].click();", botoes_finais[0])
-                        time.sleep(4)
-                        continue # Volta para o loop para garantir que avançou de vez
-                except: 
-                    pass
-                
-                # Se não tem botão na tela, aí sim o login acabou!
-                logger.info("✅ Login concluído com sucesso!")
-                return True
-
             try:
+                if len(self.driver.window_handles) > 1:
+                    self.driver.switch_to.window(self.driver.window_handles[-1])
+
+                url_atual = self.driver.current_url or ""
+                if url_atual.startswith("data:") or url_atual == "about:blank":
+                    self.driver.get(self.LOGIN_URL)
+                    time.sleep(1)
+                    continue
+
+                if "sessions/new" not in url_atual:
+                    # ANTES DE COMEMORAR: Verifica se o portal jogou o botão de confirmação na tela
+                    try:
+                        botoes_finais = self.driver.find_elements(By.ID, "login_button")
+                        if botoes_finais and botoes_finais[0].is_displayed():
+                            logger.info(" Botão 'Log in' azul de confirmação detectado! Clicando...")
+                            self.driver.execute_script("arguments[0].click();", botoes_finais[0])
+                            time.sleep(4)
+                            continue # Volta para o loop para garantir que avançou de vez
+                    except: 
+                        pass
+                    
+                    # Se não tem botão na tela, aí sim o login acabou!
+                    if inicio_captcha is not None:
+                        self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
+                    logger.info("✅ Login concluído com sucesso!")
+                    return True
+
                 self.driver.switch_to.default_content()
 
                 # --- A. ESTADO DO CAPTCHA ---
@@ -296,36 +327,105 @@ class ValeScraper:
                 if captcha_pendente:
                     if inicio_captcha is None:
                         inicio_captcha = time.time()
+                        self.sio.emit('relatar_progresso', {'mensagem': '⚠️ Captcha detectado no login! Resolva na tela principal de Minhas Cotações...'})
                     elif time.time() - inicio_captcha > CAPTCHA_TIMEOUT_S:
                         self.sio.emit('relatar_progresso_vale', {'mensagem': '❌ CAPTCHA EXPIRADO! (5 min sem solução). Fechando o robô.'})
                         raise LoginTimeout("CAPTCHA_TIMEOUT")
                         
                     elemento_alvo = iframe_desafio if (iframe_desafio and iframe_desafio.is_displayed()) else iframe_caixinha
                     if elemento_alvo:
-                        tempo_atual = time.time()
-                        if tempo_atual - ultimo_print > 2.0: # Manda print a cada 2 segundos e comprime
-                            try:
-                                png_bytes = elemento_alvo.screenshot_as_png
-                                from PIL import Image
-                                from io import BytesIO
-                                import base64
-                                img = Image.open(BytesIO(png_bytes))
-                                buffer = BytesIO()
-                                img.save(buffer, format="PNG")
-                                png_b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-                                self.sio.emit('imagem_captcha_do_robo', {'imagem': png_b64})
-                            except Exception as e:
-                                pass
-                            ultimo_print = tempo_atual
+                        ultimo_check_dom = time.time()
+                        rect = None
+                        try:
+                            rect = elemento_alvo.rect
+                        except Exception:
+                            rect = None
 
-                        if self.aguardando_clique.is_set():
-                            px = self.coordenadas_clique['x'] - (elemento_alvo.size['width'] / 2)
-                            py = self.coordenadas_clique['y'] - (elemento_alvo.size['height'] / 2)
-                            ActionChains(self.driver).move_to_element_with_offset(elemento_alvo, px, py).click().perform()
-                            self.aguardando_clique.clear()
+                        while True:
+                            # 1. Clique ultrarrápido (CDP direto em 5ms, sem pausar o stream)
+                            if self.aguardando_clique.is_set():
+                                try:
+                                    cx = int(self.coordenadas_clique.get('x', 0))
+                                    cy = int(self.coordenadas_clique.get('y', 0))
+                                    clique_ok = False
+                                    if rect and hasattr(self.driver, 'execute_cdp_cmd'):
+                                        try:
+                                            abs_x = int(rect['x'] + cx)
+                                            abs_y = int(rect['y'] + cy)
+                                            self.driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': abs_x, 'y': abs_y})
+                                            self.driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': abs_x, 'y': abs_y, 'button': 'left', 'clickCount': 1})
+                                            self.driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': abs_x, 'y': abs_y, 'button': 'left', 'clickCount': 1})
+                                            clique_ok = True
+                                        except Exception:
+                                            clique_ok = False
+                                    if not clique_ok:
+                                        larg = (rect or {}).get('width') or elemento_alvo.size['width']
+                                        alt = (rect or {}).get('height') or elemento_alvo.size['height']
+                                        px = cx - (larg / 2)
+                                        py = cy - (alt / 2)
+                                        ActionChains(self.driver).move_to_element_with_offset(elemento_alvo, px, py).click().perform()
+                                except Exception:
+                                    pass
+                                finally:
+                                    self.aguardando_clique.clear()
+
+                            # 2. Captura contínua e suave a 60 FPS (CDP JPEG acelerado com fallback)
+                            tempo_atual = time.time()
+                            if tempo_atual - ultimo_print >= (1.0 / 60.0): # 60 FPS (60 quadros por segundo)
+                                capturado = False
+                                if rect and hasattr(self.driver, 'execute_cdp_cmd'):
+                                    try:
+                                        clip = {
+                                            'x': float(rect.get('x', 0)),
+                                            'y': float(rect.get('y', 0)),
+                                            'width': float(rect.get('width', 400)),
+                                            'height': float(rect.get('height', 580)),
+                                            'scale': 1.0
+                                        }
+                                        res = self.driver.execute_cdp_cmd('Page.captureScreenshot', {
+                                            'format': 'jpeg',
+                                            'quality': 75,
+                                            'clip': clip
+                                        })
+                                        b64 = res.get('data')
+                                        if b64:
+                                            self.sio.emit('imagem_captcha_do_robo', {'imagem': f"data:image/jpeg;base64,{b64}"})
+                                            capturado = True
+                                    except Exception:
+                                        capturado = False
+                                if not capturado:
+                                    try:
+                                        png_bytes = getattr(elemento_alvo, 'screenshot_as_png', None)
+                                        if png_bytes:
+                                            png_b64 = base64.b64encode(png_bytes).decode('utf-8')
+                                            self.sio.emit('imagem_captcha_do_robo', {'imagem': png_b64})
+                                    except Exception:
+                                        pass
+                                ultimo_print = tempo_atual
+
+                            # 3. Timeout check
+                            if time.time() - inicio_captcha > CAPTCHA_TIMEOUT_S:
+                                self.sio.emit('relatar_progresso_vale', {'mensagem': '❌ CAPTCHA EXPIRADO! (5 min sem solução). Fechando o robô.'})
+                                raise LoginTimeout("CAPTCHA_TIMEOUT")
+
+                            # 4. Verificação periódica do DOM a cada 400ms (não a cada frame de 16ms!)
+                            if time.time() - ultimo_check_dom >= 0.4:
+                                ultimo_check_dom = time.time()
+                                try:
+                                    if not elemento_alvo.is_displayed():
+                                        break
+                                    if elemento_alvo is iframe_caixinha:
+                                        break
+                                    rect = elemento_alvo.rect
+                                except Exception:
+                                    break
+
+                            time.sleep(0.001)
                     continue 
 
                 if captcha_ficou_verde:
+                    if inicio_captcha is not None:
+                        self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
                     # MUDANÃ‡A: Adicionado o id='login_button' na varredura
                     botoes = self.driver.find_elements(By.XPATH, "//button[@type='submit' or @id='login-submit' or @id='login_button']")
                     for btn in botoes:
@@ -740,101 +840,20 @@ class ValeScraper:
             self.sio.emit('tarefa_concluida', {'evento': 'Lote de Extração Vale', 'sucesso': False, 'erro': str(e)})
 
     def enviar_relatorio_email(self):
-        import smtplib
-        from email.mime.text import MIMEText
-        from email.mime.multipart import MIMEMultipart
-        
         if getattr(self, 'relatorio_email_stats', None) is None:
             return
 
-        remetente = self.config.get("SMTP_USER", os.environ.get("SMTP_USER", ""))
-        senha = self.config.get("SMTP_PASSWORD", os.environ.get("SMTP_PASSWORD", ""))
-        
-        emails_destino_raw = self.config.get("emails_relatorio", os.environ.get("EMAILS_RELATORIO", ""))
-        destinatarios = [e.strip() for e in emails_destino_raw.split(',') if e.strip()]
-        
-        if not destinatarios:
-            logger.warning("Nenhum email de destino configurado em emails_relatorio.")
-            return
-
-        assunto = "Relatório de Cotações - Vale Bot"
-        
-        sem_desc_nums = ", ".join(self.relatorio_email_stats.get('sem_descricao', [])) if self.relatorio_email_stats.get('sem_descricao') else "Nenhuma"
-        falt_info_nums = ", ".join(self.relatorio_email_stats.get('faltando_info', [])) if self.relatorio_email_stats.get('faltando_info') else "Nenhuma"
-        reabertas_nums = ", ".join(self.relatorio_email_stats.get('reabertas_ou_data_mudou', [])) if self.relatorio_email_stats.get('reabertas_ou_data_mudou') else "Nenhuma"
-        sem_itens_nums = ", ".join(self.relatorio_email_stats.get('eventos_sem_itens', [])) if self.relatorio_email_stats.get('eventos_sem_itens') else "Nenhuma"
-        erros_plan_nums = ", ".join(self.relatorio_email_stats.get('erros_planilha', [])) if self.relatorio_email_stats.get('erros_planilha') else "Nenhuma"
-        
-        tempo_total = 0
-        if 'hora_inicio_extracao' in self.relatorio_email_stats:
-            tempo_total = int(time.time() - self.relatorio_email_stats['hora_inicio_extracao'])
-            minutos, segundos = divmod(tempo_total, 60)
-            tempo_str = f"{minutos}m {segundos}s"
-        else:
-            tempo_str = "Desconhecido"
-
-        erros_ext_nums = ", ".join(self.relatorio_email_stats.get('erros_extracao', [])) if self.relatorio_email_stats.get('erros_extracao') else "Nenhuma"
-        erro_critico = self.relatorio_email_stats.get('erro_critico_bot')
-
-        vendedores_str = "\n".join([f"- {num}: {vend}" for num, vend in self.relatorio_email_stats.get('vendedores_atribuidos', {}).items()])
-        if not vendedores_str: vendedores_str = "Nenhum vendedor atribuído nesta rodada."
-
-        corpo = f"""Relatório de Extração de Cotações Finalizado
-
-Tempo total de execução: {tempo_str}
-Total de cotações extraídas: {self.relatorio_email_stats.get('total_cotacoes', 0)}
-
---- VENDEDORES SUGERIDOS PELO ROBÔ ---
-{vendedores_str}
-
---- ERROS CRÍTICOS DO ROBÔ ---
-{"Nenhum erro fatal ocorreu." if not erro_critico else f"⚠️ O robô encontrou uma falha grave e precisou ser interrompido:\n{erro_critico}"}
-
---- PROBLEMAS DE EXTRAÇÃO ---
-Cotações em que o robô não conseguiu acessar ou extrair ({len(self.relatorio_email_stats.get('erros_extracao', []))}):
-{erros_ext_nums}
-
-Cotações sem itens detectados ({len(self.relatorio_email_stats.get('eventos_sem_itens', []))}):
-{sem_itens_nums}
-
-Cotações que falharam ao salvar na planilha ({len(self.relatorio_email_stats.get('erros_planilha', []))}):
-{erros_plan_nums}
-
---- ALERTAS DE CONTEÚDO ---
-Cotações sem descrição ({len(self.relatorio_email_stats.get('sem_descricao', []))}):
-{sem_desc_nums}
-
-Cotações com informações faltantes (ex: Vencimento, Local) ({len(self.relatorio_email_stats.get('faltando_info', []))}):
-{falt_info_nums}
-
-Cotações reabertas ou com mudança de data ({len(self.relatorio_email_stats.get('reabertas_ou_data_mudou', []))}):
-{reabertas_nums}
-
-Atenciosamente,
-Vale Bot
-"""
         try:
-            msg = MIMEMultipart()
-            msg['From'] = remetente
-            msg['To'] = ", ".join(destinatarios)
-            msg['Subject'] = assunto
-            msg.attach(MIMEText(corpo, 'plain'))
+            from bots.relatorio_email import enviar_email_relatorio
+        except ImportError:
+            from relatorio_email import enviar_email_relatorio
 
-            try:
-                server = smtplib.SMTP_SSL('email-ssl.com.br', 465, timeout=10)
-                server.login(remetente, senha)
-                server.sendmail(remetente, destinatarios, msg.as_string())
-                server.quit()
-            except Exception as e1:
-                logger.warning(f"Erro no SMTP_SSL: {e1}. Tentando SMTP com STARTTLS em smtp.locaweb.com.br...")
-                server = smtplib.SMTP('smtp.locaweb.com.br', 587, timeout=10)
-                server.starttls()
-                server.login(remetente, senha)
-                server.sendmail(remetente, destinatarios, msg.as_string())
-                server.quit()
-            logger.info(f"Email de relatório enviado com sucesso para {', '.join(destinatarios)}")
-        except Exception as e:
-            logger.error(f"Erro ao enviar email de relatório: {e}")
+        enviar_email_relatorio(
+            nome_bot="Vale Bot",
+            stats=self.relatorio_email_stats,
+            config=getattr(self, 'config', {}),
+            logger_inst=logger
+        )
 
     # ============================ 4. EXTRAÃ‡ÃƒO DO EVENTO (Interno) ============================
     def _filter_desc(self, t):
@@ -978,6 +997,118 @@ Vale Bot
                 except: pass
         except: pass
         return None
+
+    def _extrair_itens_linhas(self, linhas):
+        itens = []
+        tem_anexo_geral = False
+        for i, l in enumerate(linhas):
+            try:
+                btn_expandir = l.find_element(By.CSS_SELECTOR, "img.s-expandLines, div.s-expandSidebar")
+                ActionChains(self.driver).click(btn_expandir).perform()
+                time.sleep(0.3)
+            except: pass
+            
+            try:
+                l = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")[i]
+            except: pass
+            
+            try:
+                if l.find_elements(By.CSS_SELECTOR, "li.attachment.attachmentFile.s-attachmentFile"):
+                    tem_anexo_geral = True
+            except: pass
+            
+            tit = "Item"; desc = ""; qtd = "0"; loc = "N/A"
+            
+            # 1. Título e Descrição
+            try: tit = l.find_element(By.CSS_SELECTOR, "div.s-description p.s-textField").text.strip()
+            except: pass
+            try: 
+                d = l.find_elements(By.CSS_SELECTOR, "p.s-textField")
+                if len(d) > 1: desc = self._filter_desc(d[1].text)
+            except: pass
+            
+            # Nova verificação: Texto de compra do material
+            if not desc.strip() or desc.strip().lower() == "nenhum":
+                try:
+                    dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra')]")
+                    dd = dt.find_element(By.XPATH, "following-sibling::dd")
+                    desc = self._filter_desc(dd.text)
+                except: pass
+            
+            # Nova verificação: Item Text
+            if not desc.strip() or desc.strip().lower() == "nenhum":
+                try:
+                    dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Item Text')]")
+                    dd = dt.find_element(By.XPATH, "following-sibling::dd")
+                    desc = self._filter_desc(dd.text)
+                except: pass
+
+            # Nova verificação: Material Purchase Text
+            if not desc.strip() or desc.strip().lower() == "nenhum":
+                try:
+                    dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Material Purchase Text')]")
+                    dd = dt.find_element(By.XPATH, "following-sibling::dd")
+                    desc = self._filter_desc(dd.text)
+                except: pass
+            
+            # 2. Quantidade (BLINDADO CONTRA PREÇOS "BRL")
+            try: 
+                elementos_unidade = l.find_elements(By.CSS_SELECTOR, "p.valueWithUnit")
+                for q in elementos_unidade:
+                    texto_q = q.text.strip()
+                    if "BRL" not in texto_q and "R$" not in texto_q and "USD" not in texto_q:
+                        qtd = texto_q
+                        break
+            except: pass
+            
+            # 3. Local de Entrega (BUSCA ROBUSTA POR PALAVRA-CHAVE)
+            try:
+                elemento_local = l.find_element(By.XPATH, ".//*[contains(text(), 'Local de entrega:')]")
+                loc = self.parse_local(elemento_local.text)
+            except: 
+                try: loc = self.parse_local(l.find_element(By.CSS_SELECTOR, "li.attachmentText").text)
+                except: pass
+            
+            # Nova verificação: Endereço de entrega detalhado
+            if loc == "N/A" or not loc.strip():
+                try:
+                    address_label = l.find_element(By.XPATH, ".//div[contains(@class, 's-fieldLabel') and contains(text(), 'Endereço de entrega')]")
+                    address_box = address_label.find_element(By.XPATH, "following-sibling::div[contains(@class, 'addressLines')]")
+                    
+                    linhas_end = address_box.text.split('\n')
+                    for linha in linhas_end:
+                        if re.search(r'\d{5}-\d{3}', linha):
+                            cidade_estado = re.sub(r'.*?\d{5}-\d{3}\s*', '', linha).strip()
+                            if cidade_estado:
+                                loc = re.sub(r'\s+', ' ', cidade_estado)
+                                break
+                    
+                    if loc == "N/A" or not loc.strip():
+                        loc = re.sub(r'\s+', ' ', address_box.text)
+                except: pass
+            
+            # Novas extrações solicitadas
+            texto_item_extra = ""
+            try:
+                dt_ti = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto do item') or contains(text(), 'Item Text')]")
+                dd_ti = dt_ti.find_element(By.XPATH, "following-sibling::dd")
+                txt_ti = dd_ti.text.strip()
+                if txt_ti.lower() not in ['nenhum', 'none', 'n/a', '']:
+                    texto_item_extra = txt_ti
+            except: pass
+
+            texto_compra_extra = ""
+            try:
+                dt_tc = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra') or contains(text(), 'Material Purchase Text')]")
+                dd_tc = dt_tc.find_element(By.XPATH, "following-sibling::dd")
+                txt_tc = self._filter_desc(dd_tc.text)
+                if txt_tc.lower() not in ['nenhum', 'none', 'n/a', '']:
+                    texto_compra_extra = txt_tc
+            except: pass
+            
+            logger.info(f"       Item {i+1}: {tit[:20]}... | Qtd: {qtd} | Local: {loc[:30]}...")
+            itens.append({"item_num": i+1, "titulo": tit, "descricao": desc, "quantidade": qtd, "local_entrega": loc, "texto_item": texto_item_extra, "texto_compra": texto_compra_extra})
+        return itens, tem_anexo_geral
 
     def extrair_dados_do_evento(self, url: str, num: str, ja_respondido: bool = False, is_negotiation: bool = False, re_extrair: bool = False, venc_tabela: str = ""):
         if self.evento_ja_processado(num) and not re_extrair: 
@@ -1128,23 +1259,39 @@ Vale Bot
                 except Exception: pass
 
             # ==========================================================
-            # 5. VERIFICAÃ‡ÃƒO DE SEGURANÃ‡A (0 ITENS) E RECUPERAÃ‡ÃƒO DE 2 TENTATIVAS
+# ==========================================================
+            # 5. EXTRAÇÃO E VALIDAÇÃO DOS ITENS (COM RETENTATIVAS OBRIGATÓRIAS)
+            # REGRA: Sempre que exibir 'Expected Quantity x Unit Price' ou itens não identificados,
+            # DEVE retentar extrair os itens antes de prosseguir para o próximo evento.
+            # Cada campo é validado individualmente a cada tentativa.
+            # Se persistir após múltiplas tentativas, envia e-mail de alerta e a cotação NÃO é processada com sucesso.
             # ==========================================================
-            linhas = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
-            
-            if len(linhas) == 0:
-                logger.warning("   ZERO itens na tela. Iniciando Loop de Recuperação Rigoroso...")
-                
-                for tentativa_recuperacao in range(2):
-                    logger.info(f"  Tentativa de Recuperação {tentativa_recuperacao + 1}/2...")
-                    
-                    time.sleep(4)
-                    self.garantir_logado(url)
-                    self.driver.switch_to.default_content()
-                    try: self.driver.switch_to.frame(self.driver.find_element(By.TAG_NAME, "iframe"))
-                    except: pass
+            MAX_TENTATIVAS_ITENS = 3
+            itens_validados = False
+            itens = []
+            tem_anexo_geral = False
+            ultimo_motivo_invalido = ""
+            teve_expected_quantity = False
 
-                    # 5.1 Loop Antigo (Tentar botÃµes de acesso alternativo)
+            for tentativa in range(1, MAX_TENTATIVAS_ITENS + 1):
+                logger.info(f"    🔍 Validação de Itens do evento {num} (Tentativa {tentativa}/{MAX_TENTATIVAS_ITENS})...")
+
+                if tentativa > 1:
+                    logger.warning(f"    ⏳ Recarregando página para nova tentativa de extração do evento {num}...")
+                    try:
+                        self.driver.refresh()
+                        time.sleep(6)
+                        try: self.driver.switch_to.alert.accept()
+                        except: pass
+                        self.garantir_logado(url)
+                        self.driver.switch_to.default_content()
+                        try: self.driver.switch_to.frame(self.driver.find_element(By.TAG_NAME, "iframe"))
+                        except: pass
+                    except Exception: pass
+
+                linhas = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
+
+                if len(linhas) == 0:
                     xpath_fallback = [
                         "//a[contains(@class, 'blue rollover button') and contains(@href, 'response_id')]",
                         "//a[contains(., 'VENTURA COMERCIO VAREJISTA')]",
@@ -1157,178 +1304,83 @@ Vale Bot
                     for xpath in xpath_fallback:
                         try:
                             botoes = self.driver.find_elements(By.XPATH, xpath)
-                            if botoes and (botoes[0].is_displayed() or self.driver.execute_script("return arguments[0].offsetWidth > 0;", botoes[0])): 
-                                logger.info("       Clicando em botão de acesso alternativo...")
+                            if botoes:
                                 self.driver.execute_script("arguments[0].click();", botoes[0])
                                 time.sleep(4)
                                 break
                         except: pass
-                        
+
                     self.garantir_logado(url)
                     self.driver.switch_to.default_content()
                     try: self.driver.switch_to.frame(self.driver.find_element(By.TAG_NAME, "iframe"))
                     except: pass
                     linhas = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
-                    if len(linhas) > 0: break # Achou os itens, sucesso!
 
-                    # 5.2 Se ainda não achou, FORÃ‡A O FLUXO COMPLETO DO PRETENDO (O pedido do usuário)
-                    logger.info("       Ainda 0 itens. Forçando seleção manual de 'Pretendo' -> 'Enviar' -> 'Data' -> 'Inserir Resposta'...")
+                if len(linhas) == 0:
                     try:
                         dropdowns = self.driver.find_elements(By.ID, "participation")
                         if dropdowns:
-                            logger.info("         ✅ Dropdown 'Pretendo' encontrado! Selecionando...")
-                            try:
-                                Select(dropdowns[0]).select_by_value("true")
-                            except Exception:
-                                self.driver.execute_script("arguments[0].value='true'; arguments[0].dispatchEvent(new Event('change', {bubbles: true}));", dropdowns[0])
+                            try: Select(dropdowns[0]).select_by_value("true")
+                            except: self.driver.execute_script("arguments[0].value='true'; arguments[0].dispatchEvent(new Event('change', {bubbles: true}));", dropdowns[0])
                             time.sleep(1)
-                            
                             btn_enviar = self.driver.find_elements(By.CSS_SELECTOR, "button.submitIntend")
                             if btn_enviar:
-                                logger.info("         ✅ Clicando em 'Enviar'...")
                                 self.driver.execute_script("arguments[0].click();", btn_enviar[0])
                                 time.sleep(3)
                                 try: self.driver.switch_to.alert.accept()
-                                except NoAlertPresentException: pass
-                    except Exception as e: pass
+                                except: pass
+                    except: pass
 
-                    # Pegar data se disponivel
-                    venc_recup = self.capturar_end_time_elemento()
-                    if venc_recup:
-                        vencimento = venc_recup
-                        logger.info(f"        Vencimento copiado na recuperação: {vencimento}")
-
-                    # Clicar Inserir resposta RIGOROSAMENTE AGORA (como pedido)
                     try:
-                        btn_inserir = self.driver.find_elements(By.ID, "quote_response_submit")
-                        if btn_inserir and btn_inserir[0].is_displayed():
-                            logger.info("         ðŸ“¥ Clicando em 'Inserir resposta'...")
-                            self.driver.execute_script("arguments[0].click();", btn_inserir[0])
+                        botoes_inserir = self.driver.find_elements(By.ID, "quote_response_submit")
+                        if botoes_inserir and botoes_inserir[0].is_displayed():
+                            self.driver.execute_script("arguments[0].click();", botoes_inserir[0])
                             time.sleep(4)
-                    except Exception: pass
-                    
+                    except: pass
+
                     self.garantir_logado(url)
                     self.driver.switch_to.default_content()
                     try: self.driver.switch_to.frame(self.driver.find_element(By.TAG_NAME, "iframe"))
                     except: pass
                     linhas = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
-                    if len(linhas) > 0: break # Achou os itens após o Pretendo, sucesso!
-            
-            # ðŸš¨ TRAVA DE SEGURANÃ‡A FINAL ðŸš¨
-            if len(linhas) == 0:
-                logger.error(f"    FALHA: Evento {num} carregou com 0 itens! Cancelando extração.")
+
+                if len(linhas) > 0:
+                    itens, tem_anexo = self._extrair_itens_linhas(linhas)
+                    if tem_anexo: tem_anexo_geral = True
+                else:
+                    itens = []
+
+                texto_tela = ""
+                try: texto_tela = self.driver.find_element(By.TAG_NAME, "body").text
+                except: pass
+
+                valido, motivo, tem_eq = validar_itens_evento(itens, texto_tela)
+                if tem_eq:
+                    teve_expected_quantity = True
+
+                if valido:
+                    logger.info(f"    ✅ Sucesso: {len(itens)} item(ns) identificados e validados no evento {num}!")
+                    itens_validados = True
+                    break
+                else:
+                    ultimo_motivo_invalido = motivo
+                    logger.warning(f"    ⚠️ Falha na validação do evento {num} (Tentativa {tentativa}/{MAX_TENTATIVAS_ITENS}): {motivo}")
+
+            if not itens_validados:
+                logger.error(f"   ❌ FALHA DEFINITIVA: Evento {num} persistiu sem itens válidos após {MAX_TENTATIVAS_ITENS} tentativas! ({ultimo_motivo_invalido})")
                 self.relatorio_email_stats.setdefault('eventos_sem_itens', []).append(num)
+                if teve_expected_quantity:
+                    self.relatorio_email_stats.setdefault('eventos_expected_quantity', []).append(num)
+
+                try:
+                    self.enviar_relatorio_email()
+                except Exception as e_mail:
+                    logger.warning(f"Erro ao disparar e-mail de alerta para evento {num}: {e_mail}")
+
                 self.driver.switch_to.default_content()
                 return "SKIPPED"
 
-            logger.info(f"  {len(linhas)} itens encontrados no evento {num}.")
-            
-            # ==========================================================
-            # 6. EXTRAÃ‡ÃƒO DOS ITENS (COM BLINDAGEM DE QTD E LOCAL)
-            # ==========================================================
-            itens = []
-            tem_anexo_geral = False
-            for i, l in enumerate(linhas):
-                try:
-                    btn_expandir = l.find_element(By.CSS_SELECTOR, "img.s-expandLines, div.s-expandSidebar")
-                    ActionChains(self.driver).click(btn_expandir).perform()
-                    time.sleep(0.3)
-                except: pass
-                
-                l = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")[i]
-                
-                try:
-                    if l.find_elements(By.CSS_SELECTOR, "li.attachment.attachmentFile.s-attachmentFile"):
-                        tem_anexo_geral = True
-                except: pass
-                
-                tit = "Item"; desc = ""; qtd = "0"; loc = "N/A"
-                
-                try: tit = l.find_element(By.CSS_SELECTOR, "div.s-description p.s-textField").text.strip()
-                except: pass
-                try: 
-                    d = l.find_elements(By.CSS_SELECTOR, "p.s-textField")
-                    if len(d) > 1: desc = self._filter_desc(d[1].text)
-                except: pass
-                
-                if not desc.strip() or desc.strip().lower() == "nenhum":
-                    try:
-                        dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra')]")
-                        dd = dt.find_element(By.XPATH, "following-sibling::dd")
-                        desc = self._filter_desc(dd.text)
-                    except: pass
-
-                if not desc.strip() or desc.strip().lower() == "nenhum":
-                    try:
-                        dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Item Text')]")
-                        dd = dt.find_element(By.XPATH, "following-sibling::dd")
-                        desc = self._filter_desc(dd.text)
-                    except: pass
-
-                if not desc.strip() or desc.strip().lower() == "nenhum":
-                    try:
-                        dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Material Purchase Text')]")
-                        dd = dt.find_element(By.XPATH, "following-sibling::dd")
-                        desc = self._filter_desc(dd.text)
-                    except: pass
-                
-                try: 
-                    elementos_unidade = l.find_elements(By.CSS_SELECTOR, "p.valueWithUnit")
-                    for q in elementos_unidade:
-                        texto_q = q.text.strip()
-                        if "BRL" not in texto_q and "R$" not in texto_q and "USD" not in texto_q:
-                            qtd = texto_q
-                            break
-                except: pass
-                
-                try:
-                    elemento_local = l.find_element(By.XPATH, ".//*[contains(text(), 'Local de entrega:')]")
-                    loc = self.parse_local(elemento_local.text)
-                except: 
-                    try: loc = self.parse_local(l.find_element(By.CSS_SELECTOR, "li.attachmentText").text)
-                    except: pass
-                
-                if loc == "N/A" or not loc.strip():
-                    try:
-                        address_label = l.find_element(By.XPATH, ".//div[contains(@class, 's-fieldLabel') and contains(text(), 'Endereço de entrega')]")
-                        address_box = address_label.find_element(By.XPATH, "following-sibling::div[contains(@class, 'addressLines')]")
-                        
-                        linhas_end = address_box.text.split('\n')
-                        for linha in linhas_end:
-                            if re.search(r'\d{5}-\d{3}', linha):
-                                cidade_estado = re.sub(r'.*?\d{5}-\d{3}\s*', '', linha).strip()
-                                if cidade_estado:
-                                    loc = re.sub(r'\s+', ' ', cidade_estado)
-                                    break
-                        
-                        if loc == "N/A" or not loc.strip():
-                            loc = re.sub(r'\s+', ' ', address_box.text)
-                    except: pass
-                
-                # Novas extrações solicitadas
-                texto_item_extra = ""
-                try:
-                    dt_ti = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto do item') or contains(text(), 'Item Text')]")
-                    dd_ti = dt_ti.find_element(By.XPATH, "following-sibling::dd")
-                    txt_ti = dd_ti.text.strip()
-                    if txt_ti.lower() not in ['nenhum', 'none', 'n/a', '']:
-                        texto_item_extra = txt_ti
-                except: pass
-
-                texto_compra_extra = ""
-                try:
-                    dt_tc = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra') or contains(text(), 'Material Purchase Text')]")
-                    dd_tc = dt_tc.find_element(By.XPATH, "following-sibling::dd")
-                    txt_tc = self._filter_desc(dd_tc.text)
-                    if txt_tc.lower() not in ['nenhum', 'none', 'n/a', '']:
-                        texto_compra_extra = txt_tc
-                except: pass
-                
-                logger.info(f"       Item {i+1}: {tit[:20]}... | Qtd: {qtd} | Local: {loc[:30]}...")
-                itens.append({"item_num": i+1, "titulo": tit, "descricao": desc, "quantidade": qtd, "local_entrega": loc, "texto_item": texto_item_extra, "texto_compra": texto_compra_extra})
-
-            # ==========================================================
-            # REFORÇO OBRIGATÓRIO DA DATA DE VENCIMENTO (Aba Informações)
+                        # REFORÇO OBRIGATÓRIO DA DATA DE VENCIMENTO (Aba Informações)
             # ==========================================================
             logger.info("       🔍 Confirmando a data de vencimento exata na aba de Informações...")
             try:
@@ -1371,369 +1423,8 @@ Vale Bot
             except: pass
             return None
 
-    # ========================================================
-    # 5. RESPONDER EVENTO (ATUALIZADO PARA BASE64 E NUVEM)
-    # ========================================================
-    def responder_evento(self, dados):
-        evento = str(dados.get('evento', '')).strip()
-        lista_precos = dados.get('precos', [])
-        lista_prazos = dados.get('prazos', [])
-        lista_origens = dados.get('origens', [])
-        lista_icms = dados.get('icms', [])
-        
-        pasta_anexos = tempfile.mkdtemp(prefix='maestro-resposta-')   # apagada no fim, com ou sem erro
-        falhas = []
-
-        logger.info(f"🚀 Iniciando Resposta do Evento {evento}...")
-        
-        try:
-            ds_paths = [self._gravar_anexo(pasta_anexos, f) for f in dados.get('datasheets', [])]
-            dav_paths = [self._gravar_anexo(pasta_anexos, f) for f in dados.get('davs', [])]
-
-            # ========================================================
-            # 1. ROTA DIRETA PARA SOURCING (À PROVA DE FALHAS)
-            # ========================================================
-            self.sio.emit('relatar_progresso', {'mensagem': f" Acessando diretamente a página de Sourcing..."})
-            
-            # Navega diretamente pela URL em vez de tentar clicar no menu!
-            url_sourcing = f"{self.BASE_SUPPLIER_URL}/quotes/private_events"
-            self.driver.get(url_sourcing)
-            time.sleep(3)
-            self.garantir_logado(url_sourcing)
-
-            # ========================================================
-            # 1.5 DIGITAR O CLIENTE (VALE BASE METAIS)
-            # ========================================================
-            logger.info(" Filtrando pelo cliente 'VALE BASE METAIS'...")
-            self.sio.emit('relatar_progresso', {'mensagem': f" Filtrando eventos do cliente 'VALE BASE METAIS'..."})
-            try:
-                # Usa o campo de busca de clientes (ID customersList_1)
-                input_cliente = self.wait.until(EC.presence_of_element_located((By.ID, "customersList_1")))
-                input_cliente.clear()
-                time.sleep(0.5)
-                
-                # 👇 A ÚNICA DIFERENÇA: A EMPRESA 👇
-                input_cliente.send_keys("VALE BASE METAIS")
-                
-                time.sleep(1)
-                input_cliente.send_keys(Keys.ENTER) # Pressiona Enter após digitar
-                time.sleep(3) # Aguarda 3 segundos pro site recarregar a tabela
-                logger.info("   ✅ Filtro 'VALE BASE METAIS' aplicado com sucesso!")
-            except Exception as e:
-                logger.warning(f"    Não foi possível digitar 'VALE BASE METAIS' no campo de cliente: {e}")
-
-            # 2. Pesquisa o evento
-            logger.info(" Buscando evento...")
-            search = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input.s-toolbarSearch")))
-            search.clear()
-            search.send_keys(evento)
-            search.send_keys(Keys.RETURN)
-            time.sleep(4)
-
-            # 3. Entra no evento
-            logger.info(f"   🖱️ Procurando link do evento {evento} na tabela...")
-            try:
-                # 1. XPath ultra-preciso usando a classe e a estrutura HTML
-                xpath_preciso = f"//td[contains(@class, 'coupaTable__cell')]//a[contains(text(), '{evento}') or contains(@href, '{evento}')]"
-                link_evento = self.wait.until(EC.presence_of_element_located((By.XPATH, xpath_preciso)))
-                
-                # 2. Rola a página para garantir que o elemento está visível na tela
-                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link_evento)
-                time.sleep(1)
-                
-                # 3. Clica no link
-                self.driver.execute_script("arguments[0].click();", link_evento)
-                logger.info("   ✅ Clique efetuado com sucesso!")
-                time.sleep(3)
-                
-                # 4. TRATAMENTO CRÍTICO: Como o link tem target="_blank", ele abre uma NOVA ABA.
-                if len(self.driver.window_handles) > 1:
-                    self.driver.switch_to.window(self.driver.window_handles[-1])
-                    logger.info("   🔄 Foco alterado para a aba do evento.")
-                    
-            except Exception as e:
-                logger.warning(f"   ⚠️ Link não encontrado na tabela. Forçando acesso via URL (Nova Aba)... ({e})")
-                self.driver.execute_script(f"window.open('{self.BASE_SUPPLIER_URL}/quotes/external_responses/{evento}/multi', '_blank');")
-                time.sleep(3)
-                self.driver.switch_to.window(self.driver.window_handles[-1])
-
-            time.sleep(3)
-
-            # --- PULAR PARA A NOVA ABA E MERGULHAR NO IFRAME ---
-            self.driver.switch_to.window(self.driver.window_handles[-1])
-            time.sleep(3) 
-            
-            try: 
-                self.driver.switch_to.frame(self.wait.until(EC.presence_of_element_located((By.TAG_NAME, "iframe"))))
-            except: 
-                pass
-
-            # 4. Clica em Minha Resposta (COM PRIORIDADE ESTRITA VENTURA -> MINHAS RESPOSTAS)
-            logger.info(" Procurando botão de acesso ao evento...")
-            try:
-                time.sleep(2) # Pequena pausa para garantir que a página carregou
-                
-                # A ORDEM DEFINE A PRIORIDADE: Ele tenta o nÂ° 1 primeiro. Se falhar, vai para o 2.
-                xpath_botoes = [
-                    # =========================================================
-                    # 1Âª PRIORIDADE: O seu Span/Link com o nome da empresa
-                    # =========================================================
-                    "//a[contains(., 'VENTURA COMERCIO VAREJISTA')]",
-                    "//span[contains(text(), 'VENTURA COMERCIO VAREJISTA')]",
-                    
-                    # =========================================================
-                    # 2Âª PRIORIDADE: O botão plural "Minhas respostas" (com /multi)
-                    # =========================================================
-                    "//a[.//span[text()='Minhas respostas']]",
-                    "//span[text()='Minhas respostas']",
-                    f"//a[contains(@href, '/quotes/external_responses/{evento}/multi')]",
-                    
-                    # =========================================================
-                    # 3Âª PRIORIDADE (Rede de Segurança): Se for um evento 100% virgem
-                    # =========================================================
-                    "//a[.//span[text()='Minha resposta']]",
-                    "//a[.//span[text()='Criar resposta']]",
-                    "//span[text()='Itens']"
-                ]
-                
-                botao_clicado = False
-                for xpath in xpath_botoes:
-                    botoes = self.driver.find_elements(By.XPATH, xpath)
-                    for b in botoes:
-                        if b.is_displayed() or self.driver.execute_script("return arguments[0].offsetWidth > 0;", b):
-                            logger.info(f"    Alvo encontrado! Clicando no padrão: {xpath}")
-                            # Usamos o clique via Javascript para furar qualquer bloqueio visual do site
-                            self.driver.execute_script("arguments[0].click();", b)
-                            botao_clicado = True
-                            break
-                    if botao_clicado: 
-                        break # Paramos o loop instantaneamente se o botão for clicado
-                
-                # Se a tela bloqueou tudo porque ainda não aceitou os Termos de Participação
-                if not botao_clicado:
-                    logger.warning("    Botão direto não encontrado. Tentando Aceitar Termos de Participação primeiro...")
-                    try:
-                        Select(self.wait.until(EC.presence_of_element_located((By.ID, "participation")))).select_by_value("true")
-                        self.driver.find_element(By.CSS_SELECTOR, "button.submitIntend").click()
-                        time.sleep(3)
-                        
-                        self.driver.find_element(By.XPATH, "//a[.//span[text()='Itens']]").click()
-                        logger.info("   ✅ Termos aceitos! Avançando para a resposta...")
-                    except Exception as e:
-                        raise Exception("A tela não tem botão de responder e não pediu aceite de termos. O evento pode estar encerrado ou indisponível.")
-
-            except Exception as erro:
-                raise Exception(f"Falha ao abrir a aba de preços: {str(erro)}")
-                
-            time.sleep(4)
-
-            # 5. Anexar MÃšLTIPLOS arquivos
-            logger.info(f" Injetando PDFs ({len(ds_paths)} Datasheets, {len(dav_paths)} DAVs)...")
-            
-            if ds_paths:
-                for path in ds_paths:
-                    try:
-                        inputs_arquivo = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file'][name='attachment[file]']")
-                        if len(inputs_arquivo) > 0:
-                            inputs_arquivo[0].send_keys(path)
-                            time.sleep(2) 
-                    except Exception as e:
-                        logger.warning(f"âš ï¸ Erro ao anexar Datasheet ({path}): {e}")
-            
-            if dav_paths:
-                for path in dav_paths:
-                    try:
-                        inputs_arquivo = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file'][name='attachment[file]']")
-                        if len(inputs_arquivo) > 1:
-                            inputs_arquivo[1].send_keys(path)
-                            time.sleep(2)
-                    except Exception as e:
-                        logger.warning(f"âš ï¸ Erro ao anexar DAV ({path}): {e}")
-            
-            time.sleep(5) 
-
-            # 6. Salvar Rascunho
-            logger.info(" Salvando Rascunho Inicial...")
-            try:
-                btn_rascunho = self.driver.find_element(By.CSS_SELECTOR, "button.s-menuSaveResponse")
-                self.driver.execute_script("arguments[0].click();", btn_rascunho)
-                time.sleep(5)
-            except: pass
-
-            # 7. Expandir e Preencher APENAS os itens informados
-            logger.info(" Avaliando linhas e preenchendo itens específicos...")
-            time.sleep(2)
-            
-            try:
-                linhas_de_itens = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
-                logger.info(f"ðŸ“¦ O evento possui {len(linhas_de_itens)} linhas/itens no total.")
-                
-                for idx, linha in enumerate(linhas_de_itens):
-                    se_tem_preco = idx < len(lista_precos) and str(lista_precos[idx]).strip() != ""
-                    se_tem_prazo = idx < len(lista_prazos) and str(lista_prazos[idx]).strip() != ""
-                    
-                    if se_tem_preco or se_tem_prazo:
-                        logger.info(f"    Processando Item {idx+1}...")
-                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", linha)
-                        time.sleep(0.5)
-                        
-                        # --- 1. PRIMEIRO: EXPANDIR A LINHA PARA OS CAMPOS APARECEREM ---
-                        try:
-                            btn_expandir = linha.find_element(By.CSS_SELECTOR, "div.s-expandSidebar, img.s-expandLines")
-                            self.driver.execute_script("arguments[0].click();", btn_expandir)
-                            time.sleep(1.5) 
-                        except: 
-                            pass 
-                        
-                        # --- 2. SEGUNDO: APLICAR TODAS AS REGRAS DA VALE BASE METALS ---
-                        try:
-                            # Função interna para injetar com segurança no React
-                            def preencher_cf(seletor, valor_fixo, nome_log):
-                                cfs = linha.find_elements(By.CSS_SELECTOR, seletor)
-                                if cfs:
-                                    try:
-                                        cfs[0].clear()
-                                        cfs[0].send_keys(valor_fixo)
-                                    except:
-                                        self.driver.execute_script("""
-                                            arguments[0].value = arguments[1];
-                                            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-                                            arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
-                                        """, cfs[0], valor_fixo)
-                                    logger.info(f"      ✅ {nome_log} preenchido com '{valor_fixo}'")
-
-                            # Copiar NCM (Se existir)
-                            ncm_element = linha.find_elements(By.CSS_SELECTOR, "div.s-classification_of_goods p.s-textField")
-                            if ncm_element:
-                                ncm_val = ncm_element[0].text.strip()
-                                ncm_input = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_8")
-                                if ncm_input:
-                                    ncm_input[0].clear()
-                                    ncm_input[0].send_keys(ncm_val)
-                                    time.sleep(1)
-                                    ncm_input[0].send_keys(Keys.ARROW_DOWN)
-                                    time.sleep(0.2)
-                                    ncm_input[0].send_keys(Keys.ENTER)
-                                    logger.info(f"      ✅ NCM copiado e injetado: {ncm_val}")
-
-                            # Preenchimentos Fixos
-                            preencher_cf("input.s-custom_field_7", "3", "Campo 7")
-                            preencher_cf("input.s-custom_field_2", "0", "Campo 2")
-                            preencher_cf("input.s-custom_field_6", "0,65", "Campo 6")
-                            preencher_cf("input.s-custom_field_5", "0", "Campo 5")
-
-                            # Preencher ICMS (Campo 3) se o utilizador informou
-                            icms_atual = str(lista_icms[idx]).strip() if idx < len(lista_icms) else ""
-                            if icms_atual:
-                                preencher_cf("input.s-custom_field_3", icms_atual, "ICMS (%)")
-
-                            # Preencher Origem (Campo 9 ComboBox) se o utilizador informou
-                            origem_atual = str(lista_origens[idx]).strip() if idx < len(lista_origens) else ""
-                            if origem_atual:
-                                cfs_origem = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_9")
-                                if cfs_origem:
-                                    cfs_origem[0].clear()
-                                    cfs_origem[0].send_keys(origem_atual)
-                                    time.sleep(1)
-                                    cfs_origem[0].send_keys(Keys.ARROW_DOWN)
-                                    time.sleep(0.2)
-                                    cfs_origem[0].send_keys(Keys.ARROW_UP)
-                                    time.sleep(0.2)
-                                    cfs_origem[0].send_keys(Keys.ENTER)
-                                    logger.info(f"      ✅ Origem preenchida: {origem_atual}")
-
-                        except Exception as e:
-                            logger.warning(f"       Erro ao processar formulário extra da Vale: {e}")
-
-                        # --- 3. TERCEIRO: PREENCHER PREÃ‡O E PRAZO NORMALMENTE ---
-                        if se_tem_preco:
-                            preco_atual = str(lista_precos[idx]).strip()
-                            try:
-                                input_preco = linha.find_element(By.CSS_SELECTOR, "input.s-price_amount_input")
-                                try:
-                                    input_preco.clear()
-                                    input_preco.send_keys(preco_atual)
-                                except:
-                                    self.driver.execute_script("""
-                                        arguments[0].value = arguments[1];
-                                        arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-                                        arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
-                                    """, input_preco, preco_atual)
-                                logger.info(f"      ✅ Preço {preco_atual} inserido.")
-                            except Exception as e:
-                                falhas.append(f"item {idx+1} (preço)")
-                                logger.warning(f"       Falha ao inserir preço: {e}")
-
-                        if se_tem_prazo:
-                            prazo_atual = str(lista_prazos[idx]).strip()
-                            try:
-                                input_prazo = linha.find_element(By.CSS_SELECTOR, "input.s-lead_time_input")
-                                try:
-                                    ActionChains(self.driver) \
-                                        .move_to_element(input_prazo) \
-                                        .click() \
-                                        .pause(0.2) \
-                                        .key_down(Keys.CONTROL).send_keys('a').key_up(Keys.CONTROL) \
-                                        .send_keys(Keys.BACKSPACE) \
-                                        .send_keys(prazo_atual) \
-                                        .send_keys(Keys.TAB) \
-                                        .perform()
-                                    
-                                    time.sleep(0.2)
-                                    if not input_prazo.get_attribute('value') or prazo_atual not in input_prazo.get_attribute('value'): raise Exception("Reset")
-                                except:
-                                    self.driver.execute_script("""
-                                        let el = arguments[0];
-                                        let val = arguments[1];
-                                        let lastValue = el.value;
-                                        el.value = val;
-                                        let event = new Event('input', { bubbles: true });
-                                        event.simulated = true;
-                                        if (el._valueTracker) { el._valueTracker.setValue(lastValue); }
-                                        el.dispatchEvent(event);
-                                        el.dispatchEvent(new Event('change', { bubbles: true }));
-                                        el.dispatchEvent(new Event('blur', { bubbles: true }));
-                                    """, input_prazo, prazo_atual)
-                                logger.info(f"      ✅ Prazo {prazo_atual} inserido.")
-                            except Exception as e:
-                                falhas.append(f"item {idx+1} (prazo)")
-                                logger.warning(f"       Falha ao inserir prazo: {e}")
-                    else:
-                        logger.info(f"    Item {idx+1} ignorado (Você deixou os campos vazios).")
-                        
-            except Exception as e:
-                falhas.append("preenchimento das linhas")
-                logger.error(f" Erro crítico no preenchimento das linhas: {e}")
-
-            # 8. Salvar Final (só salva o rascunho; o envio ao cliente é feito por uma pessoa no portal)
-            logger.info("✅ Finalizando salvamento do evento...")
-            try:
-                btn_salvar = self.driver.find_element(By.CSS_SELECTOR, "button.s-save")
-            except Exception:
-                raise Exception("Botão Salvar não encontrado: o rascunho não foi salvo.")
-            self.driver.execute_script("arguments[0].click();", btn_salvar)
-            time.sleep(4)
-            self._marcar_rascunho(evento)
-            if falhas:
-                raise Exception(f"Rascunho salvo, mas com falha em: {', '.join(falhas)}. Confira no portal antes de enviar.")
-
-            logger.info(f"🎉 Rascunho do evento {evento} salvo. O envio ao cliente é manual.")
-            self.sio.emit('tarefa_concluida', {'evento': f'Evento {evento}', 'sucesso': True})
-
-            if len(self.driver.window_handles) > 1:
-                self.driver.close()
-                self.driver.switch_to.window(self.driver.window_handles[0])
-
-        except Exception as e:
-            logger.error(f" Erro ao responder evento: {e}")
-            self.sio.emit('tarefa_concluida', {'evento': f'Evento {evento}', 'sucesso': False, 'erro': str(e)})
-            
-            # Se der erro, garante que fecha a aba extra e volta pra principal pra não travar tudo
-            if len(self.driver.window_handles) > 1:
-                self.driver.close()
-                self.driver.switch_to.window(self.driver.window_handles[0])
-        finally:
-            shutil.rmtree(pasta_anexos, ignore_errors=True)
+    # 5. RESPONDER EVENTO: herdado de RespostaMixin (bots/coupa/mixins/resposta.py)
+    # Código único que responde tanto Vale quanto Vale Base Metals.
 
     @staticmethod
     def _gravar_anexo(pasta, f_data):
@@ -2138,17 +1829,16 @@ Vale Bot
                             return f"Ultimo Vendedor: {row['vendedor']} ({row['data']}) - Motivo: Similaridade em {nome_etapa} ({ratio*100:.1f}%)"
             return None
 
-        # ETAPA 2: Texto do Item
-        res = buscar_por_similaridade(texto_item_list, "Texto do Item")
-        if res: return res
-        
-        # ETAPA 3: Descricao
-        res = buscar_por_similaridade(descricao_list, "Descricao")
-        if res: return res
-        
-        # ETAPA 4: Texto de Compra
-        res = buscar_por_similaridade(texto_compra_list, "Texto de Compra")
-        if res: return res
+        # ETAPA 2: Comparação de Itens com as regras de prioridade:
+        # 1. Prioridade principal: ITEM TEXT (texto do item).
+        # 2. Exceção DESCRIÇÃO: apenas se NÃO houver ITEM TEXT no evento.
+        # 3. Exceção Marca/Modelo: se marca e modelo foram encontrados na DESCRIÇÃO na busca prévia, a DESCRIÇÃO tem prioridade.
+        # Regra Crítica: Em todos os outros casos, comparação baseada EXCLUSIVAMENTE no ITEM TEXT.
+        alvos_rotulados = selecionar_alvos_comparacao_item(item_dict, dados_ia)
+        for desc_alvo, rotulo in alvos_rotulados:
+            res = buscar_por_similaridade([desc_alvo], rotulo)
+            if res:
+                return res
         
         logger.info(f"   ? Nenhum vendedor similar encontrado no historico para este item.")
         return None

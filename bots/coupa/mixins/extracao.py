@@ -39,6 +39,15 @@ from docx.shared import Pt, RGBColor, Cm
 import base64
 
 logger = logging.getLogger("CoupaApp")
+
+try:
+    from bots.validacao_cotacao import validar_itens_evento, contem_expected_quantity
+except ImportError:
+    try:
+        from validacao_cotacao import validar_itens_evento, contem_expected_quantity
+    except ImportError:
+        from ..validacao_cotacao import validar_itens_evento, contem_expected_quantity
+
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 
@@ -86,6 +95,118 @@ class ExtracaoMixin:
         except Exception as e:
             logger.error(f"Erro ao buscar novo link: {e}")
             return None
+
+    def _extrair_itens_linhas(self, linhas):
+        itens = []
+        tem_anexo_geral = False
+        for i, l in enumerate(linhas):
+            try:
+                btn_expandir = l.find_element(By.CSS_SELECTOR, "img.s-expandLines, div.s-expandSidebar")
+                ActionChains(self.driver).click(btn_expandir).perform()
+                time.sleep(0.3)
+            except: pass
+            
+            try:
+                l = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")[i]
+            except: pass
+            
+            try:
+                if l.find_elements(By.CSS_SELECTOR, "li.attachment.attachmentFile.s-attachmentFile"):
+                    tem_anexo_geral = True
+            except: pass
+            
+            tit = "Item"; desc = ""; qtd = "0"; loc = "N/A"
+            
+            # 1. Título e Descrição
+            try: tit = l.find_element(By.CSS_SELECTOR, "div.s-description p.s-textField").text.strip()
+            except: pass
+            try: 
+                d = l.find_elements(By.CSS_SELECTOR, "p.s-textField")
+                if len(d) > 1: desc = self._filter_desc(d[1].text)
+            except: pass
+            
+            # Nova verificação: Texto de compra do material
+            if not desc.strip() or desc.strip().lower() == "nenhum":
+                try:
+                    dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra')]")
+                    dd = dt.find_element(By.XPATH, "following-sibling::dd")
+                    desc = self._filter_desc(dd.text)
+                except: pass
+            
+            # Nova verificação: Item Text
+            if not desc.strip() or desc.strip().lower() == "nenhum":
+                try:
+                    dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Item Text')]")
+                    dd = dt.find_element(By.XPATH, "following-sibling::dd")
+                    desc = self._filter_desc(dd.text)
+                except: pass
+
+            # Nova verificação: Material Purchase Text
+            if not desc.strip() or desc.strip().lower() == "nenhum":
+                try:
+                    dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Material Purchase Text')]")
+                    dd = dt.find_element(By.XPATH, "following-sibling::dd")
+                    desc = self._filter_desc(dd.text)
+                except: pass
+            
+            # 2. Quantidade (BLINDADO CONTRA PREÇOS "BRL")
+            try: 
+                elementos_unidade = l.find_elements(By.CSS_SELECTOR, "p.valueWithUnit")
+                for q in elementos_unidade:
+                    texto_q = q.text.strip()
+                    if "BRL" not in texto_q and "R$" not in texto_q and "USD" not in texto_q:
+                        qtd = texto_q
+                        break
+            except: pass
+            
+            # 3. Local de Entrega (BUSCA ROBUSTA POR PALAVRA-CHAVE)
+            try:
+                elemento_local = l.find_element(By.XPATH, ".//*[contains(text(), 'Local de entrega:')]")
+                loc = self.parse_local(elemento_local.text)
+            except: 
+                try: loc = self.parse_local(l.find_element(By.CSS_SELECTOR, "li.attachmentText").text)
+                except: pass
+            
+            # Nova verificação: Endereço de entrega detalhado
+            if loc == "N/A" or not loc.strip():
+                try:
+                    address_label = l.find_element(By.XPATH, ".//div[contains(@class, 's-fieldLabel') and contains(text(), 'Endereço de entrega')]")
+                    address_box = address_label.find_element(By.XPATH, "following-sibling::div[contains(@class, 'addressLines')]")
+                    
+                    linhas_end = address_box.text.split('\n')
+                    for linha in linhas_end:
+                        if re.search(r'\d{5}-\d{3}', linha):
+                            cidade_estado = re.sub(r'.*?\d{5}-\d{3}\s*', '', linha).strip()
+                            if cidade_estado:
+                                loc = re.sub(r'\s+', ' ', cidade_estado)
+                                break
+                    
+                    if loc == "N/A" or not loc.strip():
+                        loc = re.sub(r'\s+', ' ', address_box.text)
+                except: pass
+            
+            # Novas extrações solicitadas
+            texto_item_extra = ""
+            try:
+                dt_ti = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto do item') or contains(text(), 'Item Text')]")
+                dd_ti = dt_ti.find_element(By.XPATH, "following-sibling::dd")
+                txt_ti = dd_ti.text.strip()
+                if txt_ti.lower() not in ['nenhum', 'none', 'n/a', '']:
+                    texto_item_extra = txt_ti
+            except: pass
+
+            texto_compra_extra = ""
+            try:
+                dt_tc = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra') or contains(text(), 'Material Purchase Text')]")
+                dd_tc = dt_tc.find_element(By.XPATH, "following-sibling::dd")
+                txt_tc = self._filter_desc(dd_tc.text)
+                if txt_tc.lower() not in ['nenhum', 'none', 'n/a', '']:
+                    texto_compra_extra = txt_tc
+            except: pass
+            
+            logger.info(f"       Item {i+1}: {tit[:20]}... | Qtd: {qtd} | Local: {loc[:30]}...")
+            itens.append({"item_num": i+1, "titulo": tit, "descricao": desc, "quantidade": qtd, "local_entrega": loc, "texto_item": texto_item_extra, "texto_compra": texto_compra_extra})
+        return itens, tem_anexo_geral
 
     def extrair_dados_do_evento(self, url: str, num: str, ja_respondido: bool = False, is_negotiation: bool = False, re_extrair: bool = False, venc_tabela: str = "") -> Optional[Dict]:
         if self.evento_ja_processado(num) and not re_extrair:
@@ -260,24 +381,39 @@ class ExtracaoMixin:
                         time.sleep(3)
                 except Exception: pass
 
-            # 3. VERIFICAÇãO DE SEGURANÇA (0 ITENS) E RECUPERAÇãO BLINDADA
-            linhas = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
-            
-            if len(linhas) == 0:
-                logger.warning("   ⚠️ ZERO itens na tela. Iniciando Loop de Recuperação Rigoroso...")
+            # ==========================================================
+            # 3. EXTRAÇÃO E VALIDAÇÃO DOS ITENS (COM RETENTATIVAS OBRIGATÓRIAS)
+            # REGRA: Sempre que exibir 'Expected Quantity x Unit Price' ou itens não identificados,
+            # DEVE retentar extrair os itens antes de prosseguir para o próximo evento.
+            # Cada campo é validado individualmente a cada tentativa.
+            # Se persistir após múltiplas tentativas, envia e-mail de alerta e a cotação NÃO é processada com sucesso.
+            # ==========================================================
+            MAX_TENTATIVAS_ITENS = 3
+            itens_validados = False
+            itens = []
+            tem_anexo_geral = False
+            ultimo_motivo_invalido = ""
+            teve_expected_quantity = False
 
-                # Aumentamos para 3 tentativas e forçamos o robô a ter paciência
-                for tentativa_recuperacao in range(3): 
-                    logger.info(f"      Tentativa de Recuperação {tentativa_recuperacao + 1}/3...")
-                    
-                    # O FREIO: Dá 4 segundos para o Coupa processar o JavaScript da tela
-                    time.sleep(4) 
-                    self.garantir_logado(url) # Verifica login no início da etapa
-                    self.driver.switch_to.default_content()
-                    try: self.driver.switch_to.frame(self.driver.find_element(By.TAG_NAME, "iframe"))
-                    except: pass
+            for tentativa in range(1, MAX_TENTATIVAS_ITENS + 1):
+                logger.info(f"    🔍 Validação de Itens do evento {num} (Tentativa {tentativa}/{MAX_TENTATIVAS_ITENS})...")
 
-                    # 3.1 Tentar botões de acesso direto/alternativo
+                if tentativa > 1:
+                    logger.warning(f"    ⏳ Recarregando página para nova tentativa de extração do evento {num}...")
+                    try:
+                        self.driver.refresh()
+                        time.sleep(6)
+                        try: self.driver.switch_to.alert.accept()
+                        except: pass
+                        self.garantir_logado(url)
+                        self.driver.switch_to.default_content()
+                        try: self.driver.switch_to.frame(self.driver.find_element(By.TAG_NAME, "iframe"))
+                        except: pass
+                    except Exception: pass
+
+                linhas = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
+
+                if len(linhas) == 0:
                     xpath_fallback = [
                         "//a[contains(., 'VENTURA COMERCIO VAREJISTA')]",
                         "//span[contains(text(), 'VENTURA COMERCIO VAREJISTA')]",
@@ -289,224 +425,86 @@ class ExtracaoMixin:
                         "//span[text()='Itens']",
                         "//a[contains(text(), 'Responder')]"
                     ]
-                    
-                    clicou_algo = False
                     for xpath in xpath_fallback:
                         try:
                             botoes = self.driver.find_elements(By.XPATH, xpath)
                             if botoes:
-                                logger.info(f"         🔄 Encontrado botão de acesso escondido. Forçando clique...")
                                 self.driver.execute_script("arguments[0].click();", botoes[0])
-                                time.sleep(5) # Espera a página reagir ao clique
-                                clicou_algo = True
+                                time.sleep(4)
                                 break
                         except: pass
 
-                    self.garantir_logado(url) # Verifica login após tentar botões
+                    self.garantir_logado(url)
                     self.driver.switch_to.default_content()
                     try: self.driver.switch_to.frame(self.driver.find_element(By.TAG_NAME, "iframe"))
                     except: pass
                     linhas = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
-                    if len(linhas) > 0:
-                        logger.info("         ✅ Itens encontrados via botão de acesso!")
-                        break
 
-                    # 3.2 Se não achou itens, FORÇA O FLUXO DO PRETENDO + INSERIR RESPOSTA
-                    logger.info("         Ainda 0 itens. Forçando 'Pretendo Participar' -> 'Inserir Resposta'...")
-                    # ACEITAR TERMOS DE PARTICIPACAO
-                    try:
-                        termos = self.driver.find_elements(By.CSS_SELECTOR, "input[type='radio'][value='true'].s-termAccept")
-                        if termos:
-                            logger.info(f"    Aceitando {len(termos)} termo(s) de condição (radio)...")
-                            for termo in termos:
-                                self.driver.execute_script("arguments[0].click();", termo)
-                        js_clicar_sim = """
-                        var elementos = Array.from(document.querySelectorAll('label, button, span'));
-                        var clicados = 0;
-                        elementos.forEach(function(el) {
-                            if(el.innerText && el.innerText.trim().toUpperCase() === 'SIM') {
-                                el.click();
-                                clicados++;
-                            }
-                        });
-                        return clicados;
-                        """
-                        qtd_sim = self.driver.execute_script(js_clicar_sim)
-                        if qtd_sim > 0:
-                            logger.info(f"    Forçou o clique em {qtd_sim} elemento(s) escrito 'SIM'.")
-                    except Exception as e:
-                        logger.warning(f"    Erro ao aceitar termos: {e}")
-
+                if len(linhas) == 0:
                     try:
                         dropdowns = self.driver.find_elements(By.ID, "participation")
                         if dropdowns:
-                            logger.info("         ✅ Dropdown 'Pretendo' encontrado! Selecionando...")
-                            try:
-                                Select(dropdowns[0]).select_by_value("true")
-                            except Exception:
-                                self.driver.execute_script("arguments[0].value='true'; arguments[0].dispatchEvent(new Event('change', {bubbles: true}));", dropdowns[0])
-                            time.sleep(2)
-
+                            try: Select(dropdowns[0]).select_by_value("true")
+                            except: self.driver.execute_script("arguments[0].value='true'; arguments[0].dispatchEvent(new Event('change', {bubbles: true}));", dropdowns[0])
+                            time.sleep(1)
                             btn_enviar = self.driver.find_elements(By.CSS_SELECTOR, "button.submitIntend")
                             if btn_enviar:
                                 self.driver.execute_script("arguments[0].click();", btn_enviar[0])
-                                time.sleep(4)
+                                time.sleep(3)
                                 try: self.driver.switch_to.alert.accept()
-                                except NoAlertPresentException: pass
-                    except Exception as e:
-                        logger.warning(f"         ⚠️ Erro ao forçar Pretendo: {e}")
+                                except: pass
+                    except: pass
 
-                    # Clicar Inserir resposta ou Submit (Corrigido para aceitar a tag <input>)
                     try:
-                        # O asterisco (*) faz o robô procurar em qualquer tag (input, button, a, span)
                         botoes_inserir = self.driver.find_elements(By.XPATH, "//*[@id='quote_response_submit' or @value='Inserir resposta' or contains(@class, 'submitResponse')]")
-                        
                         if botoes_inserir:
-                            logger.info("         📥 Clicando em 'Inserir resposta' / 'Submit'...")
                             self.driver.execute_script("arguments[0].click();", botoes_inserir[0])
-                            time.sleep(6) # Dá um segundo extra para o Coupa renderizar a nova página
-                    except Exception: pass
+                            time.sleep(4)
+                    except: pass
 
-                    self.garantir_logado(url) # Verifica login após forçar pretendo
+                    self.garantir_logado(url)
                     self.driver.switch_to.default_content()
                     try: self.driver.switch_to.frame(self.driver.find_element(By.TAG_NAME, "iframe"))
                     except: pass
                     linhas = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
-                    if len(linhas) > 0:
-                        logger.info("         ✅ Itens encontrados após forçar o Pretendo e Inserir Resposta!")
-                        break
-                    
-                    # 3.3 A TÁTICA NUCLEAR: F5 NA PÁGINA
-                    # Se chegou até aqui e ainda tem 0 itens, a página do Coupa "crashou" visualmente.
-                    if tentativa_recuperacao < 2:
-                        logger.warning("         ⏳ Os itens continuam invisíveis. Dando F5 (Refresh) na página...")
-                        self.driver.refresh()
-                        time.sleep(8) # Dá tempo de sobra para a página recarregar do zero
-                        try: self.driver.switch_to.alert.accept()
-                        except: pass
-                        # Tenta voltar pro frame principal se ele existir
-                        try: self.driver.switch_to.frame(self.wait.until(EC.presence_of_element_located((By.TAG_NAME, "iframe"))))
-                        except: pass
 
-            # 🚨 TRAVA DE SEGURANÇA FINAL 🚨
-            if len(linhas) == 0:
-                logger.error(f"   ❌ FALHA: Evento {num} carregou com 0 itens após todas as tentativas de recuperação! Cancelando extração.")
+                if len(linhas) > 0:
+                    itens, tem_anexo = self._extrair_itens_linhas(linhas)
+                    if tem_anexo: tem_anexo_geral = True
+                else:
+                    itens = []
+
+                texto_tela = ""
+                try: texto_tela = self.driver.find_element(By.TAG_NAME, "body").text
+                except: pass
+
+                valido, motivo, tem_eq = validar_itens_evento(itens, texto_tela)
+                if tem_eq:
+                    teve_expected_quantity = True
+
+                if valido:
+                    logger.info(f"    ✅ Sucesso: {len(itens)} item(ns) identificados e validados no evento {num}!")
+                    try: self.sio.emit('relatar_progresso', {'mensagem': f"📦 {len(itens)} itens validados no evento {num}."})
+                    except: pass
+                    itens_validados = True
+                    break
+                else:
+                    ultimo_motivo_invalido = motivo
+                    logger.warning(f"    ⚠️ Falha na validação do evento {num} (Tentativa {tentativa}/{MAX_TENTATIVAS_ITENS}): {motivo}")
+
+            if not itens_validados:
+                logger.error(f"   ❌ FALHA DEFINITIVA: Evento {num} persistiu sem itens válidos após {MAX_TENTATIVAS_ITENS} tentativas! ({ultimo_motivo_invalido})")
                 self.relatorio_email_stats.setdefault('eventos_sem_itens', []).append(num)
+                if teve_expected_quantity:
+                    self.relatorio_email_stats.setdefault('eventos_expected_quantity', []).append(num)
+
+                try:
+                    self.enviar_relatorio_email()
+                except Exception as e_mail:
+                    logger.warning(f"Erro ao disparar e-mail de alerta para evento {num}: {e_mail}")
+
                 self.driver.switch_to.default_content()
                 return "SKIPPED"
-
-            logger.info(f"    {len(linhas)} itens encontrados no evento {num}.")
-            try: self.sio.emit('relatar_progresso', {'mensagem': f"📦 {len(linhas)} itens encontrados no evento {num}."})
-            except: pass
-            
-            # 4. EXTRAÇãO DOS ITENS (COM BLINDAGEM DE QTD E LOCAL)
-            itens = []
-            tem_anexo_geral = False
-            for i, l in enumerate(linhas):
-                try:
-                    btn_expandir = l.find_element(By.CSS_SELECTOR, "img.s-expandLines, div.s-expandSidebar")
-                    ActionChains(self.driver).click(btn_expandir).perform()
-                    time.sleep(0.3)
-                except: pass
-                
-                l = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")[i]
-                
-                try:
-                    if l.find_elements(By.CSS_SELECTOR, "li.attachment.attachmentFile.s-attachmentFile"):
-                        tem_anexo_geral = True
-                except: pass
-                
-                tit = "Item"; desc = ""; qtd = "0"; loc = "N/A"
-                
-                # 1. Título e Descrição
-                try: tit = l.find_element(By.CSS_SELECTOR, "div.s-description p.s-textField").text.strip()
-                except: pass
-                try: 
-                    d = l.find_elements(By.CSS_SELECTOR, "p.s-textField")
-                    if len(d) > 1: desc = self._filter_desc(d[1].text)
-                except: pass
-                
-                # Nova verificação: Texto de compra do material
-                if not desc.strip() or desc.strip().lower() == "nenhum":
-                    try:
-                        dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra')]")
-                        dd = dt.find_element(By.XPATH, "following-sibling::dd")
-                        desc = self._filter_desc(dd.text)
-                    except: pass
-                
-                # Nova verificação: Item Text
-                if not desc.strip() or desc.strip().lower() == "nenhum":
-                    try:
-                        dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Item Text')]")
-                        dd = dt.find_element(By.XPATH, "following-sibling::dd")
-                        desc = self._filter_desc(dd.text)
-                    except: pass
-
-                # Nova verificação: Material Purchase Text
-                if not desc.strip() or desc.strip().lower() == "nenhum":
-                    try:
-                        dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Material Purchase Text')]")
-                        dd = dt.find_element(By.XPATH, "following-sibling::dd")
-                        desc = self._filter_desc(dd.text)
-                    except: pass
-                
-                # 2. Quantidade (BLINDADO CONTRA PREÇOS "BRL")
-                try: 
-                    elementos_unidade = l.find_elements(By.CSS_SELECTOR, "p.valueWithUnit")
-                    for q in elementos_unidade:
-                        texto_q = q.text.strip()
-                        if "BRL" not in texto_q and "R$" not in texto_q and "USD" not in texto_q:
-                            qtd = texto_q
-                            break
-                except: pass
-                
-                # 3. Local de Entrega (BUSCA ROBUSTA POR PALAVRA-CHAVE)
-                try:
-                    elemento_local = l.find_element(By.XPATH, ".//*[contains(text(), 'Local de entrega:')]")
-                    loc = self.parse_local(elemento_local.text)
-                except: 
-                    try: loc = self.parse_local(l.find_element(By.CSS_SELECTOR, "li.attachmentText").text)
-                    except: pass
-                
-                # Nova verificação: Endereço de entrega detalhado
-                if loc == "N/A" or not loc.strip():
-                    try:
-                        address_label = l.find_element(By.XPATH, ".//div[contains(@class, 's-fieldLabel') and contains(text(), 'Endereço de entrega')]")
-                        address_box = address_label.find_element(By.XPATH, "following-sibling::div[contains(@class, 'addressLines')]")
-                        
-                        linhas_end = address_box.text.split('\n')
-                        for linha in linhas_end:
-                            if re.search(r'\d{5}-\d{3}', linha):
-                                cidade_estado = re.sub(r'.*?\d{5}-\d{3}\s*', '', linha).strip()
-                                if cidade_estado:
-                                    loc = re.sub(r'\s+', ' ', cidade_estado)
-                                    break
-                        
-                        if loc == "N/A" or not loc.strip():
-                            loc = re.sub(r'\s+', ' ', address_box.text)
-                    except: pass
-                
-                # Novas extrações solicitadas
-                texto_item_extra = ""
-                try:
-                    dt_ti = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto do item') or contains(text(), 'Item Text')]")
-                    dd_ti = dt_ti.find_element(By.XPATH, "following-sibling::dd")
-                    txt_ti = dd_ti.text.strip()
-                    if txt_ti.lower() not in ['nenhum', 'none', 'n/a', '']:
-                        texto_item_extra = txt_ti
-                except: pass
-
-                texto_compra_extra = ""
-                try:
-                    dt_tc = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra') or contains(text(), 'Material Purchase Text')]")
-                    dd_tc = dt_tc.find_element(By.XPATH, "following-sibling::dd")
-                    txt_tc = self._filter_desc(dd_tc.text)
-                    if txt_tc.lower() not in ['nenhum', 'none', 'n/a', '']:
-                        texto_compra_extra = txt_tc
-                except: pass
-                
-                logger.info(f"       Item {i+1}: {tit[:20]}... | Qtd: {qtd} | Local: {loc[:30]}...")
-                itens.append({"item_num": i+1, "titulo": tit, "descricao": desc, "quantidade": qtd, "local_entrega": loc, "texto_item": texto_item_extra, "texto_compra": texto_compra_extra})
 
             # REFORÇO OBRIGATÓRIO DA DATA DE VENCIMENTO
             # Clica em "Informações do evento" para capturar a data final com 100% de certeza

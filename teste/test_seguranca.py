@@ -13,7 +13,7 @@ from unittest.mock import patch
 import seguranca
 from test_fase0 import carregar
 
-RAIZ = Path(__file__).parent
+RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
 GERENCIADOR = RAIZ / 'gerenciador.py'
 
 
@@ -68,11 +68,6 @@ class EntradaDoPortalTest(unittest.TestCase):
         for ruim in ('1"', '1\nsair', '{ENTER}', '1+2', '%{F4}', '(x)'):
             with self.assertRaises(ValueError):
                 seguranca.eventos_findes(ruim)
-
-    def test_texto_vbs_dobra_aspas_e_recusa_quebra_de_linha(self):
-        self.assertEqual(seguranca.texto_vbs(r'C:\a "b"'), r'C:\a ""b""')
-        with self.assertRaises(ValueError):
-            seguranca.texto_vbs('a\r\nb')
 
     def test_nome_de_impressora(self):
         for bom in ('SAMSUNGCOM', 'HP LaserJet P205X series PCL6 Class Driver', r'\\SERVIDOR2\HP (1)', 'Impressora Térreo #2'):

@@ -11,9 +11,10 @@ from datetime import date
 from test_fase0 import carregar
 from test_seguranca import Manager, SioFalso
 
-GERENCIADOR = Path(__file__).with_name('gerenciador.py')
+RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
+GERENCIADOR = RAIZ / 'gerenciador.py'
 # só a função: importar planilha_manager monta o gerenciador da base
-data_vencimento = carregar(Path(__file__).with_name('planilha_manager.py'), {'data_vencimento'}, re=re, date=date)['data_vencimento']
+data_vencimento = carregar(RAIZ / 'planilha_manager.py', {'data_vencimento'}, re=re, date=date)['data_vencimento']
 
 
 class DatasDoDashboardTest(unittest.TestCase):

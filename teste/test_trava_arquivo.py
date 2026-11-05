@@ -12,7 +12,7 @@ from unittest.mock import patch
 from trava_arquivo import TravaOcupada, trava_arquivo
 from test_planilha_persistencia import Manager, namespace as ns_manager
 
-RAIZ = Path(__file__).parent
+RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
 
 
 class OutroProcesso:

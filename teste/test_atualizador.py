@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-RAIZ = Path(__file__).parent
+RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location('atualizador', RAIZ / 'scripts' / 'atualizador.py')
 atualizador = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(atualizador)

@@ -1,5 +1,33 @@
 # -*- coding: utf-8 -*-
 import sys
+import os
+
+PASTA_GERENCIADOR = os.path.dirname(os.path.abspath(__file__))
+PASTA_LOGS = os.path.join(PASTA_GERENCIADOR, 'logs')
+os.makedirs(PASTA_LOGS, exist_ok=True)
+
+# Se executado sem console (ex: pythonw ou como serviço em segundo plano),
+# redireciona stdout e stderr para o arquivo de log para capturar todos os prints e erros
+if sys.stdout is None or sys.stderr is None:
+    try:
+        _std_log = open(os.path.join(PASTA_LOGS, 'gerenciador_console.log'), 'a', encoding='utf-8', buffering=1)
+        if sys.stdout is None:
+            sys.stdout = _std_log
+        if sys.stderr is None:
+            sys.stderr = _std_log
+    except Exception:
+        pass
+
+# Força UTF-8 nos fluxos de saída do console para evitar erros de encode de emojis no Windows
+if sys.platform == 'win32':
+    try:
+        if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 if __name__ == '__main__':
     # Bots fazem "from gerenciador import ...": sem isto o Python roda este arquivo
     # de novo dentro do mesmo processo e sobe um segundo piloto automático.
@@ -33,13 +61,34 @@ if ROBO_SECRET is None:
 if __name__ == '__main__' and len(ROBO_SECRET) < 32:
     raise SystemExit("Configure ROBO_SECRET com pelo menos 32 caracteres, igual ao segredo do servidor Maestro.")
 
-PASTA_LOGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
-os.makedirs(PASTA_LOGS, exist_ok=True)
+log_handlers = [
+    RotatingFileHandler(
+        os.path.join(PASTA_LOGS, 'gerenciador.log'), maxBytes=10_000_000, backupCount=10, encoding='utf-8'
+    )
+]
+
+# Grava também o log central em .txt na pasta de Logs da rede (\\SERVIDOR2\Publico\ALLAN\Logs\gerenciador.txt)
+PASTA_LOGS_REDE = r"\\SERVIDOR2\Publico\ALLAN\Logs"
+if os.environ.get('MAESTRO_TESTE') == '1':
+    PASTA_LOGS_REDE = os.path.join(PASTA_GERENCIADOR, 'base_teste', 'Logs')
+
+try:
+    os.makedirs(PASTA_LOGS_REDE, exist_ok=True)
+    caminho_log_txt = os.path.join(PASTA_LOGS_REDE, 'gerenciador.txt')
+    rede_handler = RotatingFileHandler(
+        caminho_log_txt, maxBytes=10_000_000, backupCount=10, encoding='utf-8'
+    )
+    log_handlers.append(rede_handler)
+except Exception:
+    pass
+
+if sys.stdout is not None:
+    log_handlers.append(logging.StreamHandler(sys.stdout))
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [PID %(process)d] [%(threadName)s] %(name)s %(levelname)s %(message)s',
-    handlers=[logging.StreamHandler(), RotatingFileHandler(
-        os.path.join(PASTA_LOGS, 'gerenciador.log'), maxBytes=5_000_000, backupCount=5, encoding='utf-8')],
+    handlers=log_handlers,
 )
 logger = logging.getLogger(__name__)
 
@@ -73,6 +122,7 @@ def carregar_config():
             "caminho_bat_me": r"C:\Users\Administrator\Desktop\mercadoeletronico.bat",
             "caminho_ariba": r"C:\Users\Administrator\Desktop\AribaSourcing",
             "caminho_findes": r"C:\Users\Administrator\Desktop\FINDES",
+            "caminho_findes_novo": r"C:\Users\Administrator\Desktop\allan bots\Findes",
             "emails_relatorio": os.environ.get("EMAILS_RELATORIO", "")
         }
         default_config = com_padroes(default_config)
@@ -102,13 +152,16 @@ CONFIG_GLOBAL = carregar_config()
 import ambiente
 if ambiente.modo_teste():
     os.makedirs(ambiente.pasta_banco(), exist_ok=True)
-    CONFIG_GLOBAL["caminho_excel"] = os.path.join(ambiente.RAIZ, "teste.xlsx")
+    candidato_excel = os.path.join(ambiente.RAIZ, "teste", "teste.xlsx")
+    CONFIG_GLOBAL["caminho_excel"] = candidato_excel if os.path.exists(candidato_excel) else os.path.join(ambiente.RAIZ, "teste.xlsx")
     CONFIG_GLOBAL["caminho_database_coupa"] = os.path.join(ambiente.pasta_database(), "eventos.jsonl")
     CONFIG_GLOBAL["caminho_pedidos_json"] = os.path.join(ambiente.pasta_database(), "pedidos.json")
     CONFIG_GLOBAL["caminho_database_vale"] = os.path.join(ambiente.pasta_database(), "eventos_nimbi.jsonl")
     CONFIG_GLOBAL["caminho_banco_dados"] = ambiente.pasta_banco()
     CONFIG_GLOBAL["caminho_backups"] = os.path.join(ambiente.pasta_database(), "backups_excel")
 else:
+    CONFIG_GLOBAL.setdefault("caminho_database_coupa", os.path.join(ambiente.pasta_database(), "eventos.jsonl"))
+    CONFIG_GLOBAL.setdefault("caminho_database_vale", os.path.join(ambiente.pasta_database(), "eventos_nimbi.jsonl"))
     CONFIG_GLOBAL["caminho_banco_dados"] = r"\\SERVIDOR2\Publico\ALLAN\database\Banco-de-dados"
     CONFIG_GLOBAL["caminho_backups"] = r"\\SERVIDOR2\Publico\ALLAN\database\backups_excel"
 
@@ -124,8 +177,11 @@ if __name__ == '__main__':
         logger.error(f"Já existe um gerenciador rodando ({e}). Feche-o antes de abrir outro.")
         # ponytail: o recusado acrescenta 1 linha no arquivo do que está rodando; nunca limpa nem regrava
         eventos.registrar('gerenciador', 'instancia', 'aviso', f'Segundo gerenciador recusado: já existe um rodando ({e})')
-        try: input("Pressione Enter para fechar esta janela...")
-        except EOFError: pass
+        try:
+            if sys.stdin and hasattr(sys.stdin, 'read'):
+                input("Pressione Enter para fechar esta janela...")
+        except Exception:
+            pass
         sys.exit(3)
     eventos.limpar()
 
@@ -300,6 +356,7 @@ bot_findes = None
 processo_me = None
 bot_ariba = None
 rodando_monitor_findes = False
+rodando_monitor_findes_novo = False
 rodando_monitor_me = False
 rodando_monitor_ariba = False
 rodando_monitor_coupa = False
@@ -430,6 +487,95 @@ def monitorar_log_me():
                     time.sleep(0.5)
     except Exception as e:
         logger.error(f"Erro ao monitorar log do ME: {e}")
+def obter_pasta_findes_novo():
+    caminho = CONFIG_GLOBAL.get("caminho_findes_novo", r"C:\Users\Administrator\Desktop\allan bots\Findes")
+    if os.path.isdir(caminho):
+        return caminho
+    # Fallback caso mude de usuário ou ambiente (ex: teste local)
+    candidatos = [
+        r"C:\Users\Administrator\Desktop\allan bots\Findes",
+        r"C:\Users\USER\Desktop\allan bots\Findes",
+        r"C:\Users\USER\Desktop\allan\Findes",
+        r"C:\Users\Administrator\Desktop\allan\Findes"
+    ]
+    for c in candidatos:
+        if os.path.isdir(c):
+            return c
+    return caminho
+
+def findes_novo_esta_rodando():
+    try:
+        import psutil
+        my_pid = os.getpid()
+        for p in psutil.process_iter(['name', 'cmdline']):
+            try:
+                if p.pid == my_pid:
+                    continue
+                cmdline = p.info.get('cmdline') or []
+                cmd_str = ' '.join(cmdline).lower()
+                if 'findes.py' in cmd_str and 'gerenciador' not in cmd_str:
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception as e:
+        logger.debug(f"Erro ao checar status do Findes novo via psutil: {e}")
+    return False
+
+def monitorar_log_findes_novo():
+    global rodando_monitor_findes_novo
+    caminho_log = r"\\SERVIDOR2\Publico\ALLAN\Logs\findes.txt"
+    if not os.path.exists(caminho_log):
+        caminho_local = os.path.join(obter_pasta_findes_novo(), "findes.txt")
+        if os.path.exists(caminho_local):
+            caminho_log = caminho_local
+
+    # Envia últimas linhas se houver histórico para preencher o terminal
+    if os.path.exists(caminho_log):
+        try:
+            with open(caminho_log, 'r', encoding='utf-8', errors='ignore') as f:
+                linhas = f.readlines()
+                ultimas = linhas[-30:] if len(linhas) > 30 else linhas
+                for l in ultimas:
+                    limpa = l.strip()
+                    if limpa:
+                        sio.emit('relatar_progresso_findes', {'mensagem': limpa})
+        except Exception as e:
+            logger.warning(f"Erro ao ler histórico recente do Findes: {e}")
+
+    try:
+        tentativas = 0
+        while rodando_monitor_findes_novo and not os.path.exists(caminho_log) and tentativas < 30:
+            time.sleep(1)
+            tentativas += 1
+
+        if not rodando_monitor_findes_novo or not os.path.exists(caminho_log):
+            return
+
+        with open(caminho_log, 'r', encoding='utf-8', errors='ignore') as f:
+            f.seek(0, os.SEEK_END)
+            contador_sem_linha = 0
+            while rodando_monitor_findes_novo:
+                linha = f.readline()
+                if linha and linha.strip():
+                    linha_limpa = linha.strip()
+                    sio.emit('relatar_progresso_findes', {'mensagem': linha_limpa})
+                    _registrar_evento_linha_log('findes', linha_limpa)
+                    contador_sem_linha = 0
+                else:
+                    time.sleep(0.5)
+                    contador_sem_linha += 1
+                    # A cada ~10 segundos, verifica se o processo findes.py ainda está vivo
+                    if contador_sem_linha >= 20:
+                        contador_sem_linha = 0
+                        if not findes_novo_esta_rodando():
+                            logger.info("Processo Findes novo não está mais ativo.")
+                            sio.emit('relatar_progresso_findes', {'mensagem': '⏹️ Processo Findes finalizado.'})
+                            rodando_monitor_findes_novo = False
+                            sio.emit('sincronizar_estado_findes', {'status': 'desligado'})
+                            break
+    except Exception as e:
+        logger.error(f"Erro no monitor do Findes novo: {e}")
+
 def monitorar_log_findes():
     global bot_findes, rodando_monitor_findes
     caminho_log = r"\\SERVIDOR2\Publico\ALLAN\Logs\log-findes.txt" 
@@ -441,7 +587,7 @@ def monitorar_log_findes():
     if not rodando_monitor_findes:
         return
 
-    # ?? A "MOCHILA" QUE VAI GUARDAR OS TEXTOS PARA O BOTO COPIAR ??
+    # 🎒 A "MOCHILA" QUE VAI GUARDAR OS TEXTOS PARA O BOTÃO COPIAR 🎒
     textos_acumulados = ""
 
     try:
@@ -452,39 +598,40 @@ def monitorar_log_findes():
                 if linha and linha.strip():
                     linha_limpa = linha.strip()
 
-                    # 1. Envia a linha normalmente para o mini-terminal do site
+                    # 1. Envia a linha para o terminal do robô antigo (modal) e canal geral
+                    sio.emit('relatar_progresso_findes_antigo', {'mensagem': linha_limpa})
                     sio.emit('relatar_progresso_findes', {'mensagem': linha_limpa})
                     _registrar_evento_linha_log('findes', linha_limpa)
 
                     # ========================================================
-                    # 2. A MGICA DO COLECIONADOR: Filtra e junta os dados!
+                    # 2. A MÁGICA DO COLECIONADOR: Filtra e junta os dados!
                     # ========================================================
                     if linha_limpa.startswith("CDE:"):
-                        # Se j tiver alguma coisa na mochila (ou seja,  o 2 evento), d 2 enters para separar
                         if textos_acumulados: 
                             textos_acumulados += "\n\n"
                         textos_acumulados += linha_limpa + "\n"
 
-                    elif linha_limpa.startswith("MATERIAL:") or linha_limpa.startswith("TRMINO") or linha_limpa.startswith("TERMINO"):
+                    elif linha_limpa.startswith("MATERIAL:") or linha_limpa.startswith("TÉRMINO") or linha_limpa.startswith("TERMINO"):
                         textos_acumulados += linha_limpa + "\n"
 
                     # ========================================================
-                    # 3. FINALIZAO: Entrega a mochila ao site!
+                    # 3. FINALIZAÇÃO: Entrega a mochila ao site!
                     # ========================================================
-                    if "=== SESSO FINALIZADA ===" in linha_limpa:
-
-                        # ... dentro do IF do === SESSO FINALIZADA === ...
+                    if "=== SESSÃO FINALIZADA ===" in linha_limpa:
                         if textos_acumulados.strip():
                             logger.info("Enviando textos gerados para o site...")
-                            io.emit('findes_textos_gerados', {'texto': textos_acumulados.strip()})
+                            sio.emit('findes_textos_gerados', {'texto': textos_acumulados.strip()})
 
-                        sio.emit('relatar_progresso_findes', {'mensagem': '?? Sinal de Fim recebido! Fechando o rob automaticamente...'})
+                        sio.emit('relatar_progresso_findes_antigo', {'mensagem': '⏹️ Sinal de Fim recebido! Fechando o robô automaticamente...'})
+                        sio.emit('relatar_progresso_findes', {'mensagem': '⏹️ Sinal de Fim recebido! Fechando o robô automaticamente...'})
 
                         if bot_findes:
                             os.system(f"taskkill /F /T /PID {bot_findes.pid}")
                             bot_findes = None
 
                         rodando_monitor_findes = False
+                        sio.emit('sincronizar_estado_findes_antigo', {'status': 'desligado'})
+                        sio.emit('relatar_progresso_findes_antigo', {'comando_interno': 'desligar_botoes'})
                         sio.emit('relatar_progresso_findes', {'comando_interno': 'desligar_botoes'})
                         break 
                 else:
@@ -611,14 +758,17 @@ def validar_login(dados):
         if usuarios[email].get('bloqueado'): 
             sio.emit('resultado_login', {'sucesso': False, 'erro': 'Conta suspensa.', 'clientId': cid})
         else: 
+            dash_acc = bool(usuarios[email].get('dashboard_access', False))
+            is_adm = bool(usuarios[email].get('admin', False))
+            port_acc = bool(usuarios[email].get('portais_access', False)) or dash_acc or is_adm
             sio.emit('resultado_login', {
                 'sucesso': True, 
                 'user': email, 
-                'isAdmin': usuarios[email].get('admin', False), 
-                'isDev': usuarios[email].get('dev', False), 
-                'hasDashboardAccess': usuarios[email].get('dashboard_access', False),
-                'hasPlanilhaAccess': usuarios[email].get('planilha_access', False), # <-- NOVO
-                'hasPortaisAccess': usuarios[email].get('portais_access', False),   # <-- NOVO
+                'isAdmin': is_adm, 
+                'isDev': bool(usuarios[email].get('dev', False)), 
+                'hasDashboardAccess': dash_acc,
+                'hasPlanilhaAccess': False,
+                'hasPortaisAccess': port_acc,
                 'vendedor': usuarios[email].get('vendedor', ''),
                 'clientId': cid
             })
@@ -766,6 +916,59 @@ def forcar_troca(portal, espera_s=30):
     sio.emit('comando_direto', {'modo': 'ligar_robo', 'portal': portal})
 
 
+
+_timer_inatividade_resposta = None
+_trava_timer_inatividade = threading.Lock()
+TEMPO_ESPERA_INATIVIDADE_RESPOSTA = 600  # 10 minutos (600 segundos)
+
+def cancelar_timer_inatividade_resposta():
+    global _timer_inatividade_resposta
+    with _trava_timer_inatividade:
+        if _timer_inatividade_resposta is not None:
+            try:
+                _timer_inatividade_resposta.cancel()
+            except Exception:
+                pass
+            _timer_inatividade_resposta = None
+            logger.info("⏱️ Novo comando recebido pelo robô: timer de 10 minutos resetado.")
+
+def agendar_timer_inatividade_resposta(portal):
+    global _timer_inatividade_resposta
+    with _trava_timer_inatividade:
+        if _timer_inatividade_resposta is not None:
+            try:
+                _timer_inatividade_resposta.cancel()
+            except Exception:
+                pass
+            _timer_inatividade_resposta = None
+
+        def _fechar_navegador_inatividade():
+            global bot_coupa, bot_vale, portal_atual
+            portal_alvo = portal or portal_atual or 'coupa'
+            logger.info(f"⏳ Passaram-se 10 minutos sem novas cotações/eventos para responder. Fechando o navegador do robô {portal_alvo.upper()} por inatividade...")
+            try:
+                bot = bot_coupa if portal_alvo == 'coupa' else bot_vale
+                if bot and getattr(bot, 'driver', None) is not None:
+                    try:
+                        bot.driver.quit()
+                    except Exception as e_q:
+                        logger.warning(f"Erro ao fechar driver: {e_q}")
+                if portal_alvo == 'coupa':
+                    bot_coupa = None
+                elif portal_alvo == 'vale':
+                    bot_vale = None
+                sio.emit('sou_o_robo')
+                sio.emit('relatar_progresso', {'mensagem': f"💤 Navegador do robô {portal_alvo.upper()} fechado após 10 minutos sem novas cotações para responder."})
+                logger.info(f"✅ Navegador do robô {portal_alvo.upper()} fechado com sucesso após 10 minutos de inatividade.")
+            except Exception as e_fech:
+                logger.error(f"Erro ao fechar navegador por inatividade: {e_fech}")
+
+        logger.info(f"⏳ Cotação respondida. Aguardando 10 minutos por novas cotações antes de fechar o navegador do robô {portal.upper()}...")
+        sio.emit('relatar_progresso', {'mensagem': f"⏳ Cotação respondida. O robô {portal.upper()} aguardará 10 minutos por novas respostas antes de fechar o navegador."})
+        _timer_inatividade_resposta = threading.Timer(TEMPO_ESPERA_INATIVIDADE_RESPOSTA, _fechar_navegador_inatividade)
+        _timer_inatividade_resposta.daemon = True
+        _timer_inatividade_resposta.start()
+
 @sio.on('comando_para_robo')
 def comando_para_robo(dados):
     global bot_coupa, bot_vale, bot_findes, portal_atual, processo_me, bot_ariba, rodando_monitor_me, rodando_monitor_ariba, rodando_monitor_coupa, rodando_monitor_vale
@@ -907,13 +1110,17 @@ WshShell.SendKeys "~"
                 bot_coupa = CoupaScraper(SioDoRobo(sio), aguardando_clique, coordenadas_clique)
                 rodando_monitor_coupa = True
                 threading.Thread(target=monitorar_log_coupa, daemon=True).start()
-                threading.Thread(target=bot_coupa.iniciar_e_logar, daemon=True).start()
+                th_login = threading.Thread(target=bot_coupa.iniciar_e_logar, daemon=True)
+                bot_coupa.thread_login = th_login
+                th_login.start()
             else:
                 from bots.vale_bot import ValeScraper
                 bot_vale = ValeScraper(SioDoRobo(sio), aguardando_clique, coordenadas_clique)
                 rodando_monitor_vale = True
                 threading.Thread(target=monitorar_log_vale, daemon=True).start()
-                threading.Thread(target=bot_vale.iniciar_e_logar, daemon=True).start()
+                th_login = threading.Thread(target=bot_vale.iniciar_e_logar, daemon=True)
+                bot_vale.thread_login = th_login
+                th_login.start()
 
         elif modo == 'desligar_robo':
             if portal == 'coupa':
@@ -940,21 +1147,103 @@ WshShell.SendKeys "~"
         # ?? INICIA TAREFAS NORMAIS ??
         elif modo in ['extrair', 'verificar', 'responder']:
             bot_alvo = bot_coupa if portal == 'coupa' else bot_vale
+            if modo == 'responder' and bot_alvo is None:
+                bot_alvo = bot_coupa or bot_vale
+            if modo == 'responder' and bot_alvo is None:
+                logger.info(f"{portal}: robô desligado ao receber 'responder'; ligando automaticamente...")
+                sio.emit('relatar_progresso', {'mensagem': f"🚀 Ligando o robô {portal.upper()} automaticamente para responder o evento {dados.get('evento', '')}..."})
+                portal_atual = portal
+                if portal == 'coupa':
+                    from bots.coupa import CoupaScraper
+                    bot_coupa = CoupaScraper(SioDoRobo(sio), aguardando_clique, coordenadas_clique)
+                    bot_alvo = bot_coupa
+                    rodando_monitor_coupa = True
+                    threading.Thread(target=monitorar_log_coupa, daemon=True).start()
+                else:
+                    from bots.vale_bot import ValeScraper
+                    bot_vale = ValeScraper(SioDoRobo(sio), aguardando_clique, coordenadas_clique)
+                    bot_alvo = bot_vale
+                    rodando_monitor_vale = True
+                    threading.Thread(target=monitorar_log_vale, daemon=True).start()
+
             if bot_alvo:
                 anterior = getattr(bot_alvo, 'thread_atual', None)
                 pedido = dict(dados)
+                slot_bot = 'bot_coupa' if bot_alvo is bot_coupa else 'bot_vale'
 
-                def rodar(bot=bot_alvo, anterior=anterior):
+                if modo == 'responder' and anterior is not None and anterior.is_alive():
+                    ped_ant = getattr(anterior, 'pedido', None) or {}
+                    if ped_ant.get('modo') == 'responder' and str(ped_ant.get('evento', '')).strip() == str(dados.get('evento', '')).strip():
+                        logger.info(f"{portal}: evento {dados.get('evento', '')} já está sendo respondido no momento; ignorando duplicata.")
+                        return
+
+                def rodar(bot=bot_alvo, anterior=anterior, slot_bot=slot_bot):
                     # Uma tarefa por vez no mesmo navegador: a nova espera a anterior terminar
                     if anterior is not None and anterior.is_alive():
                         logger.info(f"{portal}: '{modo}' aguardando a tarefa anterior terminar")
                         anterior.join()
-                    if globals().get('bot_' + portal) is not bot:
+                    if globals().get(slot_bot) is not bot:
                         logger.warning(f"{portal}: '{modo}' descartado: o robô foi desligado enquanto esperava")
+                        if modo == 'responder':
+                            sio.emit('tarefa_concluida', {
+                                'evento': f"Evento {dados.get('evento', '')}",
+                                'sucesso': False,
+                                'erro': 'O robô foi desligado enquanto o evento aguardava na fila.'
+                            })
                         return
-                    bot.iniciar_tarefa(modo, dados)
+                    if modo == 'responder':
+                        th_login = getattr(bot, 'thread_login', None)
+                        if th_login is not None and th_login.is_alive():
+                            logger.info(f"{portal}: aguardando login em andamento terminar antes de responder...")
+                            th_login.join()
+                        precisa_logar = not getattr(bot, 'is_ready', False)
+                        if not precisa_logar and getattr(bot, 'driver', None) is not None:
+                            try:
+                                precisa_logar = len(bot.driver.window_handles) == 0
+                            except Exception:
+                                precisa_logar = True
+                        if precisa_logar and callable(getattr(bot, 'iniciar_e_logar', None)):
+                            bot.is_ready = False
+                            logger.info(f"{portal}: iniciando navegador e login para responder o evento {dados.get('evento', '')}...")
+                            sio.emit('relatar_progresso', {'mensagem': f"🔐 Abrindo navegador e fazendo login no portal {portal.upper()} para responder o evento {dados.get('evento', '')}..."})
+                            bot.iniciar_e_logar()
+                        if not getattr(bot, 'is_ready', False) and callable(getattr(bot, 'iniciar_e_logar', None)):
+                            erro_login = (getattr(getattr(bot, 'sio', None), 'ultima_conclusao', None) or {}).get('erro') or 'Falha ao iniciar e logar no robô.'
+                            logger.error(f"{portal}: não foi possível logar para responder o evento {dados.get('evento', '')}: {erro_login}")
+                            try:
+                                print_login = None
+                                if hasattr(bot, 'driver') and getattr(bot, 'driver', None):
+                                    try:
+                                        print_login = bot.driver.get_screenshot_as_png()
+                                    except Exception:
+                                        pass
+                                from bots.relatorio_email import enviar_email_erro_resposta
+                                enviar_email_erro_resposta(
+                                    nome_bot=f"{portal.capitalize()} Bot",
+                                    evento=str(dados.get('evento', '')),
+                                    erro_detalhado=f"Falha de autenticação ao tentar responder o evento: {erro_login}",
+                                    etapa="Login no Portal para Responder",
+                                    print_bytes=print_login,
+                                    config=CONFIG_GLOBAL,
+                                    destinatario_obrigatorio="vendas7@venturainformatica.com.br"
+                                )
+                            except Exception as e_login_mail:
+                                logger.warning(f"Aviso ao enviar e-mail de falha no login de resposta: {e_login_mail}")
+                            sio.emit('tarefa_concluida', {
+                                'evento': f"Evento {dados.get('evento', '')}",
+                                'sucesso': False,
+                                'erro': erro_login
+                            })
+                            return
+                    try:
+                        bot.iniciar_tarefa(modo, dados)
+                    finally:
+                        if modo == 'responder':
+                            agendar_fn = globals().get('agendar_timer_inatividade_resposta')
+                            if callable(agendar_fn):
+                                agendar_fn(portal)
 
-                if pedido_repetido(anterior, pedido):
+                if modo != 'responder' and pedido_repetido(anterior, pedido):
                     # Clique duplo ou ordem igual à última da fila (21/10: duas verificações da Vale): não roda de novo.
                     # A thread só acompanha a que já existe, para o piloto (executar_tarefa) ver o comando chegar.
                     logger.info(f"{portal}: '{modo}' igual ao último pedido da fila; não será repetido")
@@ -980,113 +1269,157 @@ WshShell.SendKeys "~"
                 logger.warning("?? Comando de parada recebido, mas nenhum rob estava extraindo no momento.")
 
     # ========================================================
-    # ?? ROTA .NET DO FINDES (INICIA COMO O ARIBA) ??
+    # 🏭 FINDES (ROBÔ NOVO VIA .BAT E ROBÔ ANTIGO PESQUISA .NET)
     # ========================================================
     elif portal == 'findes':
-        if modo == 'ligar_robo':
-            try:
-                # vai para o VBScript que digita na janela: recusa o que poderia sair da string
-                eventos_lista = seguranca.eventos_findes(dados.get('evento'))
-                caminho_findes_vbs = seguranca.texto_vbs(CONFIG_GLOBAL.get("caminho_findes", r"C:\Users\Administrator\Desktop\FINDES"))
-            except ValueError as e:
-                sio.emit('relatar_progresso_findes', {'mensagem': f'Comando recusado: {e}', 'comando_interno': 'desligar_botoes'})
+        # 1. COMANDOS DO ROBÔ NOVO (iniciar_findes.bat / parar_findes.bat)
+        if modo in ['iniciar_findes', 'ligar_robo_novo', 'iniciar_novo'] or (modo == 'ligar_robo' and dados.get('versao') != 'antigo' and not dados.get('evento')):
+            pasta_novo = obter_pasta_findes_novo()
+            bat_iniciar = os.path.join(pasta_novo, "iniciar_findes.bat")
+
+            if not os.path.exists(bat_iniciar):
+                msg_erro = f"Arquivo iniciar_findes.bat não encontrado em: {pasta_novo}"
+                logger.error(msg_erro)
+                sio.emit('relatar_progresso_findes', {'mensagem': f"❌ {msg_erro}"})
+                sio.emit('sincronizar_estado_findes', {'status': 'desligado'})
                 return
-            eventos_str = ', '.join(eventos_lista)
-            sio.emit('relatar_progresso_findes', {'mensagem': f"?? Iniciando Mdulo .NET Findes para os eventos: {eventos_str}"})
+
+            sio.emit('relatar_progresso_findes', {'mensagem': f"🚀 Acionando iniciar_findes.bat em {pasta_novo}..."})
+            try:
+                flags_cmd = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
+                subprocess.Popen(["cmd.exe", "/c", "iniciar_findes.bat"], cwd=pasta_novo, creationflags=flags_cmd)
+                rodando_monitor_findes_novo = True
+                sio.emit('sincronizar_estado_findes', {'status': 'executando'})
+                threading.Thread(target=monitorar_log_findes_novo, daemon=True).start()
+                eventos.registrar('findes', 'ciclo', 'ok', 'Robô Findes (novo) iniciado via .bat')
+            except Exception as e:
+                logger.error(f"Erro ao disparar iniciar_findes.bat: {e}")
+                sio.emit('relatar_progresso_findes', {'mensagem': f"❌ Falha ao iniciar: {e}"})
+                sio.emit('sincronizar_estado_findes', {'status': 'desligado'})
+
+        elif modo in ['parar_findes', 'desligar_robo_novo', 'parar_novo'] or (modo == 'desligar_robo' and dados.get('versao') != 'antigo'):
+            pasta_novo = obter_pasta_findes_novo()
+            bat_parar = os.path.join(pasta_novo, "parar_findes.bat")
+            sio.emit('relatar_progresso_findes', {'mensagem': "🛑 Parando robô Findes (acionando parar_findes.bat)..."})
+
+            if os.path.exists(bat_parar):
+                try:
+                    flags_cmd = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
+                    subprocess.Popen(["cmd.exe", "/c", "parar_findes.bat"], cwd=pasta_novo, creationflags=flags_cmd)
+                except Exception as e:
+                    logger.warning(f"Erro ao executar parar_findes.bat: {e}")
+
+            # Força o encerramento do processo caso o bat demore
+            try:
+                import psutil
+                for p in psutil.process_iter(['name', 'cmdline']):
+                    try:
+                        cmdline = p.info.get('cmdline') or []
+                        if 'findes.py' in ' '.join(cmdline).lower():
+                            p.kill()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            rodando_monitor_findes_novo = False
+            sio.emit('sincronizar_estado_findes', {'status': 'desligado'})
+            sio.emit('relatar_progresso_findes', {'mensagem': "⏹️ Robô Findes parado com sucesso."})
+
+        # 2. COMANDOS DO ROBÔ ANTIGO (PESQUISA .NET)
+        elif modo in ['ligar_robo_antigo'] or (modo == 'ligar_robo' and (dados.get('versao') == 'antigo' or dados.get('evento'))):
+            try:
+                # cada evento vai para o stdin do robô .NET: quebra de linha mandaria "sair" ou outro comando
+                eventos_str = ', '.join(seguranca.eventos_findes(dados.get('evento')))
+            except ValueError as e:
+                for canal in ('relatar_progresso_findes_antigo', 'relatar_progresso_findes'):
+                    sio.emit(canal, {'mensagem': f'Comando recusado: {e}', 'comando_interno': 'desligar_botoes'})
+                return
+            sio.emit('relatar_progresso_findes_antigo', {'mensagem': f"🚀 Iniciando Módulo .NET Findes para os eventos: {eventos_str}"})
+            sio.emit('relatar_progresso_findes', {'mensagem': f"🚀 Iniciando Módulo .NET Findes para os eventos: {eventos_str}"})
 
             def run_findes():
                 global bot_findes, rodando_monitor_findes
                 try:
-                    # 1. Abre APENAS a janela preta vazia com o nome ROBO_FINDES
-                    comando = 'cmd.exe /k "title ROBO_FINDES"'
-                    bot_findes = subprocess.Popen(comando, creationflags=subprocess.CREATE_NEW_CONSOLE)
+                    caminho_findes_local = CONFIG_GLOBAL.get("caminho_findes", r"C:\Users\Administrator\Desktop\FINDES")
+                    env_findes = os.environ.copy()
+                    env_findes["NODE_SKIP_PLATFORM_CHECK"] = "1"
 
-                    # INICIA O VIGIA DE LOGS
+                    # Abre o CMD já na pasta correta, setando a variável de ambiente e iniciando o dotnet run diretamente
+                    # Isso evita depender de SendKeys/foco na janela, não sendo afetado pelo Coupa ou outros programas
+                    comando = f'title ROBO_FINDES & cd /d "{caminho_findes_local}" & set NODE_SKIP_PLATFORM_CHECK=1 & dotnet run'
+                    bot_findes = subprocess.Popen(
+                        ['cmd.exe', '/k', comando],
+                        cwd=caminho_findes_local,
+                        stdin=subprocess.PIPE,
+                        text=True,
+                        encoding='utf-8',
+                        errors='replace',
+                        creationflags=subprocess.CREATE_NEW_CONSOLE,
+                        env=env_findes
+                    )
+
                     rodando_monitor_findes = True
+                    sio.emit('sincronizar_estado_findes_antigo', {'status': 'executando'})
                     threading.Thread(target=monitorar_log_findes, daemon=True).start()
 
-                    # 2. O Digitador Fantasma agora faz TODO o trabalho
-                    sio.emit('relatar_progresso_findes', {'mensagem': '?? Fantasma assumiu o teclado! Preparando ambiente...'})
+                    sio.emit('relatar_progresso_findes_antigo', {'mensagem': '🚀 Robô .NET iniciado com sucesso! Preparando envio dos eventos...'})
 
-                    # ?? USANDO O SMBOLO '~' QUE  O 'ENTER' INFALVEL DO VBSCRIPT ??
-                    vbs_code = f"""
-Set WshShell = WScript.CreateObject("WScript.Shell")
-WScript.Sleep 2000 
+                    def injetar_eventos():
+                        try:
+                            # Aguarda o .NET carregar antes de mandar os eventos pelo pipe direto
+                            time.sleep(10)
+                            if eventos_str:
+                                eventos_lista = [e.strip() for e in eventos_str.split(',') if e.strip()]
+                                for evento in eventos_lista:
+                                    if bot_findes and bot_findes.poll() is None and bot_findes.stdin:
+                                        sio.emit('relatar_progresso_findes_antigo', {'mensagem': f"📝 Enviando evento para o robô: {evento}"})
+                                        bot_findes.stdin.write(f"{evento}\n")
+                                        bot_findes.stdin.flush()
+                                        time.sleep(2)
+                                if bot_findes and bot_findes.poll() is None and bot_findes.stdin:
+                                    bot_findes.stdin.write("sair\n")
+                                    bot_findes.stdin.flush()
+                        except Exception as e_inj:
+                            logger.warning(f"Aviso ao injetar eventos no Findes via stdin: {e_inj}")
 
-' Puxa a janela para a frente
-For i = 1 To 5
-    Success = WshShell.AppActivate("ROBO_FINDES")
-    If Success Then Exit For
-    WScript.Sleep 500
-Next
-WScript.Sleep 800
+                    threading.Thread(target=injetar_eventos, daemon=True).start()
 
-' --- PASSO 1: ENTRAR NA PASTA ---
-WshShell.SendKeys "cd {caminho_findes_vbs}"
-WScript.Sleep 500
-WshShell.SendKeys "~"
-WScript.Sleep 1500
-
-' --- PASSO 2: APLICAR A REGRA NODE ---
-WshShell.SendKeys "set NODE_SKIP_PLATFORM_CHECK=1"
-WScript.Sleep 500
-WshShell.SendKeys "~"
-WScript.Sleep 1500
-
-' --- PASSO 3: INICIAR O ROB ---
-WshShell.SendKeys "dotnet run"
-WScript.Sleep 500
-WshShell.SendKeys "~"
-
-' D 10 segundos para o .NET carregar antes de comear a mandar os eventos
-WScript.Sleep 10000
-"""
-                    # --- PASSO 4: DIGITAR OS EVENTOS E SAIR ---
-                    if eventos_lista:
-                        for evento in eventos_lista:
-                            vbs_code += f"""
-WshShell.SendKeys "{evento}"
-WScript.Sleep 500
-WshShell.SendKeys "~"
-WScript.Sleep 2000
-"""
-                        vbs_code += """
-WshShell.SendKeys "sair"
-WScript.Sleep 500
-WshShell.SendKeys "~"
-"""
-                    # Guarda e executa o Fantasma
-                    vbs_path = os.path.join(tempfile.gettempdir(), "digitador_findes.vbs")
-                    with open(vbs_path, "w", encoding="utf-8") as f: 
-                        f.write(vbs_code)
-                    subprocess.Popen(["wscript.exe", vbs_path])
-
-                    # O Python fica  espera que a janela feche
                     bot_findes.wait()
-                    eventos.registrar('findes', 'ciclo', 'ok', 'Módulo Findes concluído com sucesso', ref=eventos_str or None)
+                    eventos.registrar('findes', 'ciclo', 'ok', 'Módulo Findes (pesquisa) concluído com sucesso', ref=eventos_str or None)
 
                 except Exception as e:
-                    logger.error(f"Erro na execuo do Findes: {e}")
-                    sio.emit('relatar_progresso_findes', {'mensagem': f'? Erro Crtico ao iniciar: {e}'})
+                    logger.error(f"Erro na execução do Findes antigo: {e}")
+                    sio.emit('relatar_progresso_findes_antigo', {'mensagem': f'❌ Erro Crítico ao iniciar: {e}'})
                 finally:
                     if bot_findes:
                         bot_findes = None
-                        sio.emit('relatar_progresso_findes', {'mensagem': "? Mdulo Findes concludo/fechado.", 'comando_interno': 'desligar_botoes'})
+                    rodando_monitor_findes = False
+                    sio.emit('sincronizar_estado_findes_antigo', {'status': 'desligado'})
+                    sio.emit('relatar_progresso_findes_antigo', {'mensagem': "⏹️ Módulo Findes concluído/fechado.", 'comando_interno': 'desligar_botoes'})
 
-            # Roda o Findes em paralelo para no travar o gerenciador
             threading.Thread(target=run_findes, daemon=True).start()
 
-        elif modo == 'desligar_robo':
+        elif modo in ['desligar_robo_antigo'] or (modo == 'desligar_robo' and dados.get('versao') == 'antigo'):
             if bot_findes:
-                sio.emit('relatar_progresso_findes', {'mensagem': '?? Freio acionado! Encerrando o Findes...'})
+                sio.emit('relatar_progresso_findes_antigo', {'mensagem': '⏹️ Freio acionado! Encerrando o Findes...'})
                 os.system(f"taskkill /F /T /PID {bot_findes.pid}")
                 bot_findes = None
             else:
-                sio.emit('relatar_progresso_findes', {'mensagem': "?? O rob j estava desligado."})
-            sio.emit('relatar_progresso_findes', {'comando_interno': 'desligar_botoes'})
+                sio.emit('relatar_progresso_findes_antigo', {'mensagem': "⏹️ O robô já estava desligado."})
+            rodando_monitor_findes = False
+            sio.emit('sincronizar_estado_findes_antigo', {'status': 'desligado'})
+            sio.emit('relatar_progresso_findes_antigo', {'comando_interno': 'desligar_botoes'})
 
         elif modo == 'mover_anexos_findes':
-            sio.emit('relatar_progresso_findes', {'mensagem': "?? Funo de mover anexos precisa ser acoplada  lgica do .NET."})
+            sio.emit('relatar_progresso_findes', {'mensagem': "⚠️ Função de mover anexos precisa ser acoplada à lógica do .NET."})
+
+@sio.on('pedir_estado_findes')
+def responder_estado_findes(dados=None):
+    status_novo = 'executando' if (rodando_monitor_findes_novo or findes_novo_esta_rodando()) else 'desligado'
+    status_antigo = 'executando' if (bot_findes is not None or rodando_monitor_findes) else 'desligado'
+    sio.emit('sincronizar_estado_findes', {'status': status_novo})
+    sio.emit('sincronizar_estado_findes_antigo', {'status': status_antigo})
 
 @sio.on('executar_clique')
 def receber_clique(dados):
@@ -1152,9 +1485,21 @@ def admin_alterar_acesso_dashboard(dados):
             sio.emit('admin_resposta_acesso', {'sucesso': False, 'erro': 'Usuário não encontrado.', 'clientId': client_id})
             return
         usuarios[email][campo] = acesso
+        if campo == 'dashboard_access' and acesso:
+            usuarios[email]['portais_access'] = True
+        elif campo == 'portais_access' and not acesso:
+            usuarios[email]['dashboard_access'] = False
         salvar_usuarios(usuarios)
         logger.info(f"Admin alterou {campo} de {email} para {acesso}")
-        sio.emit('admin_resposta_acesso', {'sucesso': True, 'email': email, 'campo': campo, 'acesso': acesso, 'clientId': client_id})
+        sio.emit('admin_resposta_acesso', {
+            'sucesso': True,
+            'email': email,
+            'campo': campo,
+            'acesso': acesso,
+            'portais_access': bool(usuarios[email].get('portais_access', False)),
+            'dashboard_access': bool(usuarios[email].get('dashboard_access', False)),
+            'clientId': client_id
+        })
     except Exception as e:
         logger.error(f"Erro ao alterar acesso de {email}: {e}")
         sio.emit('admin_resposta_acesso', {'sucesso': False, 'erro': 'Erro ao salvar o banco de usuários.', 'clientId': client_id})
@@ -1324,6 +1669,23 @@ def comando_carregar_planilha_json(dados):
 
             cotacoes = [c for c in cotacoes if str(c.get('COTAÇÃO', '')).strip() in chaves_validas]
 
+        # Portal de origem das cotações exibidas (só Coupa e Vale têm o botão RESPONDER na tela): número -> 'coupa' | 'vale'
+        import os, json
+        def chaves_do_robo(caminho_db):
+            chaves = set()
+            if caminho_db and os.path.exists(caminho_db):
+                with open(caminho_db, 'r', encoding='utf-8') as f:
+                    for linha in f:
+                        if linha.strip():
+                            try:
+                                d = json.loads(linha)
+                                chave = str(d.get('titulo') or d.get('numero') or d.get('num') or '').strip()
+                                if chave: chaves.add(chave)
+                            except Exception: pass
+            return chaves
+        chaves_coupa = chaves_do_robo(CONFIG_GLOBAL.get("caminho_database_coupa") or os.path.join(ambiente.pasta_database(), "eventos.jsonl"))
+        chaves_vale = chaves_do_robo(CONFIG_GLOBAL.get("caminho_database_vale") or os.path.join(ambiente.pasta_database(), "eventos_nimbi.jsonl"))
+
         # <-- NOVO: Filtra apenas as cotações do vendedor logado
         if vendedor_filtro:
             cotacoes = [
@@ -1332,10 +1694,17 @@ def comando_carregar_planilha_json(dados):
             ]
             pedidos = [] # Vendedor na tela de cotações não precisa receber a base inteira de pedidos
 
+        portais_robo = {}
+        for c in cotacoes:
+            numero = str(c.get('COTAÇÃO', '')).strip()
+            if numero in chaves_coupa: portais_robo[numero] = 'coupa'
+            elif numero in chaves_vale: portais_robo[numero] = 'vale'
+
         sio.emit('retorno_planilha_json', {
             'sucesso': True,
             'cotacoes': cotacoes[::-1], 
             'pedidos': pedidos[::-1],
+            'portais_robo': portais_robo,
             'clientId': client_id
         })
     except Exception as e:
@@ -1454,6 +1823,9 @@ def comando_registrar_vendedor_cotacao(dados):
     audit_id = dados.get('audit_id')   # o portal fecha o registro da Auditoria com ele
     vendedor = dados.get('vendedor', '').strip()
     cotacoes_raw = dados.get('cotacoes', '')
+    if str(dados.get('origem', '')).lower() == 'anmyna' or str(dados.get('planilha', '')).lower() == 'anmyna':
+        sio.emit('retorno_registro_vendedor_cotacao', {'sucesso': False, 'erro': 'A atribuição de vendedor da ANMYNA não deve alterar a planilha VALE.', 'clientId': client_id, 'audit_id': audit_id})
+        return
 
     if not vendedor or not cotacoes_raw:
         sio.emit('retorno_registro_vendedor_cotacao', {'sucesso': False, 'erro': 'Vendedor ou cotaes vazias', 'clientId': client_id, 'audit_id': audit_id})
@@ -1586,6 +1958,9 @@ def comando_registrar_cotacao_manual(dados):
     client_id = dados.get('clientId')
     audit_id = dados.get('audit_id')   # o portal fecha o registro da Auditoria com ele
     cotacoes = dados.get('cotacoes', [])
+    if str(dados.get('origem', '')).lower() == 'anmyna' or str(dados.get('planilha', '')).lower() == 'anmyna':
+        sio.emit('retorno_registro_cotacao_manual', {'sucesso': False, 'erro': 'Cotações ANMYNA não devem ser registradas na planilha VALE.', 'clientId': client_id, 'audit_id': audit_id})
+        return
 
     if not cotacoes:
         sio.emit('retorno_registro_cotacao_manual', {'sucesso': False, 'erro': 'Nenhuma cotação recebida', 'clientId': client_id, 'audit_id': audit_id})
@@ -1625,6 +2000,9 @@ def comando_registrar_pedido_manual(dados):
     client_id = dados.get('clientId')
     audit_id = dados.get('audit_id')   # o portal fecha o registro da Auditoria com ele
     pedidos = dados.get('pedidos', [])
+    if str(dados.get('origem', '')).lower() == 'anmyna' or str(dados.get('planilha', '')).lower() == 'anmyna':
+        sio.emit('resposta_registro_pedido_manual', {'sucesso': False, 'erro': 'A planilha ANMYNA não trabalha com pedidos.', 'clientId': client_id, 'audit_id': audit_id})
+        return
 
     if not pedidos:
         sio.emit('resposta_registro_pedido_manual', {'sucesso': False, 'erro': 'Nenhum pedido enviado.', 'clientId': client_id, 'audit_id': audit_id})
@@ -1790,7 +2168,7 @@ MAPA_LOGS_TXT = {
     'me': ('Mercado Eletrônico', 'mercadoeletronico.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\mercadoeletronico.txt']),
     'ariba': ('Robô SAP Ariba', 'aribasourcing.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\aribasourcing.txt']),
     'findes': ('Robô Findes', 'findes.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\findes.txt', r'\\SERVIDOR2\Publico\ALLAN\Logs\log-findes.txt']),
-    'gerenciador': ('Gerenciador Central', 'gerenciador.log', [os.path.join('logs', 'gerenciador.log'), r'\\SERVIDOR2\Publico\ALLAN\Logs\console-log.txt']),
+    'gerenciador': ('Gerenciador Central', 'gerenciador.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\gerenciador.txt', os.path.join('logs', 'gerenciador.log')]),
     'console_produtos': ('API Cadastro de Produtos', 'console-log.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\console-log.txt']),
     'zapzap': ('Bot WhatsApp / Gateway', 'log_zapzap.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\log_zapzap.txt']),
     'acessos': ('Registro de Acessos', 'registro_acessos.txt', [r'\\SERVIDOR2\Publico\ALLAN\Logs\registro_acessos.txt']),
@@ -2309,8 +2687,11 @@ RECONECTAR_S = 10
 
 if __name__ == '__main__':
     # Threads só no gerenciador de verdade: importar este arquivo (testes, bots) não liga o piloto
-    threading.Thread(target=loop_automacao, daemon=True).start()
-    threading.Thread(target=monitorar_pastas_impressao, daemon=True).start()
+    if os.environ.get('MAESTRO_SEM_PILOTO') != '1':
+        threading.Thread(target=loop_automacao, daemon=True).start()
+        threading.Thread(target=monitorar_pastas_impressao, daemon=True).start()
+    
+
     threading.Thread(target=loop_agendamento, daemon=True).start()
     threading.Thread(target=loop_metricas_servidor, daemon=True).start()
     backup_inicial()
