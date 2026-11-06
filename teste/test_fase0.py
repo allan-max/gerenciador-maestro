@@ -86,7 +86,8 @@ class LoginTest(unittest.TestCase):
     def rodar(self, caminho, classe, driver):
         relogio = Relogio()
         ns = carregar(caminho, {'LOGIN_TIMEOUT_S', 'CAPTCHA_TIMEOUT_S', 'LoginTimeout', 'fazer_login_hibrido'}, None,
-                      time=relogio, os=__import__('os'), By=By, ActionChains=None)
+                      time=relogio, os=__import__('os'), By=By, ActionChains=None,
+                      manter_transmissao=lambda *a: None, parar_transmissao=lambda *a: None)
         metodo = carregar(caminho, {'fazer_login_hibrido'}, classe, **{k: v for k, v in ns.items() if k != '__builtins__'})
         emitidos = []
         bot = SimpleNamespace(driver=driver, LOGIN_URL='https://login', aguardando_clique=threading.Event(), solicitacao_parada=False,

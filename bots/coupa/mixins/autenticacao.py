@@ -39,6 +39,7 @@ from docx import Document
 from docx.shared import Pt, RGBColor, Cm
 
 import base64
+from bots.transmissor_captcha import manter_transmissao, parar_transmissao
 from io import BytesIO
 from PIL import Image
 import requests
@@ -70,6 +71,11 @@ class AutenticacaoMixin:
         ops.add_argument("--disable-dev-shm-usage")
         ops.add_argument("--window-size=1920,1080")
         ops.add_argument("--remote-allow-origins=*")
+        # Servidor sem ninguém olhando (RDP desconectado/janela coberta): sem isto o Chrome congela a
+        # renderização e a transmissão do captcha fica travada
+        ops.add_argument("--disable-backgrounding-occluded-windows")
+        ops.add_argument("--disable-renderer-backgrounding")
+        ops.add_argument("--disable-background-timer-throttling")
         ops.add_argument("--start-maximized")
         anterior = getattr(self, 'driver', None)
         if anterior is not None:   # religar o mesmo robô: fecha o navegador dele antes de abrir outro
@@ -104,7 +110,7 @@ class AutenticacaoMixin:
             if not captcha_pendente:
                 time.sleep(0.3)
             else:
-                time.sleep(0.001)
+                time.sleep(0.005)
             if time.time() > limite_login:
                 self.solicitacao_parada = True   # quem engolir o erro ainda para o ciclo no próximo evento
                 self.motivo_abandono = 'Login não concluído (captcha ou portal fora do ar).'
@@ -133,6 +139,7 @@ class AutenticacaoMixin:
                     
                     # Se não tem botão na tela, aí sim o login acabou!
                     if inicio_captcha is not None:
+                        parar_transmissao(self)
                         self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
                     logger.info("✅ Login concluído com sucesso!")
                     return True
@@ -172,6 +179,7 @@ class AutenticacaoMixin:
                         self.sio.emit('relatar_progresso', {'mensagem': '⚠️ Captcha detectado no login! Resolva na tela principal de Minhas Cotações...'})
                     elif time.time() - inicio_captcha > CAPTCHA_TIMEOUT_S:
                         self.sio.emit('relatar_progresso_coupa', {'mensagem': '❌ CAPTCHA EXPIRADO! (5 min sem solução). Fechando o robô.'})
+                        parar_transmissao(self)
                         raise LoginTimeout("CAPTCHA_TIMEOUT")
                         
                     elemento_alvo = iframe_desafio if (iframe_desafio and iframe_desafio.is_displayed()) else iframe_caixinha
@@ -211,43 +219,23 @@ class AutenticacaoMixin:
                                 finally:
                                     self.aguardando_clique.clear()
 
-                            # 2. Captura contínua e suave a 60 FPS (CDP JPEG acelerado com fallback)
+                            # 2. Transmissão contínua (~60 FPS) numa thread própria, CDP direto: bots/transmissor_captcha.py
                             tempo_atual = time.time()
-                            if tempo_atual - ultimo_print >= (1.0 / 60.0): # 60 FPS (60 quadros por segundo)
-                                capturado = False
-                                if rect and hasattr(self.driver, 'execute_cdp_cmd'):
-                                    try:
-                                        clip = {
-                                            'x': float(rect.get('x', 0)),
-                                            'y': float(rect.get('y', 0)),
-                                            'width': float(rect.get('width', 400)),
-                                            'height': float(rect.get('height', 580)),
-                                            'scale': 1.0
-                                        }
-                                        res = self.driver.execute_cdp_cmd('Page.captureScreenshot', {
-                                            'format': 'jpeg',
-                                            'quality': 75,
-                                            'clip': clip
-                                        })
-                                        b64 = res.get('data')
-                                        if b64:
-                                            self.sio.emit('imagem_captcha_do_robo', {'imagem': f"data:image/jpeg;base64,{b64}"})
-                                            capturado = True
-                                    except Exception:
-                                        capturado = False
-                                if not capturado:
-                                    try:
-                                        png_bytes = getattr(elemento_alvo, 'screenshot_as_png', None)
-                                        if png_bytes:
-                                            png_b64 = base64.b64encode(png_bytes).decode('utf-8')
-                                            self.sio.emit('imagem_captcha_do_robo', {'imagem': png_b64})
-                                    except Exception:
-                                        pass
+                            if manter_transmissao(self, self.driver, self.sio, rect) is None and tempo_atual - ultimo_print >= 0.5:
+                                # iframe sem posição: caminho lento antigo (print do elemento)
+                                try:
+                                    png_bytes = getattr(elemento_alvo, 'screenshot_as_png', None)
+                                    if png_bytes:
+                                        png_b64 = base64.b64encode(png_bytes).decode('utf-8')
+                                        self.sio.emit('imagem_captcha_do_robo', {'imagem': png_b64})
+                                except Exception:
+                                    pass
                                 ultimo_print = tempo_atual
 
                             # 3. Timeout check
                             if time.time() - inicio_captcha > CAPTCHA_TIMEOUT_S:
                                 self.sio.emit('relatar_progresso_coupa', {'mensagem': '❌ CAPTCHA EXPIRADO! (5 min sem solução). Fechando o robô.'})
+                                parar_transmissao(self)
                                 raise LoginTimeout("CAPTCHA_TIMEOUT")
 
                             # 4. Verificação periódica do DOM a cada 400ms (não a cada frame de 16ms!)
@@ -262,11 +250,12 @@ class AutenticacaoMixin:
                                 except Exception:
                                     break
 
-                            time.sleep(0.001)
+                            time.sleep(0.005)
                     continue 
 
                 if captcha_ficou_verde:
                     if inicio_captcha is not None:
+                        parar_transmissao(self)
                         self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
                     # MUDANÇA: Adicionado o id='login_button' na varredura
                     botoes = self.driver.find_elements(By.XPATH, "//button[@type='submit' or @id='login-submit' or @id='login_button']")

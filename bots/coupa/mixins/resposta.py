@@ -37,6 +37,7 @@ from docx import Document
 from docx.shared import Pt, RGBColor, Cm
 
 import base64
+from bots.transmissor_captcha import manter_transmissao, parar_transmissao
 
 logger = logging.getLogger("CoupaApp")
 logger.setLevel(logging.INFO)
@@ -217,6 +218,7 @@ class RespostaMixin:
 
                 if not captcha_pendente:
                     if inicio_captcha is not None:
+                        parar_transmissao(self)
                         self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
                         resolvido = True
                     break
@@ -226,6 +228,7 @@ class RespostaMixin:
                     logger.warning("⚠️ Captcha detectado! Enviando em tempo real para a tela principal dos vendedores...")
                     self.sio.emit('relatar_progresso', {'mensagem': '⚠️ Captcha detectado! Resolva na tela principal de Minhas Cotações...'})
                 elif time.time() - inicio_captcha > 300:
+                    parar_transmissao(self)
                     self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
                     raise Exception("CAPTCHA_TIMEOUT: Captcha expirado sem solução em 5 minutos.")
 
@@ -267,40 +270,21 @@ class RespostaMixin:
                             finally:
                                 aguardando.clear()
 
+                        # Transmissão contínua (~60 FPS) numa thread própria, CDP direto: bots/transmissor_captcha.py
                         agora = time.time()
-                        if agora - ultimo_print >= (1.0 / 60.0): # 60 FPS (60 quadros por segundo)
-                            capturado = False
-                            if rect and hasattr(self.driver, 'execute_cdp_cmd'):
-                                try:
-                                    clip = {
-                                        'x': float(rect.get('x', 0)),
-                                        'y': float(rect.get('y', 0)),
-                                        'width': float(rect.get('width', 400)),
-                                        'height': float(rect.get('height', 580)),
-                                        'scale': 1.0
-                                    }
-                                    res = self.driver.execute_cdp_cmd('Page.captureScreenshot', {
-                                        'format': 'jpeg',
-                                        'quality': 75,
-                                        'clip': clip
-                                    })
-                                    b64 = res.get('data')
-                                    if b64:
-                                        self.sio.emit('imagem_captcha_do_robo', {'imagem': f"data:image/jpeg;base64,{b64}"})
-                                        capturado = True
-                                except Exception:
-                                    capturado = False
-                            if not capturado:
-                                try:
-                                    png_bytes = getattr(elemento_alvo, 'screenshot_as_png', None)
-                                    if png_bytes:
-                                        png_b64 = base64.b64encode(png_bytes).decode('utf-8')
-                                        self.sio.emit('imagem_captcha_do_robo', {'imagem': png_b64})
-                                except Exception:
-                                    pass
+                        if manter_transmissao(self, self.driver, self.sio, rect) is None and agora - ultimo_print >= 0.5:
+                            # iframe sem posição: caminho lento antigo (print do elemento)
+                            try:
+                                png_bytes = getattr(elemento_alvo, 'screenshot_as_png', None)
+                                if png_bytes:
+                                    png_b64 = base64.b64encode(png_bytes).decode('utf-8')
+                                    self.sio.emit('imagem_captcha_do_robo', {'imagem': png_b64})
+                            except Exception:
+                                pass
                             ultimo_print = agora
 
                         if inicio_captcha and (time.time() - inicio_captcha > 300):
+                            parar_transmissao(self)
                             self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
                             raise Exception("CAPTCHA_TIMEOUT: Captcha expirado sem solução em 5 minutos.")
 
@@ -315,7 +299,7 @@ class RespostaMixin:
                             except Exception:
                                 break
 
-                        time.sleep(0.001)
+                        time.sleep(0.005)
             except Exception as e_cap:
                 if "CAPTCHA_TIMEOUT" in str(e_cap):
                     raise
