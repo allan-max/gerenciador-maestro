@@ -469,8 +469,12 @@ def monitorar_log_me():
                     _registrar_evento_linha_log('me', linha_limpa)
 
                     # 2. Verifica se  a mensagem de finalizao
-                    if "=== APLICAO FINALIZADA ===" in linha_limpa or "=== SESSO FINALIZADA ===" in linha_limpa:
-                        logger.info("O rob do ME finalizou a rotina naturalmente.")
+                    # O robô escreve "=== APLICAÇÃO FINALIZADA ===" / "=== SESSÃO FINALIZADA ===". Antes o texto aqui
+                    # estava sem acentos ("APLICAO") e nunca casava: o ME não voltava a "ocioso" e o botão do site
+                    # ficava em "PARAR ROBÔ" (o próximo clique mandava parar em vez de iniciar).
+                    if sem_acento(linha_limpa).upper().endswith("FINALIZADA ===") and \
+                            any(p in sem_acento(linha_limpa).upper() for p in ("=== APLICACAO", "=== SESSAO")):
+                        logger.info("O robô do ME finalizou a rotina naturalmente.")
 
                         rodando_monitor_me = False
                         processo_me = None
@@ -479,7 +483,7 @@ def monitorar_log_me():
                         sio.emit('sincronizar_estado_me', {'status': 'ocioso'})
 
                         # 4. Avisa o Servidor Global (server.js) para liberar o rob para outras tarefas
-                        sio.emit('tarefa_concluida', {'evento': 'Extrao Mercado Eletrnico', 'sucesso': True})
+                        sio.emit('tarefa_concluida', {'evento': 'Extração Mercado Eletrônico', 'portal': 'me', 'sucesso': True})
 
                         break # Sai do loop de monitoramento
 
@@ -985,12 +989,23 @@ def comando_para_robo(dados):
 
     if portal == 'me':
         if modo == 'extrair':
+            caminho_bat = CONFIG_GLOBAL.get("caminho_bat_me", r"C:\Users\Administrator\Desktop\mercadoeletronico.bat")
+            logger.info(f"Mercado Eletrônico: iniciando {caminho_bat}")
             rodando_monitor_me = True
+            threading.Thread(target=monitorar_log_me, daemon=True).start()   # antes do .bat: não perde as 1ªs linhas
+            try:
+                processo_me = subprocess.Popen([caminho_bat])
+            except Exception as e:
+                # antes o erro sumia dentro do handler e a tela ficava em "extraindo" sem nada rodando
+                logger.error(f"Mercado Eletrônico: falha ao iniciar {caminho_bat}: {e}")
+                eventos.registrar('me', 'ciclo', 'erro', f'Falha ao iniciar o Mercado Eletrônico: {e}')
+                rodando_monitor_me = False
+                processo_me = None
+                sio.emit('relatar_progresso_me', {'mensagem': f'❌ Falha ao iniciar o robô: {e}'})
+                sio.emit('sincronizar_estado_me', {'status': 'ocioso'})
+                return
             eventos.registrar('me', 'ciclo', 'info', 'Extração do Mercado Eletrônico iniciada')
             sio.emit('sincronizar_estado_me', {'status': 'extraindo'})
-            threading.Thread(target=monitorar_log_me, daemon=True).start()
-            caminho_bat = CONFIG_GLOBAL.get("caminho_bat_me", r"C:\Users\Administrator\Desktop\mercadoeletronico.bat")
-            processo_me = subprocess.Popen([caminho_bat])
 
         elif modo == 'solicitar_parada':
             rodando_monitor_me = False
