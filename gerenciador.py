@@ -167,6 +167,7 @@ else:
 
 import eventos
 import seguranca
+import processos_robos
 if __name__ == '__main__':
     eventos.ativar()   # só o gerenciador de verdade grava eventos; testes importam sem gravar
     # Dois gerenciadores na mesma base brigam pelos JSONs (13-14/10: 790 gravações recusadas)
@@ -509,18 +510,7 @@ def obter_pasta_findes_novo():
 
 def findes_novo_esta_rodando():
     try:
-        import psutil
-        my_pid = os.getpid()
-        for p in psutil.process_iter(['name', 'cmdline']):
-            try:
-                if p.pid == my_pid:
-                    continue
-                cmdline = p.info.get('cmdline') or []
-                cmd_str = ' '.join(cmdline).lower()
-                if 'findes.py' in cmd_str and 'gerenciador' not in cmd_str:
-                    return True
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
+        return bool(processos_robos.processos_com_termo('findes.py'))
     except Exception as e:
         logger.debug(f"Erro ao checar status do Findes novo via psutil: {e}")
     return False
@@ -989,6 +979,11 @@ def comando_para_robo(dados):
 
     if portal == 'me':
         if modo == 'extrair':
+            if me_esta_rodando():
+                sio.emit('relatar_progresso_me', {'mensagem': '⚠️ O robô do Mercado Eletrônico já está rodando.'})
+                sio.emit('sincronizar_estado_me', {'status': 'extraindo'})
+                return
+            marcar_inicio('me')
             caminho_bat = CONFIG_GLOBAL.get("caminho_bat_me", r"C:\Users\Administrator\Desktop\mercadoeletronico.bat")
             logger.info(f"Mercado Eletrônico: iniciando {caminho_bat}")
             rodando_monitor_me = True
@@ -1011,6 +1006,7 @@ def comando_para_robo(dados):
             rodando_monitor_me = False
             if processo_me: os.system(f"taskkill /F /T /PID {processo_me.pid}")
             processo_me = None
+            processos_robos.matar(processos_me())   # aberto fora do gerenciador
             sio.emit('sincronizar_estado_me', {'status': 'ocioso'})
 
     elif portal == 'ariba':
@@ -1023,6 +1019,11 @@ def comando_para_robo(dados):
                 sio.emit('sincronizar_estado_ariba', {'status': 'desligado'})
                 return
 
+            if ariba_esta_rodando():
+                sio.emit('relatar_progresso_ariba', {'mensagem': '⚠️ O robô SAP Ariba já está rodando.'})
+                sio.emit('sincronizar_estado_ariba', {'status': 'ocioso'})
+                return
+            marcar_inicio('ariba')
             eventos.registrar('ariba', 'ciclo', 'info', f'Robô SAP Ariba iniciado (prioridades: {prioridades_str})')
             sio.emit('sincronizar_estado_ariba', {'status': 'logando'})
             sio.emit('relatar_progresso_ariba', {'mensagem': '?? Comando recebido! Preparando o Ariba...'})
@@ -1112,6 +1113,7 @@ WshShell.SendKeys "~"
                 bot_ariba = None
             else: 
                 os.system("taskkill /F /IM AribaSourcing.exe >nul 2>&1")
+            processos_robos.matar(processos_ariba())   # aberto fora do gerenciador
 
     elif portal in ['coupa', 'vale']:
         if modo == 'ligar_robo':
@@ -1297,6 +1299,11 @@ WshShell.SendKeys "~"
     elif portal == 'findes':
         # 1. COMANDOS DO ROBÔ NOVO (iniciar_findes.bat / parar_findes.bat)
         if modo in ['iniciar_findes', 'ligar_robo_novo', 'iniciar_novo'] or (modo == 'ligar_robo' and dados.get('versao') != 'antigo' and not dados.get('evento')):
+            if findes_novo_esta_rodando():
+                sio.emit('relatar_progresso_findes', {'mensagem': '⚠️ O robô Findes já está rodando.'})
+                sio.emit('sincronizar_estado_findes', {'status': 'executando'})
+                return
+            marcar_inicio('findes')
             pasta_novo = obter_pasta_findes_novo()
             bat_iniciar = os.path.join(pasta_novo, "iniciar_findes.bat")
 
@@ -1358,6 +1365,12 @@ WshShell.SendKeys "~"
                 for canal in ('relatar_progresso_findes_antigo', 'relatar_progresso_findes'):
                     sio.emit(canal, {'mensagem': f'Comando recusado: {e}', 'comando_interno': 'desligar_botoes'})
                 return
+            if findes_antigo_esta_rodando():
+                for canal in ('relatar_progresso_findes_antigo', 'relatar_progresso_findes'):
+                    sio.emit(canal, {'mensagem': '⚠️ O módulo Findes (pesquisa .NET) já está rodando. Aguarde terminar ou desligue antes.'})
+                sio.emit('sincronizar_estado_findes_antigo', {'status': 'executando'})
+                return
+            marcar_inicio('findes_antigo')
             sio.emit('relatar_progresso_findes_antigo', {'mensagem': f"🚀 Iniciando Módulo .NET Findes para os eventos: {eventos_str}"})
             sio.emit('relatar_progresso_findes', {'mensagem': f"🚀 Iniciando Módulo .NET Findes para os eventos: {eventos_str}"})
 
@@ -1424,10 +1437,13 @@ WshShell.SendKeys "~"
             threading.Thread(target=run_findes, daemon=True).start()
 
         elif modo in ['desligar_robo_antigo'] or (modo == 'desligar_robo' and dados.get('versao') == 'antigo'):
-            if bot_findes:
+            externos = processos_findes_antigo() if bot_findes is None else []
+            if bot_findes or externos:
                 sio.emit('relatar_progresso_findes_antigo', {'mensagem': '⏹️ Freio acionado! Encerrando o Findes...'})
-                os.system(f"taskkill /F /T /PID {bot_findes.pid}")
-                bot_findes = None
+                if bot_findes:
+                    os.system(f"taskkill /F /T /PID {bot_findes.pid}")
+                    bot_findes = None
+                processos_robos.matar(externos)   # aberto fora do gerenciador
             else:
                 sio.emit('relatar_progresso_findes_antigo', {'mensagem': "⏹️ O robô já estava desligado."})
             rodando_monitor_findes = False
@@ -1440,7 +1456,7 @@ WshShell.SendKeys "~"
 @sio.on('pedir_estado_findes')
 def responder_estado_findes(dados=None):
     status_novo = 'executando' if (rodando_monitor_findes_novo or findes_novo_esta_rodando()) else 'desligado'
-    status_antigo = 'executando' if (bot_findes is not None or rodando_monitor_findes) else 'desligado'
+    status_antigo = 'executando' if (rodando_monitor_findes or findes_antigo_esta_rodando()) else 'desligado'
     sio.emit('sincronizar_estado_findes', {'status': status_novo})
     sio.emit('sincronizar_estado_findes_antigo', {'status': status_antigo})
 
@@ -1449,8 +1465,6 @@ def responder_estado_findes(dados=None):
 # ========================================================
 PASTA_COMPRASGOV_PADRAO = r"C:\Users\Administrator\Desktop\ComprasGOV\ComprasGOV"
 TITULO_JANELA_COMPRASGOV = "ROBO_COMPRASGOV"
-# Processos dotnet auxiliares do build (ficam vivos alguns minutos depois do "dotnet run" e não são o robô)
-_AUXILIARES_DOTNET = ('msbuild.dll', 'nodemode', 'vbcscompiler', 'razor', 'build-server')
 bot_comprasgov = None            # Popen do cmd.exe aberto pelo gerenciador
 estado_comprasgov = 'desligado'  # último estado enviado ao portal
 
@@ -1461,31 +1475,7 @@ def obter_pasta_comprasgov():
 
 def processos_comprasgov():
     """Processos do robô ComprasGOV rodando: o 'dotnet run' da pasta do projeto e o executável que ele compila."""
-    import psutil
-    pasta = os.path.normcase(os.path.abspath(obter_pasta_comprasgov()))
-    achados = []
-    for p in psutil.process_iter(['pid', 'name', 'exe', 'cmdline']):
-        try:
-            nome = (p.info.get('name') or '').lower()
-            if nome == 'comprasgov.exe':
-                achados.append(p)
-                continue
-            if nome != 'dotnet.exe':
-                continue
-            cmd = ' '.join(p.info.get('cmdline') or []).lower()
-            if any(a in cmd for a in _AUXILIARES_DOTNET):
-                continue
-            if 'comprasgov' in cmd:
-                achados.append(p)
-                continue
-            try:
-                if os.path.normcase(p.cwd()).startswith(pasta):
-                    achados.append(p)
-            except (psutil.AccessDenied, psutil.NoSuchProcess):
-                pass
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-    return achados
+    return processos_robos.processos_dotnet(obter_pasta_comprasgov(), nomes_exe=('ComprasGOV.exe',), termos_cmd=('comprasgov',))
 
 
 def comprasgov_esta_rodando():
@@ -1542,14 +1532,7 @@ def desligar_comprasgov():
         bot_comprasgov = None
     # Também derruba o que foi aberto à mão (fora do gerenciador)
     try:
-        import psutil
-        for p in processos_comprasgov():
-            try:
-                for filho in p.children(recursive=True):
-                    filho.kill()
-                p.kill()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
+        processos_robos.matar(processos_comprasgov())
     except Exception as e:
         logger.warning(f"Erro ao encerrar processos do ComprasGOV: {e}")
     eventos.registrar('comprasgov', 'ciclo', 'info', 'Robô ComprasGOV desligado')
@@ -1585,6 +1568,142 @@ def vigiar_comprasgov(intervalo_s=5, reenvio_s=60):
 @sio.on('pedir_estado_comprasgov')
 def responder_estado_comprasgov(dados=None):
     sio.emit('sincronizar_estado_comprasgov', {'status': 'ligado' if comprasgov_esta_rodando() else estado_comprasgov})
+
+
+# ========================================================
+# 🔎 ROBÔ JÁ ESTÁ RODANDO? (MESMA CHECAGEM PARA TODOS OS MÓDULOS)
+# ========================================================
+def _vivo(proc):
+    return proc is not None and proc.poll() is None
+
+
+def _checar(nome, funcao):
+    try:
+        return bool(funcao())
+    except Exception as e:
+        logger.debug(f"Erro ao checar processo do {nome}: {e}")
+        return False
+
+
+def processos_ariba():
+    pasta = CONFIG_GLOBAL.get("caminho_ariba", r"C:\Users\Administrator\Desktop\AribaSourcing")
+    return processos_robos.processos_dotnet(pasta, nomes_exe=('AribaSourcing.exe',), termos_cmd=('aribasourcing',))
+
+
+def ariba_esta_rodando():
+    return _vivo(bot_ariba) or _checar('Ariba', processos_ariba)
+
+
+def processos_findes_antigo():
+    pasta = CONFIG_GLOBAL.get("caminho_findes", r"C:\Users\Administrator\Desktop\FINDES")
+    return processos_robos.processos_dotnet(pasta)
+
+
+def findes_antigo_esta_rodando():
+    return _vivo(bot_findes) or _checar('Findes antigo', processos_findes_antigo)
+
+
+def processos_me():
+    bat = CONFIG_GLOBAL.get("caminho_bat_me", r"C:\Users\Administrator\Desktop\mercadoeletronico.bat")
+    return processos_robos.processos_com_termo(os.path.basename(bat))
+
+
+def me_esta_rodando():
+    return _vivo(processo_me) or _checar('Mercado Eletrônico', processos_me)
+
+
+def chrome_do_robo_aberto(portal):
+    """Coupa/Vale rodam dentro do gerenciador; o que fica fora é o Chrome com o perfil do robô."""
+    import navegador
+    return _checar(f'Chrome {portal}', lambda: processos_robos.processos_com_termo(
+        navegador.perfil(portal), nomes={'chrome.exe'}))
+
+
+# Estado que o portal entende para cada módulo: (canal, status rodando, status parado)
+_ESTADOS_ROBOS = {
+    'ariba':         ('sincronizar_estado_ariba', 'ocioso', 'desligado'),
+    'me':            ('sincronizar_estado_me', 'extraindo', 'ocioso'),
+    'findes':        ('sincronizar_estado_findes', 'executando', 'desligado'),
+    'findes_antigo': ('sincronizar_estado_findes_antigo', 'executando', 'desligado'),
+}
+_CHECAGEM_ROBOS = {
+    'ariba': ariba_esta_rodando,
+    'me': me_esta_rodando,
+    'findes': lambda: rodando_monitor_findes_novo or findes_novo_esta_rodando(),
+    'findes_antigo': findes_antigo_esta_rodando,
+}
+# Logo depois de um "ligar" o processo ainda está subindo: a vigia não mexe no botão nesse intervalo
+_GRACA_INICIO_S = 60
+_ultimo_inicio = {}
+
+
+def marcar_inicio(robo):
+    _ultimo_inicio[robo] = time.time()
+
+
+def _avisar_robo_parou(robo):
+    canal, _, parado = _ESTADOS_ROBOS[robo]
+    sio.emit(canal, {'status': parado})
+    if robo == 'findes':
+        sio.emit('relatar_progresso_findes', {'mensagem': '⏹️ Robô Findes não está mais rodando.', 'comando_interno': 'desligar_botoes'})
+    elif robo == 'findes_antigo':
+        sio.emit('relatar_progresso_findes_antigo', {'mensagem': '⏹️ Módulo Findes não está mais rodando.', 'comando_interno': 'desligar_botoes'})
+    elif robo == 'ariba':
+        sio.emit('relatar_progresso_ariba', {'mensagem': '⏹️ Robô SAP Ariba não está mais rodando.'})
+    elif robo == 'me':
+        sio.emit('relatar_progresso_me', {'mensagem': '⏹️ Robô do Mercado Eletrônico não está mais rodando.'})
+
+
+def _vigiar_coupa_vale(sem_chrome):
+    """Navegador do Coupa/Vale fechado à mão (ou que caiu) depois do login: solta o robô e volta o botão."""
+    global bot_coupa, bot_vale, rodando_monitor_coupa, rodando_monitor_vale
+    for portal in ('coupa', 'vale'):
+        bot = bot_coupa if portal == 'coupa' else bot_vale
+        if bot is None or not getattr(bot, 'is_ready', False) or chrome_do_robo_aberto(portal):
+            sem_chrome[portal] = 0
+            continue
+        sem_chrome[portal] = sem_chrome.get(portal, 0) + 1
+        if sem_chrome[portal] < 2:   # confirma na checagem seguinte antes de desligar
+            continue
+        sem_chrome[portal] = 0
+        logger.warning(f"{portal}: navegador do robô não está mais aberto; marcando como desligado")
+        bot.solicitacao_parada = True
+        try:
+            bot.driver.quit()
+        except Exception:
+            pass
+        if portal == 'coupa':
+            bot_coupa, rodando_monitor_coupa = None, False
+        else:
+            bot_vale, rodando_monitor_vale = None, False
+        eventos.registrar(portal, 'ciclo', 'aviso', 'Navegador do robô fechado fora do portal; robô desligado')
+        sio.emit(f'relatar_progresso_{portal}', {'mensagem': f'⏹️ O navegador do robô {portal.upper()} foi fechado. Robô desligado.'})
+        sio.emit('tarefa_concluida', {'evento': 'Login do Robo', 'sucesso': False, 'portal': portal})
+
+
+def vigiar_robos(intervalo_s=5):
+    """Checa os processos de todos os robôs e avisa o portal quando um parou ou foi aberto fora dele."""
+    anterior = {}
+    sem_chrome = {}
+    while True:
+        for robo, checar in _CHECAGEM_ROBOS.items():
+            try:
+                rodando = bool(checar())
+                if robo in anterior and rodando != anterior[robo]:
+                    em_graca = time.time() - _ultimo_inicio.get(robo, 0) < _GRACA_INICIO_S
+                    if not rodando:
+                        _avisar_robo_parou(robo)
+                    elif not em_graca:   # aberto à mão: o botão passa para "Desligar"
+                        canal, status_rodando, _ = _ESTADOS_ROBOS[robo]
+                        sio.emit(canal, {'status': status_rodando})
+                anterior[robo] = rodando
+            except Exception as e:
+                logger.debug(f"Vigia do robô {robo}: {e}")
+        try:
+            _vigiar_coupa_vale(sem_chrome)
+        except Exception as e:
+            logger.debug(f"Vigia do Coupa/Vale: {e}")
+        time.sleep(intervalo_s)
 
 
 @sio.on('executar_clique')
@@ -2877,6 +2996,7 @@ if __name__ == '__main__':
     threading.Thread(target=loop_agendamento, daemon=True).start()
     threading.Thread(target=loop_metricas_servidor, daemon=True).start()
     threading.Thread(target=vigiar_comprasgov, daemon=True).start()
+    threading.Thread(target=vigiar_robos, daemon=True).start()
     backup_inicial()
     # Portal fora do ar na partida (reinício do Site-Maestro, reboot) não fecha o gerenciador: tenta até conectar.
     # Depois de conectado, quedas são reconectadas pelo próprio socketio.
