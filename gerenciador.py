@@ -756,6 +756,7 @@ def validar_login(dados):
             is_adm = bool(usuarios[email].get('admin', False))
             port_acc = bool(usuarios[email].get('portais_access', False)) or dash_acc or is_adm
             plan_acc = bool(usuarios[email].get('planilha_access', False)) or is_adm
+            busca_acc = bool(usuarios[email].get('busca_outros_access', False)) or is_adm
             sio.emit('resultado_login', {
                 'sucesso': True, 
                 'user': email, 
@@ -764,6 +765,7 @@ def validar_login(dados):
                 'hasDashboardAccess': dash_acc,
                 'hasPlanilhaAccess': plan_acc,
                 'hasPortaisAccess': port_acc,
+                'hasBuscaOutrosAccess': busca_acc,
                 'vendedor': usuarios[email].get('vendedor', ''),
                 'clientId': cid
             })
@@ -1751,7 +1753,7 @@ def salvar_config_admin(dados):
 # ==================== PAINEL ADMIN: CONTAS E PRIVILEGIOS ====================
 CAMPOS_PUBLICOS_USUARIO = (
     'verificado', 'admin', 'dev', 'dashboard_access', 
-    'planilha_access', 'portais_access', 'bloqueado', 'vendedor'
+    'planilha_access', 'portais_access', 'busca_outros_access', 'bloqueado', 'vendedor'
 )
 
 @sio.on('admin_listar_usuarios')
@@ -1775,7 +1777,7 @@ def admin_alterar_acesso_dashboard(dados):
     acesso = bool(dados.get('acesso'))
     campo = dados.get('campo') or 'dashboard_access' # <-- NOVO: aceita dashboard_access, planilha_access ou portais_access
 
-    if campo not in ('dashboard_access', 'planilha_access', 'portais_access'):
+    if campo not in ('dashboard_access', 'planilha_access', 'portais_access', 'busca_outros_access'):
         sio.emit('admin_resposta_acesso', {'sucesso': False, 'erro': 'Permissão inválida.', 'clientId': client_id})
         return
 
@@ -1799,6 +1801,7 @@ def admin_alterar_acesso_dashboard(dados):
             'portais_access': bool(usuarios[email].get('portais_access', False)),
             'dashboard_access': bool(usuarios[email].get('dashboard_access', False)),
             'planilha_access': bool(usuarios[email].get('planilha_access', False)),
+            'busca_outros_access': bool(usuarios[email].get('busca_outros_access', False)),
             'clientId': client_id
         })
     except Exception as e:
@@ -1941,12 +1944,23 @@ def comando_imprimir(dados):
 
     import openpyxl
 
+def _numeros_da_cotacao(valor):
+    """Formas aceitas do número na busca exata: o texto da planilha e o número limpo que a tela mostra
+    ("COTAÇÃO/ES (EDIVIT) > PPG0241188" -> PPG0241188), sempre em maiúsculas."""
+    bruto = str(valor or '').strip()
+    limpo = re.sub(r'^\s*cota[çc][ãa]o\s*[:/\-]?\s*', '', bruto.split('>')[-1], flags=re.I).strip()
+    return {bruto.upper(), (limpo or bruto).upper()}
+
 @sio.on('comando_carregar_planilha_json')
 def comando_carregar_planilha_json(dados):
     dados = dados or {}
     client_id = dados.get('clientId')
     origem = dados.get('origem', 'todas')
     vendedor_filtro = (dados.get('vendedor_filtro') or '').strip().upper() # <-- NOVO
+    # Minhas Cotações, permissão "Pesquisar cotações de outros vendedores": só a cotação com esse número exato,
+    # de qualquer vendedor menos o próprio (as dele já vêm na lista normal). O portal confere a permissão.
+    numero_exato = str(dados.get('numero_exato') or '').strip().upper()
+    vendedor_excluir = str(dados.get('vendedor_excluir') or '').strip().upper()
     try:
         from planilha_manager import planilha_manager
         planilha_manager.iniciar()
@@ -1987,8 +2001,16 @@ def comando_carregar_planilha_json(dados):
         chaves_coupa = chaves_do_robo(CONFIG_GLOBAL.get("caminho_database_coupa") or os.path.join(ambiente.pasta_database(), "eventos.jsonl"))
         chaves_vale = chaves_do_robo(CONFIG_GLOBAL.get("caminho_database_vale") or os.path.join(ambiente.pasta_database(), "eventos_nimbi.jsonl"))
 
+        if numero_exato:
+            cotacoes = [
+                c for c in cotacoes
+                if numero_exato in _numeros_da_cotacao(c.get('COTAÇÃO', ''))
+                and (not vendedor_excluir or str(c.get('VENDEDOR', '')).strip().upper() != vendedor_excluir)
+            ]
+            pedidos = []
+
         # <-- NOVO: Filtra apenas as cotações do vendedor logado
-        if vendedor_filtro:
+        elif vendedor_filtro:
             cotacoes = [
                 c for c in cotacoes 
                 if str(c.get('VENDEDOR', '')).strip().upper() == vendedor_filtro
@@ -2017,6 +2039,7 @@ def comando_carregar_planilha_json(dados):
             'pedidos': pedidos[::-1],
             'portais_robo': portais_robo,
             'onde_encontrar': onde_encontrar,
+            'busca_numero': numero_exato or None,
             'clientId': client_id
         })
     except Exception as e:
