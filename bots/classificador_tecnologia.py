@@ -5,10 +5,11 @@ Classificador de Itens de Informática, Hardware, TVs e Tecnologia.
 Fluxo em 2 etapas (executado APÓS a identificação de Marca/Modelo):
   1. Pré-identificação leve (heurística de raízes/indícios + marcas de TI):
      Filtra apenas itens suspeitos (0 tokens para itens industriais comuns).
-  2. Confirmação e seleção de fornecedores via IA Cloud (Claude Haiku 4.5 com JSON Schema):
-     Analisa a descrição completa do item, confirma se realmente pertence ao segmento
-     (descartando falsos positivos como refletores industriais, peças mecânicas, etc.)
-     e seleciona os fornecedores mais aderentes dentre a lista oficial.
+  2. Confirmação via IA Cloud (Claude Haiku 4.5 com JSON Schema):
+     Analisa a descrição completa do item e confirma se realmente pertence ao segmento
+     (descartando falsos positivos como refletores industriais, peças mecânicas, etc.).
+  3. Seleção determinística de 3 a 5 fornecedores (bots/fornecedores_ti.py + fornecedores_ti.json),
+     com marca/modelo/categoria já extraídos: sem IA, sem rede, com cache.
 """
 import os
 import re
@@ -21,30 +22,13 @@ from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger("CoupaApp")
 
-# Lista oficial de fornecedores de tecnologia (ordem padrão)
-FORNECEDORES_TECNOLOGIA: List[str] = [
-    "Agis",
-    "Mazer",
-    "Pauta",
-    "SND",
-    "Fagundez",
-    "GMI",
-    "Scansource",
-    "Ingram Micro",
-    "Martins",
-    "Gazin",
-    "Fujioka",
-    "Golden",
-    "All Nations",
-    "Mais Próxima",
-    "Rcell",
-    "Gibson",
-    "Tambasa",
-    "Belmicro",
-    "Coleção",
-    "ibyte",
-    "Miranda",
-]
+try:
+    from . import fornecedores_ti
+except ImportError:  # bots/ no sys.path (robô rodando de dentro da pasta)
+    import fornecedores_ti
+
+# Lista oficial de fornecedores de tecnologia: vem da configuração única bots/fornecedores_ti.json
+FORNECEDORES_TECNOLOGIA: List[str] = fornecedores_ti.nomes_fornecedores()
 
 # Raízes enxutas de palavras-chave e abreviações comuns em cotações (tolerante a truncamentos e abreviações)
 _PADROES_SUSPEITOS_TI = re.compile(
@@ -110,35 +94,27 @@ _FALSOS_POSITIVOS_INDUSTRIAIS = re.compile(
 # Cache em memória para não consultar a IA duas vezes para o mesmo item
 _CACHE_CLASSIFICACAO_TI: Dict[str, Optional[Dict[str, Any]]] = {}
 
-# Schema JSON estrito para o Claude Haiku 4.5
+# Schema JSON estrito para o Claude Haiku 4.5: a IA só confirma o segmento e a categoria.
+# A escolha dos fornecedores é determinística (fornecedores_ti), sem tokens.
+_ROTULOS_CATEGORIA: List[str] = fornecedores_ti.rotulos_categorias()
+
 _SCHEMA_CLASSIFICACAO_TI = {
     "type": "object",
     "properties": {
         "pertence_segmento": {"type": "boolean"},
         "categoria": {"type": "string"},
-        "fornecedores": {
-            "type": "array",
-            "items": {
-                "type": "string",
-                "enum": FORNECEDORES_TECNOLOGIA,
-            },
-        },
         "incerteza": {"type": "boolean"},
     },
-    "required": ["pertence_segmento", "categoria", "fornecedores", "incerteza"],
+    "required": ["pertence_segmento", "categoria", "incerteza"],
     "additionalProperties": False,
 }
 
 _SYSTEM_CLASSIFICADOR_TI = (
-    "Classifique se o item de cotação pertence ao segmento de Informática, Hardware, TVs/Monitores ou Tecnologia de TI/Telecom. "
+    "Classifique se o item de cotação pertence ao segmento de Informática, Hardware, TVs/Monitores, Eletrônicos ou Tecnologia de TI/Telecom. "
     "Rejeite (pertence_segmento=false) materiais elétricos/mecânicos industriais (refletores/projetores de iluminação LED, disjuntores, "
-    "contatores, sensores industriais, analisadores químicos, CLPs, inversores, válvulas, motores, ferramentas, EPIs, móveis). "
-    "Se pertencer (pertence_segmento=true), selecione em 'fornecedores' os distribuidores aderentes com base no perfil conhecido:\n"
-    "- Distribuidores gerais TI/Hardware/Periféricos/Componentes: Agis, Mazer, Pauta, SND, All Nations, Rcell, Golden, Fagundez, GMI, Mais Próxima, Gibson, Coleção\n"
-    "- Corporativo/Redes/Servidores/Automação/Coletores/Impressão: Ingram Micro, Scansource, SND, Agis, All Nations, Pauta\n"
-    "- Computadores/Desktops/Notebooks: Belmicro, Agis, SND, Pauta, Mazer, All Nations, Ingram Micro, Rcell\n"
-    "- TVs/Monitores/Tablets/Smartphones/Atacado/Varejo: Fujioka, Gazin, Martins, Tambasa, Rcell, Mazer, SND, Pauta, All Nations, ibyte, Miranda\n"
-    "Não invente compatibilidade: quando a descrição não permitir restringir a poucos fornecedores, inclua todos os fornecedores aplicáveis do subtipo e marque incerteza=true."
+    "contatores, sensores industriais, analisadores químicos, monitores de gases, CLPs, inversores, válvulas, motores, ferramentas, EPIs, móveis). "
+    "Se pertencer, em 'categoria' use exatamente um destes rótulos: " + "; ".join(_ROTULOS_CATEGORIA) + ". "
+    "Se não pertencer, categoria=\"\". Marque incerteza=true quando a descrição não permitir ter certeza."
 )
 
 
@@ -180,15 +156,14 @@ def pre_identificar_suspeito_ti(texto_item: str, dados_ia: Optional[Dict[str, st
 def confirmar_tecnologia_ia(texto_item: str, dados_ia: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
     """
     Envia apenas os itens suspeitos à IA Cloud (Claude Haiku 4.5 com JSON Schema estrito)
-    para confirmar se pertencem ao segmento de tecnologia e selecionar os fornecedores aderentes.
+    para confirmar se pertencem ao segmento de tecnologia e devolver a categoria (sem escolher fornecedores).
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
         # Fallback seguro caso a chave da IA não esteja configurada no ambiente
         return {
             "pertence_segmento": True,
-            "categoria": "Informática / Tecnologia",
-            "fornecedores": list(FORNECEDORES_TECNOLOGIA),
+            "categoria": "",
             "incerteza": True,
         }
 
@@ -215,7 +190,7 @@ def confirmar_tecnologia_ia(texto_item: str, dados_ia: Optional[Dict[str, str]] 
             },
             json={
                 "model": modelo_claude,
-                "max_tokens": 180,
+                "max_tokens": 80,
                 "temperature": 0,
                 "system": _SYSTEM_CLASSIFICADOR_TI,
                 "output_config": {
@@ -244,17 +219,9 @@ def confirmar_tecnologia_ia(texto_item: str, dados_ia: Optional[Dict[str, str]] 
             _CACHE_CLASSIFICACAO_TI[chave_cache] = None
             return None
 
-        fornecedores_validos = [
-            f for f in (dados.get("fornecedores") or [])
-            if f in FORNECEDORES_TECNOLOGIA
-        ]
-        if not fornecedores_validos:
-            fornecedores_validos = list(FORNECEDORES_TECNOLOGIA)
-
         resultado = {
             "pertence_segmento": True,
-            "categoria": str(dados.get("categoria") or "Tecnologia").strip(),
-            "fornecedores": fornecedores_validos,
+            "categoria": str(dados.get("categoria") or "").strip(),
             "incerteza": bool(dados.get("incerteza")),
         }
         _CACHE_CLASSIFICACAO_TI[chave_cache] = resultado
@@ -264,23 +231,9 @@ def confirmar_tecnologia_ia(texto_item: str, dados_ia: Optional[Dict[str, str]] 
         return None
 
 
-def formatar_onde_encontrar(resultado_ti: Optional[Dict[str, Any]]) -> str:
-    """
-    Formata a linha 'Onde encontrar?' de forma compacta, limpa e legível para o documento Word,
-    deixando claro que são sugestões associadas à categoria (sem afirmar estoque).
-    """
-    if not resultado_ti or not resultado_ti.get("pertence_segmento"):
-        return ""
-
-    fornecedores = resultado_ti.get("fornecedores") or FORNECEDORES_TECNOLOGIA
-    categoria = str(resultado_ti.get("categoria") or "").strip()
-    incerteza = bool(resultado_ti.get("incerteza"))
-
-    lista_str = ", ".join(fornecedores)
-    prefixo_cat = f" [{categoria}]" if categoria else ""
-    nota_incerteza = " (verificar linha/catálogo)" if incerteza else " (sugestões do segmento)"
-
-    return f"Onde encontrar?{prefixo_cat}: {lista_str}{nota_incerteza}"
+def formatar_onde_encontrar(recomendacao: Optional[Dict[str, Any]]) -> str:
+    """Linha compacta 'ONDE ENCONTRAR? Agis | Mazer | SND' (sugestões de busca, sem afirmar estoque)."""
+    return fornecedores_ti.formatar_texto(recomendacao)
 
 
 def analisar_item_tecnologia(item_dict: Dict[str, Any], texto_completo: str, dados_ia: Optional[Dict[str, str]] = None) -> Optional[str]:
@@ -288,61 +241,48 @@ def analisar_item_tecnologia(item_dict: Dict[str, Any], texto_completo: str, dad
     Ponto único de entrada chamado após as etapas de identificação (Banco, Regex, IA).
     Analisa um item individualmente:
       1. Pré-identifica se é suspeito de TI/Hardware/TV/Tecnologia (0 tokens se não for).
-      2. Se suspeito, confirma com a IA Cloud e preenche item_dict['onde_encontrar'].
+      2. Se suspeito, confirma o segmento com a IA Cloud já existente (com cache).
+      3. Seleciona de 3 a 5 fornecedores pela configuração local, com marca/modelo/categoria
+         já extraídos (fornecedores_ti: determinístico, sem IA e sem rede).
     """
     if not pre_identificar_suspeito_ti(texto_completo, dados_ia):
         return None
 
-    logger.info("   💻 Indício de TI/Tecnologia detectado. Confirmando classificação e fornecedores na IA...")
+    logger.info("   💻 Indício de TI/Tecnologia detectado. Confirmando classificação na IA...")
     resultado_ti = confirmar_tecnologia_ia(texto_completo, dados_ia)
     if not resultado_ti or not resultado_ti.get("pertence_segmento"):
         logger.info("   ℹ️ Item descartado pela IA (não pertence ao segmento de Informática/TV/Tecnologia).")
         return None
 
-    texto_onde = formatar_onde_encontrar(resultado_ti)
-    if isinstance(item_dict, dict) and texto_onde:
+    dados = dados_ia or {}
+    recomendacao = fornecedores_ti.recomendar(
+        texto_completo,
+        marca=dados.get("marca", ""),
+        modelo=dados.get("modelo", ""),
+        part_number=dados.get("part_number", ""),
+        categoria_ia=resultado_ti.get("categoria", ""),
+    )
+    texto_onde = formatar_onde_encontrar(recomendacao)
+    if not texto_onde:
+        return None
+    if isinstance(item_dict, dict):
         item_dict["onde_encontrar"] = texto_onde
+        item_dict["onde_encontrar_info"] = recomendacao
         item_dict["classificacao_ti"] = resultado_ti
-        logger.info(f"   ✅ [TI Confirmado - {resultado_ti.get('categoria')}] {texto_onde}")
+        logger.info(f"   ✅ [TI Confirmado - {recomendacao.get('rotulo')}] {texto_onde}")
     return texto_onde
+
+
+def agrupar_itens_equivalentes(itens) -> int:
+    """No mesmo evento, itens com o mesmo produto apontam para o primeiro em vez de repetir a lista."""
+    return fornecedores_ti.agrupar_itens_equivalentes(itens)
 
 
 def adicionar_paragrafo_onde_encontrar(doc, item: Dict[str, Any]) -> None:
     """
-    Renderiza o campo 'Onde encontrar?' no documento Word (.docx) de forma compacta,
-    limpa e discreta (fonte 8pt), logo abaixo do item confirmado.
+    Renderiza a seção discreta 'ONDE ENCONTRAR?' no documento Word (.docx), logo abaixo do item
+    confirmado: até 5 fornecedores com link de busca, separados por ' | '.
     """
     if not isinstance(item, dict) or not item.get("onde_encontrar"):
         return
-
-    from docx.shared import Pt, RGBColor
-
-    info = item.get("classificacao_ti") or {}
-    fornecedores = info.get("fornecedores") or []
-    categoria = str(info.get("categoria") or "").strip()
-    incerteza = bool(info.get("incerteza"))
-
-    p_onde = doc.add_paragraph()
-    p_onde.paragraph_format.space_before = Pt(1)
-    p_onde.paragraph_format.space_after = Pt(1)
-
-    if fornecedores:
-        rotulo = f"Onde encontrar? ({categoria}): " if categoria else "Onde encontrar?: "
-        r_lbl = p_onde.add_run(rotulo)
-        r_lbl.bold = True
-        r_lbl.font.size = Pt(8)
-        r_lbl.font.color.rgb = RGBColor(35, 75, 115)
-
-        r_forn = p_onde.add_run(" · ".join(fornecedores))
-        r_forn.font.size = Pt(8)
-        r_forn.font.color.rgb = RGBColor(55, 55, 55)
-
-        nota = " (sugestão p/ consulta; verificar linha)" if incerteza else " (sugestão do segmento)"
-        r_nota = p_onde.add_run(nota)
-        r_nota.italic = True
-        r_nota.font.size = Pt(7.5)
-        r_nota.font.color.rgb = RGBColor(115, 115, 115)
-    else:
-        r_txt = p_onde.add_run(str(item["onde_encontrar"]))
-        r_txt.font.size = Pt(8)
-
+    fornecedores_ti.adicionar_secao_word(doc, item.get("onde_encontrar_info"))

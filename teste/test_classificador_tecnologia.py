@@ -78,7 +78,7 @@ class TestClassificadorTecnologia(unittest.TestCase):
             "content": [
                 {
                     "type": "text",
-                    "text": '{"pertence_segmento": true, "categoria": "Computadores/Notebooks", "fornecedores": ["Agis", "SND", "Pauta", "Mazer", "All Nations", "Ingram Micro", "Belmicro"], "incerteza": false}',
+                    "text": '{"pertence_segmento": true, "categoria": "Computadores/Notebooks", "incerteza": false}',
                 }
             ]
         }
@@ -105,8 +105,8 @@ class TestClassificadorTecnologia(unittest.TestCase):
             )
             self.assertIsNotNone(res2)
             self.assertIn("onde_encontrar", item_notebook)
-            self.assertIn("Agis", item_notebook["onde_encontrar"])
-            self.assertIn("Ingram Micro", item_notebook["onde_encontrar"])
+            self.assertTrue(item_notebook["onde_encontrar"].startswith("ONDE ENCONTRAR? Agis | Ingram Micro"))
+            self.assertLessEqual(len(item_notebook["onde_encontrar_info"]["fornecedores"]), 5)
             self.assertEqual(mock_post.call_count, 1)
 
             # Testa a formatação enxuta no Word (.docx)
@@ -117,9 +117,11 @@ class TestClassificadorTecnologia(unittest.TestCase):
             adicionar_paragrafo_onde_encontrar(doc, item_notebook)
             self.assertEqual(len(doc.paragraphs), 1)
             texto_paragrafo = doc.paragraphs[0].text
-            self.assertIn("Onde encontrar? (Computadores/Notebooks):", texto_paragrafo)
-            self.assertIn("Agis · SND · Pauta · Mazer · All Nations · Ingram Micro · Belmicro", texto_paragrafo)
-            self.assertIn("(sugestão do segmento)", texto_paragrafo)
+            nomes = [h.text for h in doc.paragraphs[0].hyperlinks]
+            self.assertTrue(texto_paragrafo.startswith("ONDE ENCONTRAR?"))
+            self.assertIn(" | ".join(nomes), texto_paragrafo)
+            self.assertEqual(nomes[:2], ["Agis", "Ingram Micro"])
+            self.assertTrue(3 <= len(nomes) <= 5)
 
     @patch("bots.classificador_tecnologia.requests.post")
     def test_ia_descarta_item_suspeito_que_nao_eh_informatica(self, mock_post):
@@ -129,7 +131,7 @@ class TestClassificadorTecnologia(unittest.TestCase):
             "content": [
                 {
                     "type": "text",
-                    "text": '{"pertence_segmento": false, "categoria": "", "fornecedores": [], "incerteza": false}',
+                    "text": '{"pertence_segmento": false, "categoria": "", "incerteza": false}',
                 }
             ]
         }

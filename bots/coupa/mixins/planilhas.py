@@ -139,6 +139,14 @@ class PlanilhasMixin:
                     except ImportError:
                         from ..classificador_tecnologia import analisar_item_tecnologia
                 analisar_item_tecnologia(it, txt_completo, dados_ia)
+            try:
+                from bots.classificador_tecnologia import agrupar_itens_equivalentes
+            except ImportError:
+                try:
+                    from classificador_tecnologia import agrupar_itens_equivalentes
+                except ImportError:
+                    from ..classificador_tecnologia import agrupar_itens_equivalentes
+            agrupar_itens_equivalentes(ev.get('itens', []))  # ONDE ENCONTRAR? sem repetir produto igual no evento
             
             if not hasattr(self, 'relatorio_email_stats'): self.relatorio_email_stats = {}
             if 'vendedores_atribuidos' not in self.relatorio_email_stats: self.relatorio_email_stats['vendedores_atribuidos'] = {}
