@@ -38,6 +38,7 @@ from docx.shared import Pt, RGBColor, Cm
 
 import base64
 from bots.transmissor_captcha import manter_transmissao, parar_transmissao
+from bots.termos_participacao import aceitar_termos
 
 logger = logging.getLogger("CoupaApp")
 logger.setLevel(logging.INFO)
@@ -2086,6 +2087,7 @@ class RespostaMixin:
                     logger.warning("    Botão direto não encontrado. Tentando Aceitar Termos de Participação primeiro...")
                     try:
                         el = self.wait.until(EC.presence_of_element_located((By.ID, "participation")))
+                        aceitar_termos(self.driver)   # "Aceita os Termos e condições?" -> Sim, antes do Pretendo
                         try:
                             Select(el).select_by_value("true")
                         except Exception:

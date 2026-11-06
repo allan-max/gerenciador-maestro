@@ -37,6 +37,7 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import NoAlertPresentException
+from bots.termos_participacao import aceitar_termos
 from selenium.webdriver.common.action_chains import ActionChains
 
 from docx import Document
@@ -1222,6 +1223,8 @@ class ValeScraper(RespostaMixin):
             # 4. SE Ã‰ NEGOCIAÃ‡ÃƒO OU NÃƒO TEM RASCUNHO, FAZ O ACEITE NORMAL
             # ==========================================================
             if not entrou_nos_itens:
+                # "Aceita os Termos e condições?" (div.s-term): marca o Sim de cada termo antes do Pretendo
+                aceitar_termos(self.driver)
                 try:
                     dropdowns = self.driver.find_elements(By.ID, "participation")
                     if dropdowns:
@@ -1309,6 +1312,7 @@ class ValeScraper(RespostaMixin):
                     try:
                         dropdowns = self.driver.find_elements(By.ID, "participation")
                         if dropdowns:
+                            aceitar_termos(self.driver)   # "Aceita os Termos e condições?" -> Sim, antes do Pretendo
                             try: Select(dropdowns[0]).select_by_value("true")
                             except: self.driver.execute_script("arguments[0].value='true'; arguments[0].dispatchEvent(new Event('change', {bubbles: true}));", dropdowns[0])
                             time.sleep(1)

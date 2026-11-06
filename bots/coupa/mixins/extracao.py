@@ -31,6 +31,7 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import NoAlertPresentException, NoSuchElementException
+from bots.termos_participacao import aceitar_termos
 from selenium.webdriver.common.action_chains import ActionChains
 
 from docx import Document
@@ -314,11 +315,8 @@ class ExtracaoMixin:
             if not entrou_nos_itens:
                 # ACEITAR TERMOS DE PARTICIPACAO
                 try:
-                    termos = self.driver.find_elements(By.CSS_SELECTOR, "input[type='radio'][value='true'].s-termAccept")
-                    if termos:
-                        logger.info(f"    Aceitando {len(termos)} termo(s) de condição (radio)...")
-                        for termo in termos:
-                            self.driver.execute_script("arguments[0].click();", termo)
+                    # "Aceita os Termos e condições?" (div.s-term): marca o Sim de cada termo
+                    aceitar_termos(self.driver)
                     js_clicar_sim = """
                     var elementos = Array.from(document.querySelectorAll('label, button, span'));
                     var clicados = 0;
@@ -444,6 +442,7 @@ class ExtracaoMixin:
                     try:
                         dropdowns = self.driver.find_elements(By.ID, "participation")
                         if dropdowns:
+                            aceitar_termos(self.driver)   # "Aceita os Termos e condições?" -> Sim, antes do Pretendo
                             try: Select(dropdowns[0]).select_by_value("true")
                             except: self.driver.execute_script("arguments[0].value='true'; arguments[0].dispatchEvent(new Event('change', {bubbles: true}));", dropdowns[0])
                             time.sleep(1)
