@@ -768,6 +768,7 @@ def validar_login(dados):
             port_acc = bool(usuarios[email].get('portais_access', False)) or dash_acc or is_adm
             plan_acc = bool(usuarios[email].get('planilha_access', False)) or is_adm
             busca_acc = bool(usuarios[email].get('busca_outros_access', False)) or is_adm
+            emails_acc = bool(usuarios[email].get('emails_access', False)) or is_adm  # Central de E-mails; não libera portais
             sio.emit('resultado_login', {
                 'sucesso': True, 
                 'user': email, 
@@ -777,6 +778,7 @@ def validar_login(dados):
                 'hasPlanilhaAccess': plan_acc,
                 'hasPortaisAccess': port_acc,
                 'hasBuscaOutrosAccess': busca_acc,
+                'hasEmailsAccess': emails_acc,
                 'vendedor': usuarios[email].get('vendedor', ''),
                 'clientId': cid
             })
@@ -1783,7 +1785,7 @@ def salvar_config_admin(dados):
 # ==================== PAINEL ADMIN: CONTAS E PRIVILEGIOS ====================
 CAMPOS_PUBLICOS_USUARIO = (
     'verificado', 'admin', 'dev', 'dashboard_access', 
-    'planilha_access', 'portais_access', 'busca_outros_access', 'bloqueado', 'vendedor'
+    'planilha_access', 'portais_access', 'busca_outros_access', 'emails_access', 'bloqueado', 'vendedor'
 )
 
 @sio.on('admin_listar_usuarios')
@@ -1807,7 +1809,7 @@ def admin_alterar_acesso_dashboard(dados):
     acesso = bool(dados.get('acesso'))
     campo = dados.get('campo') or 'dashboard_access' # <-- NOVO: aceita dashboard_access, planilha_access ou portais_access
 
-    if campo not in ('dashboard_access', 'planilha_access', 'portais_access', 'busca_outros_access'):
+    if campo not in ('dashboard_access', 'planilha_access', 'portais_access', 'busca_outros_access', 'emails_access'):
         sio.emit('admin_resposta_acesso', {'sucesso': False, 'erro': 'Permissão inválida.', 'clientId': client_id})
         return
 
@@ -1832,6 +1834,7 @@ def admin_alterar_acesso_dashboard(dados):
             'dashboard_access': bool(usuarios[email].get('dashboard_access', False)),
             'planilha_access': bool(usuarios[email].get('planilha_access', False)),
             'busca_outros_access': bool(usuarios[email].get('busca_outros_access', False)),
+            'emails_access': bool(usuarios[email].get('emails_access', False)),
             'clientId': client_id
         })
     except Exception as e:
