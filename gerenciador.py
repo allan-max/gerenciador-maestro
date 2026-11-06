@@ -2001,11 +2001,22 @@ def comando_carregar_planilha_json(dados):
             if numero in chaves_coupa: portais_robo[numero] = 'coupa'
             elif numero in chaves_vale: portais_robo[numero] = 'vale'
 
+        # ONDE ENCONTRAR? do Word padrão Coupa (Minhas Cotações): mesmo motor e mesma configuração do Word do
+        # robô (bots/fornecedores_ti), calculado aqui com MARCAS/MODELOS já gravados. Sem IA e sem coluna nova.
+        onde_encontrar = {}
+        if dados.get('tela') == 'minhas_cotacoes' or dados.get('apenas_meu_vendedor'):
+            try:
+                from bots.fornecedores_ti import mapa_onde_encontrar
+                onde_encontrar = mapa_onde_encontrar(cotacoes, set(portais_robo))
+            except Exception:
+                logger.exception("ONDE ENCONTRAR? não calculado para a planilha")
+
         sio.emit('retorno_planilha_json', {
             'sucesso': True,
-            'cotacoes': cotacoes[::-1], 
+            'cotacoes': cotacoes[::-1],
             'pedidos': pedidos[::-1],
             'portais_robo': portais_robo,
+            'onde_encontrar': onde_encontrar,
             'clientId': client_id
         })
     except Exception as e:
