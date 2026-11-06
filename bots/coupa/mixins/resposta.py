@@ -1957,6 +1957,38 @@ class RespostaMixin:
             except Exception as e:
                 logger.warning(f" Erro ao anexar {nome_campo} ({path}): {e}")
 
+    def _preencher_nome_vendedor(self, nome):
+        """Preenche o nome de quem respondeu (input#quote_response_name) no fim da resposta."""
+        nome = str(nome or '').strip()
+        if not nome:
+            logger.warning("   ⚠️ Resposta sem nome do vendedor: campo 'Nome' não preenchido.")
+            return False
+        try:
+            campos = self.driver.find_elements(By.ID, "quote_response_name")
+            if not campos:
+                logger.warning("   ⚠️ Campo de nome do vendedor (quote_response_name) não encontrado.")
+                return False
+            campo = campos[0]
+            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", campo)
+            time.sleep(0.3)
+            try:
+                campo.clear()
+                campo.send_keys(nome)
+                campo.send_keys(Keys.TAB)
+            except Exception:
+                self.driver.execute_script("""
+                    arguments[0].value = arguments[1];
+                    arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+                    arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+                    arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
+                """, campo, nome)
+            logger.info(f"   ✅ Nome do vendedor preenchido: {nome}")
+            time.sleep(1)
+            return True
+        except Exception as e:
+            logger.warning(f"   ⚠️ Falha ao preencher o nome do vendedor: {e}")
+            return False
+
     def responder_evento(self, dados):
         evento = str(dados.get('evento', '')).strip()
         lista_precos = dados.get('precos', [])
@@ -2256,6 +2288,7 @@ class RespostaMixin:
                                 preencher_cf("input.s-custom_field_8", "3", "COFINS (%)")    # Campo 8
                                 preencher_cf("input.s-custom_field_7", "0,65", "PIS (%)")    # Campo 7
                                 preencher_cf("input.s-custom_field_6", "0", "IPI (%)")       # Campo 6
+                                preencher_cf("input.s-custom_field_5", "0", "Campo 5")       # Campo 5 (sempre 0)
                                 preencher_cf("input.s-custom_field_3", "0", "ISS (%)")       # Campo 3 (0 para material)
 
                                 # 3. ICMS se o utilizador informou (Campo 4)
@@ -2403,9 +2436,14 @@ class RespostaMixin:
 
             # 8. Salvar Final (só salva o rascunho; o envio ao cliente é feito por uma pessoa no portal)
             logger.info("✅ Finalizando salvamento do evento...")
+            self._preencher_nome_vendedor(dados.get('vendedor'))
             try:
-                btn_salvar = self.driver.find_element(By.CSS_SELECTOR, "button.s-save")
+                # "Salvar rascunho" do menu da resposta; sem ele, cai no Salvar comum
+                btns_rascunho = self.driver.find_elements(By.CSS_SELECTOR, "button.s-menuSaveResponse")
+                btn_salvar = btns_rascunho[0] if btns_rascunho else self.driver.find_element(By.CSS_SELECTOR, "button.s-save")
+                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn_salvar)
                 self.driver.execute_script("arguments[0].click();", btn_salvar)
+                logger.info(f"   💾 Clique em '{'Salvar rascunho' if btns_rascunho else 'Salvar'}'.")
                 time.sleep(3)
                 self._verificar_e_resolver_captcha()
 
