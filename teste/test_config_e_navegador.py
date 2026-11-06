@@ -35,7 +35,7 @@ class PaginasVerificacaoTest(unittest.TestCase):
 
 
 class ConfigDoGerenciadorTest(unittest.TestCase):
-    NOMES = {'carregar_config', 'com_padroes', 'PADROES_CONFIG', 'salvar_config', 'salvar_config_admin'}
+    NOMES = {'carregar_config', 'com_padroes', 'PADROES_CONFIG', 'salvar_config', 'salvar_config_admin', 'EDITAVEIS_PAINEL'}
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -64,6 +64,26 @@ class ConfigDoGerenciadorTest(unittest.TestCase):
                                       'atualizacao_automatica': 'sim'})
         self.ns['salvar_config_admin']({'clientId': 'c', 'config': {}})
         self.assertEqual(self.ler()['SMTP_USER'], 'y')                                  # não apagou o arquivo
+        self.assertFalse(self.sio.emit.call_args[0][1]['sucesso'])
+
+    def test_painel_nao_troca_caminhos_executados(self):
+        # caminho_bat_me vai para subprocess.Popen: pelo painel seria executar qualquer binário no servidor
+        original = {'SMTP_USER': 'x', 'caminho_bat_me': r'C:\ok.bat', 'pasta_me': r'\\SERVIDOR2\ME'}
+        Path('CONFIG.json').write_text(json.dumps(original), encoding='utf-8')
+        self.ns['salvar_config_admin']({'clientId': 'c', 'config': {
+            'caminho_bat_me': r'\\atacante\x.exe', 'pasta_me': r'\\atacante\share', 'chave_nova': 'z',
+            'emails_relatorio': 'a@b.com'}})
+        salvo = self.ler()
+        self.assertEqual(salvo['caminho_bat_me'], r'C:\ok.bat')
+        self.assertEqual(salvo['pasta_me'], r'\\SERVIDOR2\ME')
+        self.assertNotIn('chave_nova', salvo)
+        self.assertEqual(salvo['emails_relatorio'], 'a@b.com')
+        self.assertNotIn('caminho_bat_me', self.ns['CONFIG_GLOBAL'])                   # memória também intacta
+
+    def test_so_caminhos_e_recusado_sem_gravar(self):
+        Path('CONFIG.json').write_text(json.dumps({'caminho_ariba': r'C:\ok'}), encoding='utf-8')
+        self.ns['salvar_config_admin']({'clientId': 'c', 'config': {'caminho_ariba': r'\\atacante\x'}})
+        self.assertEqual(self.ler(), {'caminho_ariba': r'C:\ok'})
         self.assertFalse(self.sio.emit.call_args[0][1]['sucesso'])
 
 

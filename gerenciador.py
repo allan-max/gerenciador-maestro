@@ -1427,27 +1427,42 @@ def receber_clique(dados):
     coordenadas_clique.update({'x': dados['x'], 'y': dados['y']})
     aguardando_clique.set()
 
+# Só estas chaves mudam pelo painel. Caminhos (caminho_*, pasta_*) viram programas executados (Popen) ou
+# pastas lidas/gravadas: trocar pelo painel = executar qualquer binário no servidor. Esses só no CONFIG.json local.
+EDITAVEIS_PAINEL = frozenset({'SMTP_USER', 'SMTP_PASSWORD', 'emails_relatorio', 'coupa_verificacao_max_paginas',
+                              'vale_verificacao_max_paginas', 'atualizacao_automatica'})
+
 @sio.on('pedir_config_admin')
 def pedir_config_admin(dados):
     client_id = dados.get('clientId')
-    sio.emit('receber_config_admin', {'config': CONFIG_GLOBAL, 'clientId': client_id})
+    sio.emit('receber_config_admin', {'config': CONFIG_GLOBAL, 'clientId': client_id,
+                                      'editaveis': sorted(EDITAVEIS_PAINEL)})
 
 @sio.on('salvar_config_admin')
 def salvar_config_admin(dados):
     global CONFIG_GLOBAL, SMTP_USER, SMTP_PASSWORD
     client_id = dados.get('clientId')
     nova_config = dados.get('config')
-    if not isinstance(nova_config, dict) or not nova_config:
+    alteracoes = {k: v for k, v in nova_config.items()
+                  if k in EDITAVEIS_PAINEL and isinstance(v, (str, int, float))} if isinstance(nova_config, dict) else {}
+    if not alteracoes:
         # painel sem dados (ex.: gerenciador reconectando) apagaria o CONFIG.json inteiro
         sio.emit('receber_config_admin', {'config': CONFIG_GLOBAL, 'clientId': client_id, 'sucesso': False,
+                                          'editaveis': sorted(EDITAVEIS_PAINEL),
                                           'erro': 'Configuração vazia: nada foi salvo.'})
         return
-    nova_config = com_padroes(nova_config)
-    salvar_config(nova_config)
-    CONFIG_GLOBAL = nova_config
+    # parte do que está no disco (não do CONFIG_GLOBAL, que tem caminhos de execução calculados no início)
+    try:
+        with open('CONFIG.json', 'r', encoding='utf-8-sig') as f:
+            no_disco = json.load(f)
+    except (OSError, ValueError):
+        no_disco = {}
+    salvar_config(com_padroes({**(no_disco if isinstance(no_disco, dict) else {}), **alteracoes}))
+    CONFIG_GLOBAL = com_padroes({**CONFIG_GLOBAL, **alteracoes})
     SMTP_USER = CONFIG_GLOBAL.get("SMTP_USER", os.environ.get("SMTP_USER", ""))
     SMTP_PASSWORD = CONFIG_GLOBAL.get("SMTP_PASSWORD", os.environ.get("SMTP_PASSWORD", ""))
-    sio.emit('receber_config_admin', {'config': CONFIG_GLOBAL, 'clientId': client_id, 'sucesso': True})
+    sio.emit('receber_config_admin', {'config': CONFIG_GLOBAL, 'clientId': client_id, 'sucesso': True,
+                                      'editaveis': sorted(EDITAVEIS_PAINEL)})
 
 # ==================== PAINEL ADMIN: CONTAS E PRIVILEGIOS ====================
 CAMPOS_PUBLICOS_USUARIO = (
