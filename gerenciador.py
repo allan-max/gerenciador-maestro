@@ -119,7 +119,7 @@ def carregar_config():
             "pasta_ariba_aegea": r"\\SERVIDOR2\Publico\ALLAN\AribaSourcing\AEGEA",
             "pasta_ariba_estacio": r"\\SERVIDOR2\Publico\ALLAN\AribaSourcing\ESTÁCIO",
             "caminho_excel": r"\\SERVIDOR2\Publico\PLANILHA DE CONTROLE VALE - ESTAGIARIOS (copia 1).xlsx",
-            "caminho_bat_me": r"C:\Users\Administrator\Desktop\mercadoeletronico.bat",
+            "caminho_me": r"C:\Users\Administrator\Desktop\Mercado-Eletronico",
             "caminho_ariba": r"C:\Users\Administrator\Desktop\AribaSourcing",
             "caminho_findes": r"C:\Users\Administrator\Desktop\FINDES",
             "caminho_findes_novo": r"C:\Users\Administrator\Desktop\allan bots\Findes",
@@ -453,6 +453,17 @@ def _registrar_evento_linha_log(portal, linha_limpa):
             eventos.registrar(portal, 'sessao_finalizada', 'ok', t[:200])
     except Exception as e:
         logger.debug(f"Falha ao analisar linha de log ({portal}): {e}")
+
+# O ME abre direto pelo "dotnet run" na pasta do projeto (o mesmo que o Mercado-Eletronico.bat faz).
+# Antes dependia do .bat: no servidor ele foi renomeado e o CONFIG.json ainda apontava para
+# "mercadoeletronico.bat" -> Popen falhava com [WinError 2].
+PASTA_ME_PADRAO = r"C:\Users\Administrator\Desktop\Mercado-Eletronico"
+TITULO_JANELA_ME = "ROBO_ME"
+
+
+def obter_pasta_me():
+    return CONFIG_GLOBAL.get("caminho_me") or PASTA_ME_PADRAO
+
 
 def monitorar_log_me():
     global rodando_monitor_me, processo_me
@@ -984,15 +995,30 @@ def comando_para_robo(dados):
                 sio.emit('sincronizar_estado_me', {'status': 'extraindo'})
                 return
             marcar_inicio('me')
-            caminho_bat = CONFIG_GLOBAL.get("caminho_bat_me", r"C:\Users\Administrator\Desktop\mercadoeletronico.bat")
-            logger.info(f"Mercado Eletrônico: iniciando {caminho_bat}")
+            pasta_me = obter_pasta_me()
+            if not os.path.isdir(pasta_me):
+                msg = f"Pasta do Mercado Eletrônico não encontrada: {pasta_me}"
+                logger.error(msg)
+                eventos.registrar('me', 'ciclo', 'erro', msg)
+                sio.emit('relatar_progresso_me', {'mensagem': f'❌ {msg}'})
+                sio.emit('sincronizar_estado_me', {'status': 'ocioso'})
+                return
+            logger.info(f"Mercado Eletrônico: dotnet run em {pasta_me}")
             rodando_monitor_me = True
-            threading.Thread(target=monitorar_log_me, daemon=True).start()   # antes do .bat: não perde as 1ªs linhas
+            threading.Thread(target=monitorar_log_me, daemon=True).start()   # antes do robô: não perde as 1ªs linhas
             try:
-                processo_me = subprocess.Popen([caminho_bat])
+                env_me = os.environ.copy()
+                env_me["NODE_SKIP_PLATFORM_CHECK"] = "1"
+                # = cd /d "<pasta>" & set NODE_SKIP_PLATFORM_CHECK=1 & dotnet run
+                processo_me = subprocess.Popen(
+                    f'cmd.exe /c "title {TITULO_JANELA_ME} & dotnet run"',
+                    cwd=pasta_me,
+                    env=env_me,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                )
             except Exception as e:
                 # antes o erro sumia dentro do handler e a tela ficava em "extraindo" sem nada rodando
-                logger.error(f"Mercado Eletrônico: falha ao iniciar {caminho_bat}: {e}")
+                logger.error(f"Mercado Eletrônico: falha ao iniciar em {pasta_me}: {e}")
                 eventos.registrar('me', 'ciclo', 'erro', f'Falha ao iniciar o Mercado Eletrônico: {e}')
                 rodando_monitor_me = False
                 processo_me = None
@@ -1604,8 +1630,12 @@ def findes_antigo_esta_rodando():
 
 
 def processos_me():
-    bat = CONFIG_GLOBAL.get("caminho_bat_me", r"C:\Users\Administrator\Desktop\mercadoeletronico.bat")
-    return processos_robos.processos_com_termo(os.path.basename(bat))
+    """O 'dotnet run' da pasta do ME (aberto pelo gerenciador, pelo Mercado-Eletronico.bat ou à mão)."""
+    achados = processos_robos.processos_dotnet(obter_pasta_me())
+    pids = {p.pid for p in achados}
+    achados += [p for p in processos_robos.processos_com_termo(TITULO_JANELA_ME.lower(), 'mercado-eletronico.bat',
+                                                               'mercadoeletronico.bat') if p.pid not in pids]
+    return achados
 
 
 def me_esta_rodando():
