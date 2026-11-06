@@ -976,6 +976,13 @@ def comando_para_robo(dados):
 
     modo, portal = dados.get('modo'), dados.get('portal')
 
+    if portal == 'comprasgov':
+        if modo == 'ligar_robo':
+            threading.Thread(target=ligar_comprasgov, daemon=True).start()
+        elif modo == 'desligar_robo':
+            threading.Thread(target=desligar_comprasgov, daemon=True).start()
+        return
+
     if portal == 'me':
         if modo == 'extrair':
             rodando_monitor_me = True
@@ -1421,6 +1428,149 @@ def responder_estado_findes(dados=None):
     status_antigo = 'executando' if (bot_findes is not None or rodando_monitor_findes) else 'desligado'
     sio.emit('sincronizar_estado_findes', {'status': status_novo})
     sio.emit('sincronizar_estado_findes_antigo', {'status': status_antigo})
+
+# ========================================================
+# 🏛️ COMPRASGOV (ROBÔ .NET VIA "dotnet run")
+# ========================================================
+PASTA_COMPRASGOV_PADRAO = r"C:\Users\Administrator\Desktop\ComprasGOV\ComprasGOV"
+TITULO_JANELA_COMPRASGOV = "ROBO_COMPRASGOV"
+# Processos dotnet auxiliares do build (ficam vivos alguns minutos depois do "dotnet run" e não são o robô)
+_AUXILIARES_DOTNET = ('msbuild.dll', 'nodemode', 'vbcscompiler', 'razor', 'build-server')
+bot_comprasgov = None            # Popen do cmd.exe aberto pelo gerenciador
+estado_comprasgov = 'desligado'  # último estado enviado ao portal
+
+
+def obter_pasta_comprasgov():
+    return CONFIG_GLOBAL.get("caminho_comprasgov") or PASTA_COMPRASGOV_PADRAO
+
+
+def processos_comprasgov():
+    """Processos do robô ComprasGOV rodando: o 'dotnet run' da pasta do projeto e o executável que ele compila."""
+    import psutil
+    pasta = os.path.normcase(os.path.abspath(obter_pasta_comprasgov()))
+    achados = []
+    for p in psutil.process_iter(['pid', 'name', 'exe', 'cmdline']):
+        try:
+            nome = (p.info.get('name') or '').lower()
+            if nome == 'comprasgov.exe':
+                achados.append(p)
+                continue
+            if nome != 'dotnet.exe':
+                continue
+            cmd = ' '.join(p.info.get('cmdline') or []).lower()
+            if any(a in cmd for a in _AUXILIARES_DOTNET):
+                continue
+            if 'comprasgov' in cmd:
+                achados.append(p)
+                continue
+            try:
+                if os.path.normcase(p.cwd()).startswith(pasta):
+                    achados.append(p)
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                pass
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return achados
+
+
+def comprasgov_esta_rodando():
+    try:
+        return bool(processos_comprasgov())
+    except Exception as e:
+        logger.debug(f"Erro ao checar processo do ComprasGOV: {e}")
+        return False
+
+
+def _emitir_estado_comprasgov(status, mensagem=None):
+    global estado_comprasgov
+    estado_comprasgov = status
+    sio.emit('sincronizar_estado_comprasgov', {'status': status})
+    if mensagem:
+        sio.emit('relatar_progresso_comprasgov', {'mensagem': mensagem})
+
+
+def ligar_comprasgov():
+    global bot_comprasgov
+    if comprasgov_esta_rodando():
+        _emitir_estado_comprasgov('ligado', '⚠️ O robô ComprasGOV já está rodando.')
+        return
+    pasta = obter_pasta_comprasgov()
+    if not os.path.isdir(pasta):
+        msg = f"Pasta do ComprasGOV não encontrada: {pasta}"
+        logger.error(msg)
+        _emitir_estado_comprasgov('desligado', f"❌ {msg}")
+        return
+    # Janela antiga (robô que caiu com o cmd aberto) não fica acumulando
+    if bot_comprasgov is not None and bot_comprasgov.poll() is None:
+        os.system(f"taskkill /F /T /PID {bot_comprasgov.pid} >nul 2>&1")
+    try:
+        _emitir_estado_comprasgov('iniciando', f"🚀 Abrindo o cmd em {pasta} e executando 'dotnet run'...")
+        # /k: se o robô cair, a janela fica aberta mostrando o erro
+        bot_comprasgov = subprocess.Popen(
+            f'cmd.exe /k "title {TITULO_JANELA_COMPRASGOV} & dotnet run"',
+            cwd=pasta,
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+        )
+        eventos.registrar('comprasgov', 'ciclo', 'ok', 'Robô ComprasGOV iniciado (dotnet run)')
+    except Exception as e:
+        logger.error(f"Erro ao iniciar o ComprasGOV: {e}")
+        eventos.registrar('comprasgov', 'ciclo', 'erro', f'Falha ao iniciar o ComprasGOV: {e}')
+        bot_comprasgov = None
+        _emitir_estado_comprasgov('desligado', f"❌ Falha ao iniciar: {e}")
+
+
+def desligar_comprasgov():
+    global bot_comprasgov
+    sio.emit('relatar_progresso_comprasgov', {'mensagem': '🛑 Encerrando o robô ComprasGOV...'})
+    if bot_comprasgov is not None:
+        os.system(f"taskkill /F /T /PID {bot_comprasgov.pid} >nul 2>&1")
+        bot_comprasgov = None
+    # Também derruba o que foi aberto à mão (fora do gerenciador)
+    try:
+        import psutil
+        for p in processos_comprasgov():
+            try:
+                for filho in p.children(recursive=True):
+                    filho.kill()
+                p.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+    except Exception as e:
+        logger.warning(f"Erro ao encerrar processos do ComprasGOV: {e}")
+    eventos.registrar('comprasgov', 'ciclo', 'info', 'Robô ComprasGOV desligado')
+    _emitir_estado_comprasgov('desligado', '⏹️ Robô ComprasGOV desligado.')
+
+
+def vigiar_comprasgov(intervalo_s=5, reenvio_s=60):
+    """Checa se há 'dotnet run' do ComprasGOV rodando e mantém o botão do portal no estado real."""
+    ultimo_envio = 0.0
+    while True:
+        try:
+            rodando = comprasgov_esta_rodando()
+            if rodando:
+                novo = 'ligado'
+            elif estado_comprasgov == 'iniciando' and bot_comprasgov is not None and bot_comprasgov.poll() is None:
+                novo = 'iniciando'   # cmd aberto, dotnet ainda subindo
+            else:
+                novo = 'desligado'
+            agora = time.time()
+            if novo != estado_comprasgov:
+                msg = {'ligado': '✅ Robô ComprasGOV rodando.',
+                       'desligado': '⏹️ Robô ComprasGOV não está mais rodando.'}.get(novo)
+                _emitir_estado_comprasgov(novo, msg)
+                ultimo_envio = agora
+            elif agora - ultimo_envio >= reenvio_s:   # portal reiniciado não fica com o botão errado
+                sio.emit('sincronizar_estado_comprasgov', {'status': novo})
+                ultimo_envio = agora
+        except Exception as e:
+            logger.debug(f"Vigia do ComprasGOV: {e}")
+        time.sleep(intervalo_s)
+
+
+@sio.on('pedir_estado_comprasgov')
+def responder_estado_comprasgov(dados=None):
+    sio.emit('sincronizar_estado_comprasgov', {'status': 'ligado' if comprasgov_esta_rodando() else estado_comprasgov})
+
 
 @sio.on('executar_clique')
 def receber_clique(dados):
@@ -2711,6 +2861,7 @@ if __name__ == '__main__':
 
     threading.Thread(target=loop_agendamento, daemon=True).start()
     threading.Thread(target=loop_metricas_servidor, daemon=True).start()
+    threading.Thread(target=vigiar_comprasgov, daemon=True).start()
     backup_inicial()
     # Portal fora do ar na partida (reinício do Site-Maestro, reboot) não fecha o gerenciador: tenta até conectar.
     # Depois de conectado, quedas são reconectadas pelo próprio socketio.
