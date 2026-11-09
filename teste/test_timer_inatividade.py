@@ -12,7 +12,12 @@ FUNCOES = {
     'agendar_timer_inatividade_resposta',
     '_timer_inatividade_resposta',
     '_trava_timer_inatividade',
-    'TEMPO_ESPERA_INATIVIDADE_RESPOSTA'
+    'TEMPO_ESPERA_INATIVIDADE_RESPOSTA',
+    '_robo_trabalhando',
+    'sair_modo_resposta',
+    'modo_resposta_ativo',
+    'modo_resposta_pronto',
+    '_trava_modo_resposta',
 }
 
 
@@ -63,7 +68,10 @@ class TestTimerInatividade(unittest.TestCase):
         mock_driver = MagicMock()
         mock_bot = MagicMock()
         mock_bot.driver = mock_driver
+        mock_bot.thread_atual = None
+        mock_bot.thread_login = None
         self.ns['bot_coupa'] = mock_bot
+        self.ns['modo_resposta_ativo'] = self.ns['modo_resposta_pronto'] = True
 
         with patch('threading.Timer') as mock_timer_cls:
             callback_fechar = None
@@ -81,6 +89,25 @@ class TestTimerInatividade(unittest.TestCase):
             callback_fechar()
 
             mock_driver.quit.assert_called_once()
+        self.assertIsNone(self.ns['bot_coupa'])
+        # Modo resposta acaba: o piloto do Coupa/Vale volta
+        self.assertFalse(self.ns['modo_resposta_ativo'])
+        self.assertFalse(self.ns['modo_resposta_pronto'])
+
+    def test_callback_adia_se_o_robo_ainda_esta_respondendo(self):
+        tarefa = MagicMock()
+        tarefa.is_alive.return_value = True
+        mock_bot = MagicMock(thread_atual=tarefa, thread_login=None)
+        self.ns['bot_vale'] = mock_bot
+        self.ns['modo_resposta_ativo'] = self.ns['modo_resposta_pronto'] = True
+        callbacks = []
+        with patch('threading.Timer') as mock_timer_cls:
+            mock_timer_cls.side_effect = lambda tempo, fn: callbacks.append(fn) or MagicMock()
+            self.ns['agendar_timer_inatividade_resposta']('vale')
+            callbacks[0]()
+        mock_bot.driver.quit.assert_not_called()
+        self.assertEqual(len(callbacks), 2)              # reagendou mais 10 minutos
+        self.assertTrue(self.ns['modo_resposta_ativo'])
 
 
 if __name__ == '__main__':

@@ -951,31 +951,145 @@ def agendar_timer_inatividade_resposta(portal):
             _timer_inatividade_resposta = None
 
         def _fechar_navegador_inatividade():
-            global bot_coupa, bot_vale, portal_atual
-            portal_alvo = portal or portal_atual or 'coupa'
-            logger.info(f"⏳ Passaram-se 10 minutos sem novas cotações/eventos para responder. Fechando o navegador do robô {portal_alvo.upper()} por inatividade...")
+            global bot_coupa, bot_vale, _timer_inatividade_resposta
+            with _trava_timer_inatividade:
+                _timer_inatividade_resposta = None
+            # Resposta ainda rodando (a próxima da fila chegou antes deste timer ser agendado): espera mais 10 min
+            if any(_robo_trabalhando(b) for b in (bot_coupa, bot_vale)):
+                logger.info("⏳ Robô de resposta ainda trabalhando; adiando o desligamento por mais 10 minutos.")
+                agendar_timer_inatividade_resposta(portal)
+                return
+            logger.info("⏳ Passaram-se 10 minutos sem novas cotações para responder. Desligando o robô de resposta...")
             try:
-                bot = bot_coupa if portal_alvo == 'coupa' else bot_vale
-                if bot and getattr(bot, 'driver', None) is not None:
-                    try:
-                        bot.driver.quit()
-                    except Exception as e_q:
-                        logger.warning(f"Erro ao fechar driver: {e_q}")
-                if portal_alvo == 'coupa':
-                    bot_coupa = None
-                elif portal_alvo == 'vale':
-                    bot_vale = None
+                for nome in ('coupa', 'vale'):
+                    bot = bot_coupa if nome == 'coupa' else bot_vale
+                    if bot is None:
+                        continue
+                    bot.solicitacao_parada = True
+                    if getattr(bot, 'driver', None) is not None:
+                        try:
+                            bot.driver.quit()
+                        except Exception as e_q:
+                            logger.warning(f"Erro ao fechar driver: {e_q}")
+                    if nome == 'coupa':
+                        bot_coupa = None
+                    else:
+                        bot_vale = None
                 sio.emit('sou_o_robo')
-                sio.emit('relatar_progresso', {'mensagem': f"💤 Navegador do robô {portal_alvo.upper()} fechado após 10 minutos sem novas cotações para responder."})
-                logger.info(f"✅ Navegador do robô {portal_alvo.upper()} fechado com sucesso após 10 minutos de inatividade.")
+                sio.emit('relatar_progresso', {'mensagem': "💤 Robô de resposta desligado após 10 minutos sem novas cotações para responder."})
+                logger.info("✅ Robô de resposta desligado após 10 minutos de inatividade.")
             except Exception as e_fech:
                 logger.error(f"Erro ao fechar navegador por inatividade: {e_fech}")
+            finally:
+                sair_modo_resposta()   # o piloto do Coupa/Vale volta (e refaz o ciclo que foi interrompido)
 
         logger.info(f"⏳ Cotação respondida. Aguardando 10 minutos por novas cotações antes de fechar o navegador do robô {portal.upper()}...")
         sio.emit('relatar_progresso', {'mensagem': f"⏳ Cotação respondida. O robô {portal.upper()} aguardará 10 minutos por novas respostas antes de fechar o navegador."})
         _timer_inatividade_resposta = threading.Timer(TEMPO_ESPERA_INATIVIDADE_RESPOSTA, _fechar_navegador_inatividade)
         _timer_inatividade_resposta.daemon = True
         _timer_inatividade_resposta.start()
+
+
+# === MODO RESPOSTA: responder cotação (Minhas Cotações) tem prioridade total sobre o Coupa/Vale ===
+# No primeiro 'responder', o que estiver rodando no Coupa/Vale (piloto, ciclo manual ou tela) para com segurança
+# (termina o evento atual e grava Word/Excel), os dois robôs desligam e só então o robô de resposta liga.
+# 10 minutos depois da última resposta o robô de resposta desliga, o modo acaba e o piloto volta
+# (o ciclo do piloto que foi interrompido roda de novo na hora).
+modo_resposta_ativo = False      # piloto espera; ciclo manual e ligar/extrair/verificar pela tela são recusados
+modo_resposta_pronto = False     # Coupa/Vale já parados e desligados: o 'responder' pode seguir
+ciclo_interrompido = None        # portal do ciclo do piloto cortado pelo modo resposta: o piloto refaz ao sair
+_trava_modo_resposta = threading.Lock()
+ESPERA_SALVAR_S = 300            # tempo para o robô terminar o evento atual e gravar antes de fechar à força
+MODOS_BLOQUEADOS_NO_MODO_RESPOSTA = {'ligar_robo', 'extrair', 'verificar', 'extrair_pedidos', 'forcar_troca'}
+
+
+def _robo_trabalhando(bot):
+    if bot is None:
+        return False
+    return any(t is not None and t.is_alive()
+               for t in (getattr(bot, 'thread_atual', None), getattr(bot, 'thread_login', None)))
+
+
+def desligar_coupa_vale(portal):
+    global bot_coupa, bot_vale, rodando_monitor_coupa, rodando_monitor_vale
+    if portal == 'coupa':
+        rodando_monitor_coupa = False
+        bot = bot_coupa
+    else:
+        rodando_monitor_vale = False
+        bot = bot_vale
+    if bot:
+        bot.solicitacao_parada = True
+        time.sleep(2)
+        try: bot.driver.quit()
+        except Exception: pass
+        if portal == 'coupa':
+            bot_coupa = None
+        else:
+            bot_vale = None
+    sio.emit('sou_o_robo')
+
+
+def _parar_e_desligar_para_responder(portal):
+    """Parada segura: o robô termina o evento atual e grava o que já extraiu (Word/Excel) antes de fechar."""
+    bot = globals().get('bot_' + portal)
+    if bot is None:
+        return
+    logger.info(f"Modo resposta: parando o robô {portal.upper()} com segurança...")
+    sio.emit(f'relatar_progresso_{portal}', {'mensagem': f'⏸️ Pedido de resposta de cotação: o robô {portal.upper()} '
+                                                         'vai terminar o evento atual, salvar e desligar.'})
+    bot.solicitacao_parada = True
+    tarefa = getattr(bot, 'thread_atual', None)
+    if tarefa is not None and tarefa.is_alive():
+        tarefa.join(ESPERA_SALVAR_S)
+        if tarefa.is_alive():
+            logger.warning(f"Modo resposta: {portal} não terminou em {ESPERA_SALVAR_S}s; fechando mesmo assim")
+    desligar_coupa_vale(portal)
+
+
+def entrar_modo_resposta():
+    """Para, salva e desliga o Coupa/Vale. Volta quando os dois estão desligados e nenhum ciclo está rodando."""
+    global modo_resposta_ativo, modo_resposta_pronto
+    with _trava_modo_resposta:
+        if modo_resposta_pronto:
+            return
+        modo_resposta_ativo = True
+        try:
+            ligados = [p for p in ('coupa', 'vale') if globals().get('bot_' + p) is not None]
+            if ligados:
+                nomes = ' e '.join(p.upper() for p in ligados)
+                sio.emit('relatar_progresso', {'mensagem': f'⏸️ Resposta de cotação tem prioridade: parando {nomes} '
+                                                           '(salvando o que já foi feito)...'})
+            for p in ligados:
+                _parar_e_desligar_para_responder(p)
+            # Espera o ciclo (piloto ou manual) que estava rodando terminar de sair: o desligar do fim dele não
+            # pode derrubar o robô de resposta que vai ligar agora
+            if _trava_ciclo.acquire(timeout=ESPERA_SALVAR_S):
+                _trava_ciclo.release()
+            for p in ('coupa', 'vale'):   # ligado no meio do caminho (antes do bloqueio valer)
+                if globals().get('bot_' + p) is not None:
+                    _parar_e_desligar_para_responder(p)
+        finally:
+            modo_resposta_pronto = True
+    logger.info("Modo resposta ativo: Coupa/Vale desligados, robô de resposta liberado.")
+
+
+def sair_modo_resposta():
+    global modo_resposta_ativo, modo_resposta_pronto
+    with _trava_modo_resposta:
+        if not modo_resposta_ativo:
+            return
+        modo_resposta_ativo = modo_resposta_pronto = False
+    logger.info("Modo resposta encerrado: o piloto do Coupa/Vale volta a rodar.")
+    sio.emit('relatar_progresso', {'mensagem': '▶️ Respostas concluídas: Coupa/Vale voltam ao processo normal.'})
+
+
+def _responder_com_prioridade(dados):
+    try:
+        entrar_modo_resposta()
+    except Exception:
+        logger.exception('Falha ao preparar o modo resposta; respondendo mesmo assim')
+    comando_para_robo(dados)
 
 @sio.on('comando_para_robo')
 def comando_para_robo(dados):
@@ -1144,6 +1258,22 @@ WshShell.SendKeys "~"
             processos_robos.matar(processos_ariba())   # aberto fora do gerenciador
 
     elif portal in ['coupa', 'vale']:
+        if modo_resposta_ativo and modo in MODOS_BLOQUEADOS_NO_MODO_RESPOSTA:
+            msg = ('⏸️ Robô em modo resposta: cotações do Minhas Cotações sendo respondidas. '
+                   'Extração e verificação voltam sozinhas 10 minutos depois da última resposta.')
+            logger.info(f"{portal}: '{modo}' recusado durante o modo resposta")
+            sio.emit(f'relatar_progresso_{portal}', {'mensagem': msg})
+            sio.emit('tarefa_concluida', {'evento': f'Comando {modo}', 'sucesso': False, 'erro': msg, 'portal': portal})
+            return
+
+        if modo == 'responder':
+            cancelar_timer_inatividade_resposta()   # resposta nova: o robô de resposta não desliga agora
+            if not modo_resposta_pronto:
+                # Para e salva o Coupa/Vale fora do handler: pode levar minutos e o socket precisa seguir
+                # recebendo (clique do captcha, outros comandos)
+                threading.Thread(target=_responder_com_prioridade, args=(dados,), daemon=True).start()
+                return
+
         if modo == 'ligar_robo':
             existente = bot_coupa if portal == 'coupa' else bot_vale
             if existente is not None and getattr(existente, 'is_ready', False):
@@ -1176,23 +1306,11 @@ WshShell.SendKeys "~"
                 th_login.start()
 
         elif modo == 'desligar_robo':
-            if portal == 'coupa':
-                rodando_monitor_coupa = False
-                if bot_coupa:
-                    bot_coupa.solicitacao_parada = True 
-                    time.sleep(2)
-                    try: bot_coupa.driver.quit()
-                    except: pass
-                    bot_coupa = None
-            elif portal == 'vale':
-                rodando_monitor_vale = False 
-                if bot_vale:
-                    bot_vale.solicitacao_parada = True 
-                    time.sleep(2)
-                    try: bot_vale.driver.quit()
-                    except: pass
-                    bot_vale = None
-            sio.emit('sou_o_robo')
+            desligar_coupa_vale(portal)
+            # Robô de resposta desligado pela tela com os dois parados: o modo resposta acaba e o piloto volta
+            if modo_resposta_pronto and bot_coupa is None and bot_vale is None:
+                cancelar_timer_inatividade_resposta()
+                sair_modo_resposta()
 
         elif modo == 'forcar_troca':
             threading.Thread(target=forcar_troca, args=(portal,), daemon=True).start()
@@ -1231,6 +1349,15 @@ WshShell.SendKeys "~"
                         return
 
                 def rodar(bot=bot_alvo, anterior=anterior, slot_bot=slot_bot):
+                    try:
+                        executar(bot, anterior, slot_bot)
+                    finally:
+                        # Todo fim de resposta (sucesso, erro ou login que falhou) agenda o desligar em 10 min:
+                        # sem isso o modo resposta não acabava e o piloto do Coupa/Vale ficava parado
+                        if modo == 'responder':
+                            agendar_timer_inatividade_resposta(portal)
+
+                def executar(bot, anterior, slot_bot):
                     # Uma tarefa por vez no mesmo navegador: a nova espera a anterior terminar
                     if anterior is not None and anterior.is_alive():
                         logger.info(f"{portal}: '{modo}' aguardando a tarefa anterior terminar")
@@ -1288,13 +1415,7 @@ WshShell.SendKeys "~"
                                 'erro': erro_login
                             })
                             return
-                    try:
-                        bot.iniciar_tarefa(modo, dados)
-                    finally:
-                        if modo == 'responder':
-                            agendar_fn = globals().get('agendar_timer_inatividade_resposta')
-                            if callable(agendar_fn):
-                                agendar_fn(portal)
+                    bot.iniciar_tarefa(modo, dados)
 
                 if modo != 'responder' and pedido_repetido(anterior, pedido):
                     # Clique duplo ou ordem igual à última da fila (21/10: duas verificações da Vale): não roda de novo.
@@ -2816,6 +2937,8 @@ def esperar_robo_pronto(portal, timeout=120):
             raise Exception(f"Login do {portal} falhou: {fim.get('erro')}")
         if time.time() > limite:
             raise Exception(f"Timeout ao ligar o robô {portal} (captcha ou bloqueio?)")
+        if globals().get('modo_resposta_ativo'):
+            raise Exception('interrompido pelo modo resposta')
         time.sleep(2)
 
 
@@ -2839,6 +2962,8 @@ def executar_tarefa(portal, modo, timeout_inicio=60):
     while getattr(bot, 'thread_atual', None) is anterior:
         if time.time() > limite:
             raise Exception(f"O comando '{modo}' não chegou ao robô {portal} em {timeout_inicio}s")
+        if globals().get('modo_resposta_ativo'):
+            raise Exception('interrompido pelo modo resposta')
         time.sleep(1)
     tarefa = bot.thread_atual
     tarefa.join(DURACAO_MAX_TAREFA_S)
@@ -2879,7 +3004,7 @@ ciclo_em_andamento = None         # 'coupa' / 'vale' enquanto um ciclo roda (par
 def rodar_ciclo(portal, manual=False, por=None):
     """Liga, extrai, verifica e desliga. Quem chama segura a _trava_ciclo. A Vale verifica uma vez por dia no piloto
     e sempre no manual (que conta como a do dia, para não pedir o OTP duas vezes). Devolve (sucesso, mensagem)."""
-    global ultimo_dia_verificacao_vale, ciclo_em_andamento
+    global ultimo_dia_verificacao_vale, ciclo_em_andamento, ciclo_interrompido
     quem, tipo = ('Manual', 'manual') if manual else ('Auto-Pilot', 'automático')
     nome = 'do Coupa' if portal == 'coupa' else 'da Vale'
     canal = f'relatar_progresso_{portal}'
@@ -2888,6 +3013,16 @@ def rodar_ciclo(portal, manual=False, por=None):
     def avisar(msg):
         sio.emit(canal, {'mensagem': f'{quem}: {msg}'})
 
+    def interromper_se_resposta():
+        # Resposta de cotação (Minhas Cotações) tem prioridade: o modo resposta já parou e salvou o robô
+        if modo_resposta_ativo:
+            raise Exception('interrompido pelo modo resposta')
+
+    if modo_resposta_ativo:
+        if not manual:
+            ciclo_interrompido = portal
+        return False, 'Robô em modo resposta (cotações do Minhas Cotações): ciclo adiado.'
+    dia_vale_antes = ultimo_dia_verificacao_vale
     checar_inatividade(portal)
     ciclo_em_andamento = portal
     try:
@@ -2895,7 +3030,9 @@ def rodar_ciclo(portal, manual=False, por=None):
         avisar(f'iniciando o ciclo {nome}...')
         comandar('ligar_robo', portal)
         esperar_robo_pronto(portal)
+        interromper_se_resposta()
         executar_tarefa(portal, 'extrair')
+        interromper_se_resposta()
         extracao_ok(portal)
         resumo = f'Ciclo {tipo} {nome} terminou'
         if portal == 'coupa':
@@ -2909,9 +3046,20 @@ def rodar_ciclo(portal, manual=False, por=None):
             except Exception as e_verif:   # OTP não informado não derruba o ciclo
                 logger.warning(f"Verificação da Vale não concluída: {e_verif}")
                 resumo += f' (verificação não concluída: {e_verif})'
+        interromper_se_resposta()
         eventos.registrar(portal, 'ciclo', 'ok', resumo, detalhe=detalhe)
         return True, resumo
     except Exception as e:
+        if modo_resposta_ativo:
+            # Não é erro: parou de propósito e o que já foi extraído foi salvo. O piloto refaz ao sair do modo.
+            if not manual:
+                ciclo_interrompido = portal
+            ultimo_dia_verificacao_vale = dia_vale_antes   # a verificação da Vale cortada roda de novo hoje
+            resumo = f'Ciclo {tipo} {nome} interrompido: resposta de cotação tem prioridade (o já extraído foi salvo)'
+            logger.info(resumo)
+            eventos.registrar(portal, 'ciclo', 'aviso', resumo, detalhe=detalhe)
+            avisar('interrompido para responder cotações do Minhas Cotações. Volta sozinho depois das respostas.')
+            return False, resumo
         logger.error(f"Erro no ciclo {nome}: {e}")
         if not manual:   # no manual o admin está vendo o erro no cartão
             import traceback
@@ -2921,12 +3069,14 @@ def rodar_ciclo(portal, manual=False, por=None):
         return False, str(e)
     finally:
         sio.emit('planilha_atualizada')
-        avisar(f'desligando o robô {portal.capitalize()}...')
-        try:
-            comandar('desligar_robo', portal)
-            esperar_robo_desligado(portal)
-        except Exception:
-            logger.exception(f'Falha ao desligar o robô {portal} no fim do ciclo')
+        # No modo resposta o robô do ciclo já foi parado e desligado; desligar aqui derrubaria o robô de resposta
+        if not modo_resposta_ativo:
+            avisar(f'desligando o robô {portal.capitalize()}...')
+            try:
+                comandar('desligar_robo', portal)
+                esperar_robo_desligado(portal)
+            except Exception:
+                logger.exception(f'Falha ao desligar o robô {portal} no fim do ciclo')
         ciclo_em_andamento = None
 
 
@@ -2942,10 +3092,18 @@ def loop_automacao():
     logger.info("Auto-Pilot: Coupa (extração + verificação) -> 1h30 -> Vale (extração + verificação diária) -> 1h30")
     time.sleep(10)
 
+    global ciclo_interrompido
     while True:
         for portal in ('coupa', 'vale'):
-            with _trava_ciclo:   # ciclo manual em andamento: o piloto espera ele terminar
-                rodar_ciclo(portal)
+            while True:
+                while modo_resposta_ativo:   # respostas do Minhas Cotações primeiro
+                    time.sleep(5)
+                with _trava_ciclo:   # ciclo manual em andamento: o piloto espera ele terminar
+                    rodar_ciclo(portal)
+                if ciclo_interrompido != portal:
+                    break
+                ciclo_interrompido = None   # cortado pelo modo resposta: roda de novo assim que ele acabar
+                logger.info(f"Auto-Pilot: ciclo do {portal} interrompido pelo modo resposta; refazendo depois das respostas")
             sio.emit(f'relatar_progresso_{portal}', {'mensagem': 'Auto-Pilot: pausa de 1h30...'})
             logger.info("Auto-Pilot: pausa de 1h30...")
             time.sleep(90 * 60)
@@ -2990,6 +3148,9 @@ def comando_sincronizacao(dados):
     portal = CICLOS_MANUAIS.get(servico)
     if portal is None:
         return _responder_sincronizacao(dados, False, f'Serviço desconhecido: {servico}')
+    if modo_resposta_ativo:
+        return _responder_sincronizacao(dados, False, 'Robô respondendo cotações do Minhas Cotações (prioridade). '
+                                                      'Tente de novo 10 minutos depois da última resposta.')
     if not _trava_ciclo.acquire(blocking=False):
         rodando = f' ({ciclo_em_andamento})' if ciclo_em_andamento else ''
         return _responder_sincronizacao(dados, False, f'Já tem um ciclo rodando{rodando}. Tente de novo quando terminar.')

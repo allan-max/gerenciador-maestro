@@ -1490,10 +1490,19 @@ class ValeScraper(RespostaMixin):
         try: marcas_bloq = [str(x).strip().lower() for x in pd.read_excel(self.ARQUIVO_MARCAS_BLOQUEADAS).iloc[:,0] if pd.notna(x)]
         except: pass
         
+        try:
+            from bots.itens_dell import evento_tem_dell, adicionar_mensagem_dell, EVENTOS_POR_WORD_DELL
+            from bots.itens_hardware import evento_tem_hardware, adicionar_mensagem_hardware, lotes_hardware, chave_semelhanca
+        except ImportError:
+            from itens_dell import evento_tem_dell, adicionar_mensagem_dell, EVENTOS_POR_WORD_DELL
+            from itens_hardware import evento_tem_hardware, adicionar_mensagem_hardware, lotes_hardware, chave_semelhanca
+
         bloqs = []
         complexos = []
+        dells = []
+        hardwares = []
         agrupados_por_data = {}
-        
+
         for d in self.dados_processados_lote:
             # 1. Verifica marcas bloqueadas
             todos_itens_bloqueados = True
@@ -1516,7 +1525,17 @@ class ValeScraper(RespostaMixin):
                 d['marca_bloqueada'] = marca_ultima
                 bloqs.append(d)
                 continue
-                
+
+            # Itens da marca DELL: Words próprios, 3 eventos por arquivo, com a orientação Dell no final
+            if evento_tem_dell(d):
+                dells.append(d)
+                continue
+
+            # Informática/hardware/TV/tecnologia: Words próprios, no máximo 3 eventos, marcas/modelos parecidos juntos
+            if evento_tem_hardware(d):
+                hardwares.append(d)
+                continue
+
             # 2. Verifica complexidade (Mais de 4 itens OU mais de 120 palavras)
             muitos_itens = len(d['itens']) > 4
             desc_longa = False
@@ -1544,8 +1563,20 @@ class ValeScraper(RespostaMixin):
                 self.salvar_doc([c], self.PASTA_RELATORIOS, "COMPLEXO")
                 
         # Bloqueados: Agrupa e salva na pasta de bloqueio
-        if bloqs: 
+        if bloqs:
             self.salvar_doc(bloqs, self.PASTA_BLOQUEADOS, "BLOQUEADO")
+
+        # Dell: 3 eventos por arquivo, orientação de onde cotar Dell no final de cada arquivo
+        dells.sort(key=chave_semelhanca)   # modelos Dell parecidos no mesmo arquivo
+        for i in range(0, len(dells), EVENTOS_POR_WORD_DELL):
+            lote_dell = dells[i:i + EVENTOS_POR_WORD_DELL]
+            self.salvar_doc(lote_dell, self.PASTA_RELATORIOS, "DELL_Eventos", mensagem_final=lambda doc: adicionar_mensagem_dell(doc, getattr(self, 'config', None)))
+            validos_para_excel.extend(lote_dell)
+
+        # Hardware: no máximo 3 eventos por arquivo, lista de fornecedores de hardware no final de cada arquivo
+        for lote_hw in lotes_hardware(hardwares):
+            self.salvar_doc(lote_hw, self.PASTA_RELATORIOS, "HARDWARE_Eventos", mensagem_final=adicionar_mensagem_hardware)
+            validos_para_excel.extend(lote_hw)
 
         # PadrÃµes: Salva agrupado por data, no máximo 5 por arquivo
         for data, eventos in agrupados_por_data.items():
@@ -1583,7 +1614,7 @@ class ValeScraper(RespostaMixin):
         self.dados_processados_lote.clear()
         logger.info("✅ Lote de Word finalizado.")
 
-    def salvar_doc(self, lista, pasta, prefixo):
+    def salvar_doc(self, lista, pasta, prefixo, mensagem_final=None):
         if not lista: return
         try:
             nome = f"{prefixo}_{'_'.join([x['numero_evento'] for x in lista])}.docx"
@@ -1669,7 +1700,10 @@ class ValeScraper(RespostaMixin):
                         except ImportError:
                             from classificador_tecnologia import adicionar_paragrafo_onde_encontrar
                         adicionar_paragrafo_onde_encontrar(doc, item)
-            
+
+            if mensagem_final:
+                mensagem_final(doc)   # ex.: orientação "Itens Dell" no final do arquivo
+
             doc.save(os.path.join(pasta, nome))
             logger.info(f"   Doc Salvo Compactado: {nome}")
         except Exception as e: 

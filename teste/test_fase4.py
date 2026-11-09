@@ -118,8 +118,12 @@ class InatividadeTest(unittest.TestCase):
 
 class ComandoParaRoboTest(unittest.TestCase):
     def ns(self, **globais):
-        base = dict(threading=threading, logger=LOGGER, bot_coupa=None, bot_vale=None)
-        return gerenciador(extras={'comando_para_robo', 'pedido_repetido'}, **{**base, **globais})
+        # modo resposta já pronto (Coupa/Vale parados): estes testes olham só a fila de tarefas do robô
+        base = dict(threading=threading, logger=LOGGER, bot_coupa=None, bot_vale=None, modo_resposta_ativo=False,
+                    modo_resposta_pronto=True, cancelar_timer_inatividade_resposta=MagicMock(),
+                    agendar_timer_inatividade_resposta=MagicMock())
+        return gerenciador(extras={'comando_para_robo', 'pedido_repetido', 'MODOS_BLOQUEADOS_NO_MODO_RESPOSTA'},
+                           **{**base, **globais})
 
     def test_segundo_ligar_nao_cria_outro_navegador(self):
         existente = SimpleNamespace(is_ready=True)

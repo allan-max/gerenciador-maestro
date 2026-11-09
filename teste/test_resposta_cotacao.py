@@ -406,12 +406,22 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
                     'precos': ['100,00'],
                     'prazos': ['10']
                 })
+                # O primeiro 'responder' entra no modo resposta numa thread (para e salva o Coupa/Vale antes)
+                import time
+                limite = time.time() + 5
+                while gerenciador.bot_coupa is None and time.time() < limite:
+                    time.sleep(0.02)
                 self.assertIsNotNone(gerenciador.bot_coupa)
+                while getattr(gerenciador.bot_coupa, 'thread_atual', None) is None and time.time() < limite:
+                    time.sleep(0.02)
                 if gerenciador.bot_coupa.thread_atual:
                     gerenciador.bot_coupa.thread_atual.join(timeout=5)
 
             self.assertEqual(ordem_chamadas, ['iniciar_e_logar', ('iniciar_tarefa', 'responder', '301023')])
+            self.assertTrue(gerenciador.modo_resposta_ativo)
         finally:
+            gerenciador.cancelar_timer_inatividade_resposta()
+            gerenciador.modo_resposta_ativo = gerenciador.modo_resposta_pronto = False
             gerenciador.bot_coupa = bot_coupa_orig
             gerenciador.bot_vale = bot_vale_orig
 
