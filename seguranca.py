@@ -49,6 +49,33 @@ def email_ventura(email):
     return bool(EMAIL_VENTURA.fullmatch(email or ''))
 
 
+# Nome completo da conta (cadastro): serve de login no lugar do e-mail. No setor Comercial o primeiro nome vira o
+# "vendedor" (Minhas Cotações). Letras (com acento), espaço, ponto e hífen; sem "@" para nunca se confundir com e-mail.
+NOME_CONTA = re.compile(r'^[^\W\d_](?:[^\W\d_]|[ .-])*$')
+NOME_CONTA_MAX = 60
+SETORES = ('comercial', 'financeiro')
+
+
+def nome_conta(nome):
+    """Nome completo sem espaços sobrando, ou '' se não for aceitável (precisa de nome e sobrenome)."""
+    nome = ' '.join(str(nome or '').split())
+    partes = [p for p in nome.split(' ') if re.search(r'[^\W\d_]', p)]
+    if len(nome) <= NOME_CONTA_MAX and NOME_CONTA.fullmatch(nome) and len(partes) >= 2:
+        return nome
+    return ''
+
+
+def setor(valor):
+    """'comercial' ou 'financeiro'; '' se vier outra coisa."""
+    valor = str(valor or '').strip().lower()
+    return valor if valor in SETORES else ''
+
+
+def chave_nome(nome):
+    """Para comparar nomes de conta: sem diferença de maiúscula nem de espaços."""
+    return ' '.join(str(nome or '').split()).casefold()
+
+
 # Ariba: botões de empresa do portal mandam "1 2 3"
 PRIORIDADES_ARIBA = re.compile(r'^[0-9]+([ ,][0-9]+)*$')
 # Findes: números de evento digitados à mão ("123/2026", "PE-45", "PE 045"). Letras com acento passam;

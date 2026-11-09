@@ -80,7 +80,8 @@ class EntradaDoPortalTest(unittest.TestCase):
 def contas(**globais):
     sio = SioFalso()
     salvos = []
-    ns = carregar(GERENCIADOR, {'validar_login', 'registrar_usuario', 'processar_nova_senha', '_token_recuperacao_valido'},
+    ns = carregar(GERENCIADOR, {'validar_login', 'registrar_usuario', 'processar_nova_senha', '_token_recuperacao_valido', '_chave_login',
+                                    '_vendedor_do_nome', 'admin_alterar_vendedor_usuario', 'admin_alterar_setor_usuario'},
                   sio=sio, seguranca=seguranca, time=__import__('time'), json=json, os=os, base64=__import__('base64'),
                   uuid=__import__('uuid'), datetime=__import__('datetime').datetime,
                   salvar_usuarios=lambda u: salvos.append(json.loads(json.dumps(u))), **globais)
@@ -115,14 +116,108 @@ class ContasTest(unittest.TestCase):
 
     def test_cadastro_grava_hash_e_recusa_senha_vazia_e_email_estranho(self):
         ns, sio, salvos = contas(carregar_usuarios=lambda: {}, enviar_email_python=lambda *a, **k: True)
-        ns['registrar_usuario']({'email': 'x@fora.com@venturainformatica.com.br', 'senha': 'abcdef', 'clientId': 'c'})
-        ns['registrar_usuario']({'email': 'novo@venturainformatica.com.br', 'clientId': 'c'})
+        base = {'nome': 'Novo Silva', 'setor': 'comercial', 'clientId': 'c'}
+        ns['registrar_usuario']({**base, 'email': 'x@fora.com@venturainformatica.com.br', 'senha': 'abcdef'})
+        ns['registrar_usuario']({**base, 'email': 'novo@venturainformatica.com.br'})
         self.assertEqual(salvos, [])
-        ns['registrar_usuario']({'email': 'Novo@venturainformatica.com.br', 'senha': 'abcdef', 'clientId': 'c'})
+        ns['registrar_usuario']({**base, 'nome': ' Novo  Silva ', 'email': 'Novo@venturainformatica.com.br', 'senha': 'abcdef'})
         self.assertTrue(sio.ultimo('resposta_cadastro')['sucesso'])
         conta = salvos[-1]['novo@venturainformatica.com.br']
         self.assertTrue(seguranca.conferir_senha(conta['senha'], 'abcdef'))
+        self.assertEqual((conta['nome'], conta['setor'], conta['vendedor']), ('Novo Silva', 'comercial', 'NOVO'))
         self.assertNotIn('abcdef', json.dumps(salvos))
+
+    def test_cadastro_financeiro_fica_sem_vendedor(self):
+        ns, sio, salvos = contas(carregar_usuarios=lambda: {}, enviar_email_python=lambda *a, **k: True)
+        ns['registrar_usuario']({'nome': 'Rita de Cássia', 'setor': 'Financeiro', 'email': 'rita@venturainformatica.com.br', 'senha': 'abcdef', 'clientId': 'c'})
+        conta = salvos[-1]['rita@venturainformatica.com.br']
+        self.assertEqual((conta['setor'], conta['vendedor']), ('financeiro', ''))
+
+    def test_cadastro_exige_nome_completo_unico_e_setor(self):
+        usuarios = {'ana@venturainformatica.com.br': {'senha': 'x', 'nome': 'Gustavo Silva', 'vendedor': 'GUSTAVO'},
+                    'velha@venturainformatica.com.br': {'senha': 'x', 'vendedor': 'Maria Souza'}}
+        ns, sio, salvos = contas(carregar_usuarios=lambda: usuarios, enviar_email_python=lambda *a, **k: True)
+        ok = {'email': 'b@venturainformatica.com.br', 'senha': 'abcdef', 'setor': 'comercial', 'clientId': 'c'}
+        for nome in (None, '', 'Gustavo', 'Ana 2', 'ana@x silva', 'Ab ' + 'x' * 60, '<b> c'):
+            ns['registrar_usuario']({**ok, 'nome': nome})
+            self.assertFalse(sio.ultimo('resposta_cadastro')['sucesso'], nome)
+        for setor in (None, '', 'rh'):
+            ns['registrar_usuario']({**ok, 'nome': 'João Pedro', 'setor': setor})
+            self.assertIn('setor', sio.ultimo('resposta_cadastro')['erro'])
+        for repetido in ('gustavo  SILVA', 'maria souza'):
+            ns['registrar_usuario']({**ok, 'nome': repetido})
+            self.assertIn('nome', sio.ultimo('resposta_cadastro')['erro'])
+        self.assertEqual(salvos, [])
+        ns['registrar_usuario']({**ok, 'nome': 'Gustavo Pereira'})   # mesmo primeiro nome, outro sobrenome: pode
+        self.assertTrue(sio.ultimo('resposta_cadastro')['sucesso'])
+
+    def test_login_pelo_nome_da_conta(self):
+        usuarios = {
+            'ana@venturainformatica.com.br': {'senha': seguranca.gerar_hash('certa'), 'verificado': True, 'nome': 'Ana Paula', 'vendedor': 'ANA'},
+            'm1@venturainformatica.com.br': {'senha': seguranca.gerar_hash('certa'), 'verificado': True, 'vendedor': 'MICHELI'},
+            'm2@venturainformatica.com.br': {'senha': seguranca.gerar_hash('certa'), 'verificado': True, 'vendedor': 'micheli'},
+            'sem@venturainformatica.com.br': {'senha': seguranca.gerar_hash('certa'), 'verificado': True},
+        }
+        ns, sio, _ = contas(carregar_usuarios=lambda: usuarios)
+        ns['validar_login']({'user': ' ana  PAULA ', 'pass': 'certa', 'clientId': 'c1'})
+        resposta = sio.ultimo('resultado_login')
+        self.assertTrue(resposta['sucesso'])
+        self.assertEqual(resposta['user'], 'ana@venturainformatica.com.br')
+        ns['validar_login']({'user': 'Ana Paula', 'pass': 'errada', 'clientId': 'c1'})
+        self.assertFalse(sio.ultimo('resultado_login')['sucesso'])
+        ns['validar_login']({'user': 'micheli', 'pass': 'certa', 'clientId': 'c1'})   # nome repetido: só pelo e-mail
+        self.assertIn('e-mail', sio.ultimo('resultado_login')['erro'])
+        for vazio in ('', '   ', 'ninguem'):
+            ns['validar_login']({'user': vazio, 'pass': 'certa', 'clientId': 'c1'})
+            self.assertFalse(sio.ultimo('resultado_login')['sucesso'])
+
+    def test_vendedores_cadastrados_para_o_seletor(self):
+        ns = carregar(GERENCIADOR, {'vendedores_cadastrados'})
+        usuarios = {
+            'a@x': {'nome': 'Gustavo Cabral Calvi', 'vendedor': 'GUSTAVO', 'senha': 's'},
+            'b@x': {'vendedor': 'MICHELI'},
+            'c@x': {'vendedor': 'micheli', 'nome': 'Micheli Souza'},   # mesmo vendedor: fica uma opção, com o nome
+            'd@x': {'nome': 'Rita Financeiro', 'vendedor': ''},
+            'e@x': {'nome': 'Bloq Ueado', 'vendedor': 'BLOQ', 'bloqueado': True},
+            'f@x': {'vendedor': 'libni'},
+        }
+        lista = ns['vendedores_cadastrados'](usuarios)
+        # grava o nome completo (contas antigas: o vendedor); MICHELI sem nome e Micheli Souza são pessoas diferentes
+        self.assertEqual(lista, [
+            {'vendedor': 'Gustavo Cabral Calvi', 'nome': 'Gustavo Cabral Calvi'},
+            {'vendedor': 'libni', 'nome': 'libni'},
+            {'vendedor': 'MICHELI', 'nome': 'MICHELI'},
+            {'vendedor': 'Micheli Souza', 'nome': 'Micheli Souza'},
+        ])
+        self.assertNotIn('@', json.dumps(lista))
+
+    def test_admin_salva_nome_completo_e_vendedor_sai_do_primeiro_nome(self):
+        usuarios = {'a@x': {'vendedor': 'libni'}, 'b@x': {'nome': 'Gustavo Silva', 'vendedor': 'GUSTAVO'},
+                    'f@x': {'nome': 'Rita Souza', 'setor': 'financeiro', 'vendedor': ''}}
+        ns, sio, salvos = contas(carregar_usuarios=lambda: usuarios, logger=SimpleNamespace(info=print, error=print))
+        ns['admin_alterar_vendedor_usuario']({'email': 'a@x', 'nome': ' Libni  Xavier ', 'clientId': 'c'})
+        r = sio.ultimo('admin_resposta_vendedor')
+        self.assertTrue(r['sucesso'])
+        self.assertEqual((usuarios['a@x']['nome'], usuarios['a@x']['vendedor']), ('Libni Xavier', 'LIBNI'))
+        for ruim in ('Libni', 'gustavo silva'):   # sem sobrenome / nome de outra conta
+            ns['admin_alterar_vendedor_usuario']({'email': 'a@x', 'nome': ruim, 'clientId': 'c'})
+            self.assertFalse(sio.ultimo('admin_resposta_vendedor')['sucesso'], ruim)
+        ns['admin_alterar_vendedor_usuario']({'email': 'f@x', 'nome': 'Rita Souza Lima', 'clientId': 'c'})
+        self.assertEqual(usuarios['f@x']['vendedor'], '')   # financeiro não vira vendedor
+        ns['admin_alterar_vendedor_usuario']({'email': 'b@x', 'nome': '', 'clientId': 'c'})
+        self.assertEqual((usuarios['b@x']['nome'], usuarios['b@x']['vendedor']), ('Gustavo Silva', ''))   # vazio desvincula
+
+    def test_admin_muda_setor(self):
+        usuarios = {'b@x': {'nome': 'Gustavo Silva', 'setor': 'comercial', 'vendedor': 'GUSTAVO'}}
+        ns, sio, _ = contas(carregar_usuarios=lambda: usuarios, logger=SimpleNamespace(info=print, error=print))
+        ns['admin_alterar_setor_usuario']({'email': 'b@x', 'setor': 'Financeiro', 'clientId': 'c'})
+        r = sio.ultimo('admin_resposta_setor')
+        self.assertEqual((r['sucesso'], r['setor'], r['vendedor']), (True, 'financeiro', ''))
+        ns['admin_alterar_setor_usuario']({'email': 'b@x', 'setor': 'comercial', 'clientId': 'c'})
+        self.assertEqual(usuarios['b@x']['vendedor'], 'GUSTAVO')
+        ns['admin_alterar_setor_usuario']({'email': 'b@x', 'setor': 'rh', 'clientId': 'c'})
+        self.assertFalse(sio.ultimo('admin_resposta_setor')['sucesso'])
+        self.assertEqual(usuarios['b@x']['setor'], 'comercial')
 
     def test_nova_senha_grava_hash(self):
         usuarios = {'a@venturainformatica.com.br': {'senha': 'velha', 'token_recuperacao': 'tok'}}

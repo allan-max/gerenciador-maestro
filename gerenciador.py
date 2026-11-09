@@ -386,8 +386,21 @@ def salvar_usuarios(usuarios):
 def registrar_usuario(dados):
     email = str(dados.get('email') or '').strip().lower()
     senha = dados.get('senha')
+    nome = seguranca.nome_conta(dados.get('nome'))
+    setor = seguranca.setor(dados.get('setor'))
     ip_real = dados.get('ip_real', 'Desconhecida')
     client_id = dados.get('clientId')
+
+    if not nome:
+        sio.emit('resposta_cadastro', {
+            'sucesso': False,
+            'erro': 'Digite o seu nome completo (nome e sobrenome, sem números).',
+            'clientId': client_id
+        })
+        return
+    if not setor:
+        sio.emit('resposta_cadastro', {'sucesso': False, 'erro': 'Selecione o seu setor (Comercial ou Financeiro).', 'clientId': client_id})
+        return
 
     # ?? REGRA: Apenas domnio especfico (um endereço só: "x@fora.com@venturainformatica.com.br" não passa)
     if not seguranca.email_ventura(email):
@@ -407,10 +420,19 @@ def registrar_usuario(dados):
     if email in usuarios:
         sio.emit('resposta_cadastro', {'sucesso': False, 'erro': 'E-mail j cadastrado.', 'clientId': client_id})
         return
+    # O nome completo também é login: não pode repetir o de outra conta
+    if any(_chave_login(info) == seguranca.chave_nome(nome) for info in usuarios.values()):
+        sio.emit('resposta_cadastro', {'sucesso': False, 'erro': 'Já existe uma conta com esse nome. Inclua outro sobrenome.', 'clientId': client_id})
+        return
 
     token = str(uuid.uuid4())
     usuarios[email] = {
         "senha": seguranca.gerar_hash(senha),
+        "nome": nome,
+        "setor": setor,
+        # Comercial: o primeiro nome é o vendedor do Minhas Cotações (o admin não precisa vincular; pode trocar no painel).
+        # Financeiro: sem vendedor, entra no portal.
+        "vendedor": _vendedor_do_nome(nome) if setor == 'comercial' else '',
         "verificado": False, # ??? Fica False at clicar no link
         "token_verificacao": token,
         "token_recuperacao": None,
@@ -739,12 +761,25 @@ def carregar_usuarios():
     if not os.path.exists(path): return {}
     with open(path, 'r', encoding='utf-8-sig') as f: return json.load(f)
 
+def _chave_login(info):
+    """Nome que serve de login: o nome completo do cadastro; nas contas antigas, o vendedor vinculado."""
+    return seguranca.chave_nome(info.get('nome') or info.get('vendedor'))
+
 @sio.on("validar_login")
 def validar_login(dados):
     usuarios = carregar_usuarios()
     digitado, senha, cid = str(dados.get('user') or '').strip(), dados.get('pass'), dados.get('clientId')
-    # e-mail sem diferença de maiúscula, mas usando a chave como está no banco (contas antigas criadas à mão)
-    email = digitado if digitado in usuarios else next((k for k in usuarios if k.lower() == digitado.lower()), digitado)
+    if '@' in digitado:
+        # e-mail sem diferença de maiúscula, mas usando a chave como está no banco (contas antigas criadas à mão)
+        email = digitado if digitado in usuarios else next((k for k in usuarios if k.lower() == digitado.lower()), digitado)
+    else:
+        # sem "@": é o nome completo da conta (contas antigas, sem nome: o vendedor vinculado pelo admin)
+        chave = seguranca.chave_nome(digitado)
+        donos = [k for k, info in usuarios.items() if chave and _chave_login(info) == chave]
+        if len(donos) > 1:
+            sio.emit('resultado_login', {'sucesso': False, 'erro': 'Mais de uma conta usa esse nome. Entre com o seu e-mail.', 'clientId': cid})
+            return
+        email = donos[0] if donos else None
 
     if email in usuarios and seguranca.conferir_senha(usuarios[email].get('senha'), senha):
         if not seguranca.eh_hash(usuarios[email].get('senha')):
@@ -780,10 +815,11 @@ def validar_login(dados):
                 'hasBuscaOutrosAccess': busca_acc,
                 'hasEmailsAccess': emails_acc,
                 'vendedor': usuarios[email].get('vendedor', ''),
+                'nome': usuarios[email].get('nome', ''),
                 'clientId': cid
             })
     else: 
-        sio.emit('resultado_login', {'sucesso': False, 'erro': 'E-mail ou Senha incorretos.', 'clientId': cid})
+        sio.emit('resultado_login', {'sucesso': False, 'erro': 'Usuário/e-mail ou senha incorretos.', 'clientId': cid})
   
 VALIDADE_TOKEN_RECUPERACAO_SEG = 60 * 60  # link de redefinicao vale 1 hora
 
@@ -1906,7 +1942,7 @@ def salvar_config_admin(dados):
 # ==================== PAINEL ADMIN: CONTAS E PRIVILEGIOS ====================
 CAMPOS_PUBLICOS_USUARIO = (
     'verificado', 'admin', 'dev', 'dashboard_access', 
-    'planilha_access', 'portais_access', 'busca_outros_access', 'emails_access', 'bloqueado', 'vendedor'
+    'planilha_access', 'portais_access', 'busca_outros_access', 'emails_access', 'bloqueado', 'vendedor', 'nome', 'setor'
 )
 
 @sio.on('admin_listar_usuarios')
@@ -1915,7 +1951,7 @@ def admin_listar_usuarios(dados):
     try:
         usuarios = carregar_usuarios()
         lista = {
-            email: {k: info.get(k, '' if k == 'vendedor' else False) for k in CAMPOS_PUBLICOS_USUARIO}
+            email: {k: info.get(k, '' if k in ('vendedor', 'nome', 'setor') else False) for k in CAMPOS_PUBLICOS_USUARIO}
             for email, info in usuarios.items()
         }
         sio.emit('admin_resposta_usuarios', {'sucesso': True, 'usuarios': lista, 'clientId': client_id})
@@ -1962,20 +1998,94 @@ def admin_alterar_acesso_dashboard(dados):
         logger.error(f"Erro ao alterar acesso de {email}: {e}")
         sio.emit('admin_resposta_acesso', {'sucesso': False, 'erro': 'Erro ao salvar o banco de usuários.', 'clientId': client_id})
 
+def vendedores_cadastrados(usuarios):
+    """Contas com vendedor vinculado, para o seletor "Atribuir Vendedor" das planilhas: só nomes (sem e-mail).
+    'vendedor' é o que vai para a coluna VENDEDOR: o nome completo (distingue dois Gustavos, ver donos_vendedor.py);
+    contas antigas sem nome completo gravam o vendedor vinculado. 'nome' é o que aparece na tela."""
+    por_pessoa = {}
+    for info in usuarios.values():
+        vendedor = ' '.join(str(info.get('vendedor') or '').split())
+        if not vendedor or info.get('bloqueado'):
+            continue
+        nome = ' '.join(str(info.get('nome') or '').split()) or vendedor
+        por_pessoa.setdefault(nome.casefold(), {'vendedor': nome, 'nome': nome})
+    return sorted(por_pessoa.values(), key=lambda v: v['nome'].casefold())
+
+@sio.on('listar_vendedores_cadastrados')
+def listar_vendedores_cadastrados(dados):
+    client_id = dados.get('clientId')
+    try:
+        sio.emit('resposta_vendedores_cadastrados', {'sucesso': True, 'vendedores': vendedores_cadastrados(carregar_usuarios()), 'clientId': client_id})
+    except Exception as e:
+        logger.error(f"Erro ao listar vendedores cadastrados: {e}")
+        sio.emit('resposta_vendedores_cadastrados', {'sucesso': False, 'erro': 'Erro ao ler o banco de usuários.', 'clientId': client_id})
+
+def _vendedor_do_nome(nome):
+    """Vendedor da planilha (coluna VENDEDOR) a partir do nome completo: o primeiro nome em maiúsculas."""
+    partes = str(nome or '').split()
+    return partes[0].upper() if partes else ''
+
+@sio.on('admin_alterar_setor_usuario')
+def admin_alterar_setor_usuario(dados):
+    """Admin troca o setor: Financeiro desvincula o vendedor (vai para o portal); Comercial vincula pelo nome completo."""
+    client_id = dados.get('clientId')
+    email = (dados.get('email') or '').strip().lower()
+    bruto = str(dados.get('setor') or '').strip().lower()
+    setor = seguranca.setor(bruto)
+    if bruto and not setor:
+        sio.emit('admin_resposta_setor', {'sucesso': False, 'erro': 'Setor inválido.', 'clientId': client_id})
+        return
+    try:
+        usuarios = carregar_usuarios()
+        if email not in usuarios:
+            sio.emit('admin_resposta_setor', {'sucesso': False, 'erro': 'Usuário não encontrado.', 'clientId': client_id})
+            return
+        conta = usuarios[email]
+        conta['setor'] = setor
+        if setor == 'financeiro':
+            conta['vendedor'] = ''
+        elif setor == 'comercial' and not conta.get('vendedor') and conta.get('nome'):
+            conta['vendedor'] = _vendedor_do_nome(conta['nome'])
+        salvar_usuarios(usuarios)
+        logger.info(f"Admin mudou o setor de {email} para '{setor}'")
+        sio.emit('admin_resposta_setor', {'sucesso': True, 'email': email, 'setor': setor,
+                                          'vendedor': conta.get('vendedor', ''), 'nome': conta.get('nome', ''), 'clientId': client_id})
+    except Exception as e:
+        logger.error(f"Erro ao alterar setor de {email}: {e}")
+        sio.emit('admin_resposta_setor', {'sucesso': False, 'erro': 'Erro ao salvar o banco de usuários.', 'clientId': client_id})
+
 @sio.on('admin_alterar_vendedor_usuario')
 def admin_alterar_vendedor_usuario(dados):
     client_id = dados.get('clientId')
     email = (dados.get('email') or '').strip().lower()
-    vendedor = (dados.get('vendedor') or '').strip()
     try:
         usuarios = carregar_usuarios()
         if email not in usuarios:
             sio.emit('admin_resposta_vendedor', {'sucesso': False, 'erro': 'Usuário não encontrado.', 'clientId': client_id})
             return
-        usuarios[email]['vendedor'] = vendedor
+        conta = usuarios[email]
+        if 'nome' in dados:
+            # Painel (dashboard.html): o admin digita o nome completo; o vendedor da planilha sai do primeiro nome.
+            # Vazio desvincula (o nome continua, é o login da pessoa).
+            digitado = ' '.join(str(dados.get('nome') or '').split())
+            if not digitado:
+                conta['vendedor'] = ''
+            else:
+                nome = seguranca.nome_conta(digitado)
+                if not nome:
+                    sio.emit('admin_resposta_vendedor', {'sucesso': False, 'erro': 'Digite o nome completo (nome e sobrenome, sem números).', 'clientId': client_id})
+                    return
+                if any(k != email and _chave_login(info) == seguranca.chave_nome(nome) for k, info in usuarios.items()):
+                    sio.emit('admin_resposta_vendedor', {'sucesso': False, 'erro': 'Já existe outra conta com esse nome.', 'clientId': client_id})
+                    return
+                conta['nome'] = nome
+                conta['vendedor'] = '' if conta.get('setor') == 'financeiro' else _vendedor_do_nome(nome)
+        else:
+            conta['vendedor'] = (dados.get('vendedor') or '').strip()
         salvar_usuarios(usuarios)
-        logger.info(f"Admin vinculou vendedor '{vendedor}' ao usuario {email}")
-        sio.emit('admin_resposta_vendedor', {'sucesso': True, 'email': email, 'vendedor': vendedor, 'clientId': client_id})
+        logger.info(f"Admin vinculou vendedor '{conta.get('vendedor', '')}' ao usuario {email}")
+        sio.emit('admin_resposta_vendedor', {'sucesso': True, 'email': email, 'vendedor': conta.get('vendedor', ''),
+                                             'nome': conta.get('nome', ''), 'clientId': client_id})
     except Exception as e:
         logger.error(f"Erro ao alterar vendedor de {email}: {e}")
         sio.emit('admin_resposta_vendedor', {'sucesso': False, 'erro': 'Erro ao salvar o banco de usuários.', 'clientId': client_id})
@@ -2115,6 +2225,14 @@ def comando_carregar_planilha_json(dados):
     # de qualquer vendedor menos o próprio (as dele já vêm na lista normal). O portal confere a permissão.
     numero_exato = str(dados.get('numero_exato') or '').strip().upper()
     vendedor_excluir = str(dados.get('vendedor_excluir') or '').strip().upper()
+    # Portal manda o e-mail da sessão: o dono da cotação sai do nome na coluna VENDEDOR (donos_vendedor.py),
+    # para dois vendedores com o mesmo primeiro nome não verem as cotações um do outro.
+    email_vendedor = str(dados.get('email_vendedor') or '').strip()
+    email_excluir = str(dados.get('email_excluir') or '').strip()
+    contas_vend = None
+    if email_vendedor or email_excluir:
+        import donos_vendedor
+        contas_vend = donos_vendedor.contas_vendedoras(carregar_usuarios())
     try:
         from planilha_manager import planilha_manager
         planilha_manager.iniciar()
@@ -2159,11 +2277,19 @@ def comando_carregar_planilha_json(dados):
             cotacoes = [
                 c for c in cotacoes
                 if numero_exato in _numeros_da_cotacao(c.get('COTAÇÃO', ''))
-                and (not vendedor_excluir or str(c.get('VENDEDOR', '')).strip().upper() != vendedor_excluir)
+                and (email_excluir not in donos_vendedor.donos_da_cotacao(c.get('VENDEDOR', ''), contas_vend) if email_excluir
+                     else (not vendedor_excluir or str(c.get('VENDEDOR', '')).strip().upper() != vendedor_excluir))
             ]
             pedidos = []
 
-        # <-- NOVO: Filtra apenas as cotações do vendedor logado
+        elif vendedor_filtro == '__NENHUM__':
+            cotacoes, pedidos = [], []   # sessão sem vendedor vinculado
+
+        # Só as cotações do vendedor logado
+        elif email_vendedor:
+            cotacoes = [c for c in cotacoes if email_vendedor in donos_vendedor.donos_da_cotacao(c.get('VENDEDOR', ''), contas_vend)]
+            pedidos = []
+
         elif vendedor_filtro:
             cotacoes = [
                 c for c in cotacoes 
@@ -2194,6 +2320,8 @@ def comando_carregar_planilha_json(dados):
             'portais_robo': portais_robo,
             'onde_encontrar': onde_encontrar,
             'busca_numero': numero_exato or None,
+            # Para o portal aplicar a mesma regra de dono à Planilha Anmyna; ele tira isto antes de mandar ao navegador
+            '_contas_vendedores': contas_vend if contas_vend is not None else None,
             'clientId': client_id
         })
     except Exception as e:
