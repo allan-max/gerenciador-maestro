@@ -361,7 +361,10 @@ class PlanilhasMixin:
                         p_texto_compra.add_run(f"{item['texto_compra']}")
                     p_qtd = doc.add_paragraph()
                     p_qtd.add_run("QTD: ").bold = True
-                    p_qtd.add_run(f" {item['quantidade']} - LOCAL: {item['local_entrega']}")
+                    # Frete do item só aparece na linha quando difere do cabeçalho (FRETE: do evento)
+                    frete_item = str(item.get('frete') or '').strip().upper()
+                    sufixo_frete = f" - FRETE: {frete_item}" if frete_item and frete_item != str(ev.get('tipo_frete', '')).strip().upper() else ""
+                    p_qtd.add_run(f" {item['quantidade']} - LOCAL: {item['local_entrega']}{sufixo_frete}")
                     
                     doc.add_paragraph("VALOR DE VENDA: R$ __________________ CUSTO UNIT: R$__________________")
                     
@@ -386,6 +389,14 @@ class PlanilhasMixin:
         except Exception as e: 
             logger.error(f"Erro no Word: {e}")
 
+
+    def _localidade_com_frete(self, loc, frete):
+        """Coluna LOCALIDADE da planilha: 'Cidade - UF (CIF)'. O frete entra na mesma coluna para manter as 9 colunas."""
+        loc = str(loc or "").strip()
+        frete = str(frete or "").strip().upper()
+        if not frete or frete.lower() in ('nenhum', 'none', 'n/a'):
+            return loc
+        return f"{loc} ({frete})" if loc else frete
 
     def atualizar_excel(self, dados):
         if not dados: return
@@ -423,7 +434,7 @@ class PlanilhasMixin:
                 
                 loc_str = str(ev['itens'][0].get('local_entrega', '')).strip()
 
-                vals = [ev['numero_evento'], ev['data_vencimento'].split(' - ')[0], "\n".join(d_agg), "\n".join(q_agg), loc_str, vendedor_str, "\n".join(mo_agg), "\n".join(ma_agg), st]
+                vals = [ev['numero_evento'], ev['data_vencimento'].split(' - ')[0], "\n".join(d_agg), "\n".join(q_agg), self._localidade_com_frete(loc_str, ev.get('tipo_frete', '')), vendedor_str, "\n".join(mo_agg), "\n".join(ma_agg), st]
                 linhas_inserir.append(vals)
             
                 cnt += 1

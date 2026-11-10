@@ -97,116 +97,189 @@ class ExtracaoMixin:
             logger.error(f"Erro ao buscar novo link: {e}")
             return None
 
+    def _texto_valido(self, t):
+        return bool(t) and t.strip().lower() not in ('', 'nenhum', 'none', 'n/a')
+
+    def _ler_frete_linha(self, l):
+        """Incoterms (EXW, CIF, FOB...) da linha do item; só existe com o item expandido. '' se não achar."""
+        try: frete = l.find_element(By.CSS_SELECTOR, "div.s-shipping_term p.s-selectField").text
+        except:
+            try: frete = l.find_element(By.XPATH, ".//div[contains(@class, 's-fieldLabel') and contains(text(), 'Incoterms')]/following-sibling::p[contains(@class, 's-selectField')]").text
+            except: return ""
+        frete = (frete or "").strip().upper()
+        return frete if frete.lower() not in ('nenhum', 'none', 'n/a') else ""
+
+    def _frete_do_evento(self, itens, frete_pagina, padrao="EXW"):
+        """Frete do evento: o primeiro Incoterms informado pelos itens; sem nenhum, o da página; por último, EXW."""
+        for it in itens or []:
+            frete = str(it.get("frete") or "").strip().upper()
+            if frete and frete.lower() not in ('nenhum', 'none', 'n/a'):
+                return frete
+        frete = str(frete_pagina or "").strip().upper()
+        return frete if frete and frete.lower() not in ('nenhum', 'none', 'n/a') else padrao
+
+    def _ler_campos_linha(self, l):
+        """Uma leitura (sem cliques) de título, descrição, quantidade, local de entrega e textos extras da linha."""
+        tit = "Item"; desc = ""; qtd = "0"; loc = "N/A"
+            
+        # 1. Título e Descrição
+        try: tit = l.find_element(By.CSS_SELECTOR, "div.s-description p.s-textField").text.strip()
+        except: pass
+        try: 
+            d = l.find_elements(By.CSS_SELECTOR, "p.s-textField")
+            if len(d) > 1: desc = self._filter_desc(d[1].text)
+        except: pass
+            
+        # Nova verificação: Texto de compra do material
+        if not desc.strip() or desc.strip().lower() == "nenhum":
+            try:
+                dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra')]")
+                dd = dt.find_element(By.XPATH, "following-sibling::dd")
+                desc = self._filter_desc(dd.text)
+            except: pass
+            
+        # Nova verificação: Item Text
+        if not desc.strip() or desc.strip().lower() == "nenhum":
+            try:
+                dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Item Text')]")
+                dd = dt.find_element(By.XPATH, "following-sibling::dd")
+                desc = self._filter_desc(dd.text)
+            except: pass
+
+        # Nova verificação: Material Purchase Text
+        if not desc.strip() or desc.strip().lower() == "nenhum":
+            try:
+                dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Material Purchase Text')]")
+                dd = dt.find_element(By.XPATH, "following-sibling::dd")
+                desc = self._filter_desc(dd.text)
+            except: pass
+            
+        # 2. Quantidade (BLINDADO CONTRA PREÇOS "BRL")
+        try: 
+            elementos_unidade = l.find_elements(By.CSS_SELECTOR, "p.valueWithUnit")
+            for q in elementos_unidade:
+                texto_q = q.text.strip()
+                if "BRL" not in texto_q and "R$" not in texto_q and "USD" not in texto_q:
+                    qtd = texto_q
+                    break
+        except: pass
+            
+        # 3. Local de Entrega (BUSCA ROBUSTA POR PALAVRA-CHAVE)
+        try:
+            elemento_local = l.find_element(By.XPATH, ".//*[contains(text(), 'Local de entrega:')]")
+            loc = self.parse_local(elemento_local.text)
+        except: 
+            try: loc = self.parse_local(l.find_element(By.CSS_SELECTOR, "li.attachmentText").text)
+            except: pass
+            
+        # Nova verificação: Endereço de entrega detalhado
+        if loc == "N/A" or not loc.strip():
+            try:
+                address_label = l.find_element(By.XPATH, ".//div[contains(@class, 's-fieldLabel') and contains(text(), 'Endereço de entrega')]")
+                address_box = address_label.find_element(By.XPATH, "following-sibling::div[contains(@class, 'addressLines')]")
+                    
+                linhas_end = address_box.text.split('\n')
+                for linha in linhas_end:
+                    if re.search(r'\d{5}-\d{3}', linha):
+                        cidade_estado = re.sub(r'.*?\d{5}-\d{3}\s*', '', linha).strip()
+                        if cidade_estado:
+                            loc = re.sub(r'\s+', ' ', cidade_estado)
+                            break
+                    
+                if loc == "N/A" or not loc.strip():
+                    loc = re.sub(r'\s+', ' ', address_box.text)
+            except: pass
+            
+        # Novas extrações solicitadas
+        texto_item_extra = ""
+        try:
+            dt_ti = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto do item') or contains(text(), 'Item Text')]")
+            dd_ti = dt_ti.find_element(By.XPATH, "following-sibling::dd")
+            txt_ti = dd_ti.text.strip()
+            if txt_ti.lower() not in ['nenhum', 'none', 'n/a', '']:
+                texto_item_extra = txt_ti
+        except: pass
+
+        texto_compra_extra = ""
+        try:
+            dt_tc = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra') or contains(text(), 'Material Purchase Text')]")
+            dd_tc = dt_tc.find_element(By.XPATH, "following-sibling::dd")
+            txt_tc = self._filter_desc(dd_tc.text)
+            if txt_tc.lower() not in ['nenhum', 'none', 'n/a', '']:
+                texto_compra_extra = txt_tc
+        except: pass
+        return {"tit": tit, "desc": desc, "qtd": qtd, "loc": loc, "texto_item": texto_item_extra, "texto_compra": texto_compra_extra, "frete": self._ler_frete_linha(l)}
+
     def _extrair_itens_linhas(self, linhas):
         itens = []
         tem_anexo_geral = False
+        MAX_TENTATIVAS = 3
         for i, l in enumerate(linhas):
-            try:
-                btn_expandir = l.find_element(By.CSS_SELECTOR, "img.s-expandLines, div.s-expandSidebar")
-                ActionChains(self.driver).click(btn_expandir).perform()
-                time.sleep(0.3)
-            except: pass
-            
-            try:
-                l = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")[i]
-            except: pass
-            
-            try:
-                if l.find_elements(By.CSS_SELECTOR, "li.attachment.attachmentFile.s-attachmentFile"):
-                    tem_anexo_geral = True
-            except: pass
-            
-            tit = "Item"; desc = ""; qtd = "0"; loc = "N/A"
-            
-            # 1. Título e Descrição
-            try: tit = l.find_element(By.CSS_SELECTOR, "div.s-description p.s-textField").text.strip()
-            except: pass
-            try: 
-                d = l.find_elements(By.CSS_SELECTOR, "p.s-textField")
-                if len(d) > 1: desc = self._filter_desc(d[1].text)
-            except: pass
-            
-            # Nova verificação: Texto de compra do material
-            if not desc.strip() or desc.strip().lower() == "nenhum":
+            # Insistência inteligente: o Local de Entrega só aparece com o item expandido (a quantidade aparece
+            # mesmo fechado). Sem local = não expandiu, clica de novo; com local e sem textos = já está aberto,
+            # só relê (um novo clique fecharia o item).
+            campos = {"tit": "Item", "desc": "", "qtd": "0", "loc": "N/A", "texto_item": "", "texto_compra": "", "frete": ""}
+            item_expandido = False
+            tem_texto_descritivo = False
+            for tentativa in range(MAX_TENTATIVAS):
+                if tentativa == 0:
+                    try:
+                        btn_expandir = l.find_element(By.CSS_SELECTOR, "img.s-expandLines, div.s-expandSidebar")
+                        ActionChains(self.driver).click(btn_expandir).perform()
+                    except: pass
+                    time.sleep(0.3)
+                elif not item_expandido:
+                    logger.warning(f"       ⚠️ Item {i+1} não expandiu (sem Local de Entrega). Re-expandindo (tentativa {tentativa+1}/{MAX_TENTATIVAS})...")
+                    try: self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", l)
+                    except: pass
+                    try:
+                        btn_expandir = l.find_element(By.CSS_SELECTOR, "img.s-expandLines, div.s-expandSidebar")
+                        ActionChains(self.driver).click(btn_expandir).perform()
+                    except: pass
+                    time.sleep(0.6 + 0.2 * (tentativa - 1))
+                else:
+                    logger.info(f"       🔁 Item {i+1} já aberto, mas sem textos descritivos. Relendo sem clicar (tentativa {tentativa+1}/{MAX_TENTATIVAS})...")
+                    time.sleep(0.6)
+
                 try:
-                    dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra')]")
-                    dd = dt.find_element(By.XPATH, "following-sibling::dd")
-                    desc = self._filter_desc(dd.text)
-                except: pass
-            
-            # Nova verificação: Item Text
-            if not desc.strip() or desc.strip().lower() == "nenhum":
-                try:
-                    dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Item Text')]")
-                    dd = dt.find_element(By.XPATH, "following-sibling::dd")
-                    desc = self._filter_desc(dd.text)
+                    l = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")[i]
                 except: pass
 
-            # Nova verificação: Material Purchase Text
-            if not desc.strip() or desc.strip().lower() == "nenhum":
                 try:
-                    dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Material Purchase Text')]")
-                    dd = dt.find_element(By.XPATH, "following-sibling::dd")
-                    desc = self._filter_desc(dd.text)
+                    if l.find_elements(By.CSS_SELECTOR, "li.attachment.attachmentFile.s-attachmentFile"):
+                        tem_anexo_geral = True
                 except: pass
-            
-            # 2. Quantidade (BLINDADO CONTRA PREÇOS "BRL")
-            try: 
-                elementos_unidade = l.find_elements(By.CSS_SELECTOR, "p.valueWithUnit")
-                for q in elementos_unidade:
-                    texto_q = q.text.strip()
-                    if "BRL" not in texto_q and "R$" not in texto_q and "USD" not in texto_q:
-                        qtd = texto_q
-                        break
-            except: pass
-            
-            # 3. Local de Entrega (BUSCA ROBUSTA POR PALAVRA-CHAVE)
-            try:
-                elemento_local = l.find_element(By.XPATH, ".//*[contains(text(), 'Local de entrega:')]")
-                loc = self.parse_local(elemento_local.text)
-            except: 
-                try: loc = self.parse_local(l.find_element(By.CSS_SELECTOR, "li.attachmentText").text)
-                except: pass
-            
-            # Nova verificação: Endereço de entrega detalhado
-            if loc == "N/A" or not loc.strip():
-                try:
-                    address_label = l.find_element(By.XPATH, ".//div[contains(@class, 's-fieldLabel') and contains(text(), 'Endereço de entrega')]")
-                    address_box = address_label.find_element(By.XPATH, "following-sibling::div[contains(@class, 'addressLines')]")
-                    
-                    linhas_end = address_box.text.split('\n')
-                    for linha in linhas_end:
-                        if re.search(r'\d{5}-\d{3}', linha):
-                            cidade_estado = re.sub(r'.*?\d{5}-\d{3}\s*', '', linha).strip()
-                            if cidade_estado:
-                                loc = re.sub(r'\s+', ' ', cidade_estado)
-                                break
-                    
-                    if loc == "N/A" or not loc.strip():
-                        loc = re.sub(r'\s+', ' ', address_box.text)
-                except: pass
-            
-            # Novas extrações solicitadas
-            texto_item_extra = ""
-            try:
-                dt_ti = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto do item') or contains(text(), 'Item Text')]")
-                dd_ti = dt_ti.find_element(By.XPATH, "following-sibling::dd")
-                txt_ti = dd_ti.text.strip()
-                if txt_ti.lower() not in ['nenhum', 'none', 'n/a', '']:
-                    texto_item_extra = txt_ti
-            except: pass
 
-            texto_compra_extra = ""
-            try:
-                dt_tc = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra') or contains(text(), 'Material Purchase Text')]")
-                dd_tc = dt_tc.find_element(By.XPATH, "following-sibling::dd")
-                txt_tc = self._filter_desc(dd_tc.text)
-                if txt_tc.lower() not in ['nenhum', 'none', 'n/a', '']:
-                    texto_compra_extra = txt_tc
-            except: pass
-            
+                try: leitura = self._ler_campos_linha(l)
+                except Exception: leitura = {}
+
+                # Uma releitura nunca apaga o que uma tentativa anterior já tinha achado
+                if leitura.get("tit", "Item") != "Item": campos["tit"] = leitura["tit"]
+                if leitura.get("qtd", "0") != "0": campos["qtd"] = leitura["qtd"]
+                for chave in ("desc", "texto_item", "texto_compra"):
+                    if self._texto_valido(leitura.get(chave, "")) or not campos[chave].strip():
+                        campos[chave] = leitura.get(chave, "") or campos[chave]
+
+                loc_lido = leitura.get("loc", "N/A") or ""
+                item_expandido = bool(loc_lido.strip()) and loc_lido != "N/A"
+                if item_expandido: campos["loc"] = loc_lido
+                if leitura.get("frete"): campos["frete"] = leitura["frete"]
+
+                tem_texto_descritivo = any(self._texto_valido(campos[c]) for c in ("desc", "texto_item", "texto_compra"))
+                if item_expandido and tem_texto_descritivo:
+                    break
+            else:
+                logger.warning(f"       ⚠️ Item {i+1}: extração incompleta após {MAX_TENTATIVAS} tentativas (expandido: {item_expandido} | textos: {tem_texto_descritivo}).")
+
+            tit = campos["tit"]; desc = campos["desc"]; qtd = campos["qtd"]; loc = campos["loc"]
+            texto_item_extra = campos["texto_item"]; texto_compra_extra = campos["texto_compra"]
+
+            # DESCRIÇÃO nunca fica em branco quando o item tem algum texto
+            if not self._texto_valido(desc) and (texto_compra_extra or texto_item_extra):
+                desc = texto_compra_extra or texto_item_extra
+
             logger.info(f"       Item {i+1}: {tit[:20]}... | Qtd: {qtd} | Local: {loc[:30]}...")
-            itens.append({"item_num": i+1, "titulo": tit, "descricao": desc, "quantidade": qtd, "local_entrega": loc, "texto_item": texto_item_extra, "texto_compra": texto_compra_extra})
+            itens.append({"item_num": i+1, "titulo": tit, "descricao": desc, "quantidade": qtd, "local_entrega": loc, "texto_item": texto_item_extra, "texto_compra": texto_compra_extra, "frete": campos["frete"]})
         return itens, tem_anexo_geral
 
     def extrair_dados_do_evento(self, url: str, num: str, ja_respondido: bool = False, is_negotiation: bool = False, re_extrair: bool = False, venc_tabela: str = "") -> Optional[Dict]:
@@ -545,8 +618,11 @@ class ExtracaoMixin:
             except Exception as e:
                 logger.warning(f"       ⚠️ Não foi possível forçar a aba de Informações: {e}. Mantendo data anterior.")
 
-            try: frete = self.driver.find_element(By.CSS_SELECTOR, "p.s-selectField").text
+            # O frete vem do Incoterms lido nos itens expandidos; a página (já na aba de informações) é só reserva
+            frete_pagina = ""
+            try: frete_pagina = self.driver.find_element(By.CSS_SELECTOR, "p.s-selectField").text
             except: pass
+            frete = self._frete_do_evento(itens, frete_pagina)
 
             self.driver.switch_to.default_content()
             
