@@ -246,8 +246,11 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
                 self.seletor = seletor
                 self.item_idx = item_idx
                 self.text = text
-            def clear(self): pass
+                self.valor = ''
+            def clear(self): self.valor = ''
             def send_keys(self, v):
+                if str(v) not in ('', '', '', '', '', 'a'):
+                    self.valor = str(v)
                 if self.seletor == 'input.s-custom_field_9':
                     ncms_digitados.append(v)
                 elif self.seletor == 'input.s-custom_field_1':
@@ -255,6 +258,8 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
             def get_attribute(self, a):
                 if a == 'aria-owns' and self.seletor == 'input.s-custom_field_1':
                     return 'custom_field_1_20_results'
+                if a == 'value':
+                    return self.valor
                 return ''
             def is_displayed(self): return True
 
@@ -262,15 +267,21 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
             def __init__(self, idx):
                 self.idx = idx
                 self.screenshot_as_png = f'PNG_ITEM_{idx}'.encode('utf-8')
+                self.inputs = {}   # o mesmo campo devolve o mesmo input (guarda o valor digitado)
+
+            def _input(self, value):
+                if value not in self.inputs:
+                    self.inputs[value] = InputFalso(value, item_idx=self.idx)
+                return self.inputs[value]
 
             def find_element(self, by, value):
-                return InputFalso(value, item_idx=self.idx)
+                return self._input(value)
 
             def find_elements(self, by, value):
                 if 's-classification_of_goods' in value:
                     buscas_ncm_coupa.append(value)
                 if value in ('input.s-custom_field_9', 'input.s-lead_time_input', 'input.s-custom_field_1', 'button.s-save'):
-                    return [InputFalso(value, item_idx=self.idx)]
+                    return [self._input(value)]
                 return []
 
         class DriverComItens:
@@ -482,7 +493,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
             def send_keys(self, v):
                 v_str = str(v)
                 if (
-                    self.nome_campo in ('NCM', 'ORIGEM', 'COFINS', 'IPI', 'ICMS', 'PRAZO', 'PRECO')
+                    self.nome_campo in ('NCM', 'ORIGEM', 'COFINS', 'PIS', 'IPI', 'ISS', 'ICMS_ST', 'ICMS', 'PRAZO', 'PRECO')
                     and v_str.strip()
                     and v_str not in ('\ue004', '\ue015', '\ue007', '\ue009', '\ue003', 'a')
                 ):
@@ -524,7 +535,10 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
                         aria_owns='custom_field_9_18_results'
                     ),
                     'cofins': InputValeMetais('COFINS', 'input.s-custom_field_7', cls='s-custom_field_7'),
+                    'pis': InputValeMetais('PIS', 'input.s-custom_field_6', cls='s-custom_field_6'),
                     'ipi': InputValeMetais('IPI', 'input.s-custom_field_5', cls='s-custom_field_5'),
+                    'iss': InputValeMetais('ISS', 'input.s-custom_field_2', cls='s-custom_field_2'),
+                    'icms_st': InputValeMetais('ICMS_ST', 'input.s-custom_field_4', cls='s-custom_field_4'),
                     'icms': InputValeMetais('ICMS', 'input.s-custom_field_3', cls='s-custom_field_3'),
                     'prazo': InputValeMetais('PRAZO', 'input.s-lead_time_input', cls='s-numberInput s-lead_time_input'),
                     'preco': InputValeMetais('PRECO', 'input.s-price_amount_input', cls='s-moneyInput s-price_amount_input'),
@@ -548,8 +562,14 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
                     return [self.campos['origem']]
                 if value == 'input.s-custom_field_7':
                     return [self.campos['cofins']]
+                if value == 'input.s-custom_field_6':
+                    return [self.campos['pis']]
                 if value == 'input.s-custom_field_5':
                     return [self.campos['ipi']]
+                if value == 'input.s-custom_field_2':
+                    return [self.campos['iss']]
+                if value == 'input.s-custom_field_4':
+                    return [self.campos['icms_st']]
                 if value == 'input.s-custom_field_3':
                     return [self.campos['icms']]
                 if value == 'input.s-lead_time_input':
@@ -625,18 +645,21 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
                 ('NCM', 'input.ComboBox__input.s-custom_field_8', '8481.80.99'),
                 ('ORIGEM', 'input.ComboBox__input.s-custom_field_9', '0'),
                 ('COFINS', 'input.s-custom_field_7', '3'),
+                ('PIS', 'input.s-custom_field_6', '0,65'),
                 ('IPI', 'input.s-custom_field_5', '0'),
+                ('ISS', 'input.s-custom_field_2', '0'),
+                ('ICMS_ST', 'input.s-custom_field_4', '0'),
                 ('ICMS', 'input.s-custom_field_3', '18'),
                 ('PRAZO', 'input.s-lead_time_input', '12'),
                 ('PRECO', 'input.s-price_amount_input', '250,00'),
             ],
-            'Para o Vale Metais, deve preencher os campos na ordem exata: NCM -> ORIGEM -> COFINS -> IPI -> ICMS -> PRAZO -> PREÇO POR UNIDADE'
+            'Para o Vale Metais, deve preencher na ordem: NCM -> ORIGEM -> COFINS -> PIS -> IPI -> ISS -> ICMS ST -> ICMS -> PRAZO -> PREÇO'
         )
         self.assertIn('84818099 - Outras torneiras e válvulas', opcoes_clicadas)
         self.assertIn('0 - Nacional, exceto as indicadas nos códigos 3, 4, 5 e 8', opcoes_clicadas)
         self.assertEqual(bot.driver.linhas[0].campos['preco_liquido'].valor, '')
 
-        # Valida também que _inspecionar_campos_linha reconhece todos os 7 campos do Vale Metais preenchidos
+        # Valida também que _inspecionar_campos_linha reconhece todos os 10 campos do Vale Metais preenchidos
         inspecao = bot._inspecionar_campos_linha(
             bot.driver.linhas[0],
             preco_alvo='250,00',
@@ -647,10 +670,24 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
         )
         self.assertEqual(
             list(inspecao.keys()),
-            ['NCM', 'Origem', 'COFINS (%)', 'IPI (%)', 'ICMS (%)', 'Prazo', 'Preço']
+            ['NCM', 'Origem', 'COFINS (%)', 'PIS (%)', 'IPI (%)', 'ISS (%)', 'ICMS ST (%)', 'ICMS (%)', 'Prazo', 'Preço']
         )
         for nome_c, info_c in inspecao.items():
             self.assertFalse(info_c['vazio'], f'Campo {nome_c} do Vale Metais deveria constar como preenchido')
+
+        # Protocolo de segurança: se o AJAX do Coupa apagar PIS e trocar o COFINS, a conferência refaz os dois
+        linha_vm = bot.driver.linhas[0]
+        linha_vm.campos['pis'].valor = ''
+        linha_vm.campos['cofins'].valor = '9'
+        del ordem_preenchimento[:]
+        vazios = bot._garantir_campos_item_antes_salvar(
+            linha_vm, 0,
+            preco_alvo='250,00', prazo_alvo='12', ncm_alvo='84818099', origem_alvo='0', icms_alvo='18'
+        )
+        self.assertEqual(vazios, [])
+        self.assertEqual(linha_vm.campos['pis'].valor, '0,65')
+        self.assertEqual(linha_vm.campos['cofins'].valor, '3')
+        self.assertEqual(sorted(n for n, _, _ in ordem_preenchimento), ['COFINS', 'PIS'])
 
     def test_datasheet_por_linha_anexa_arquivo_em_cada_item_via_botao_add_file(self):
         import os

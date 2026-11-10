@@ -51,6 +51,162 @@ if not logger.handlers:
 
 
 class RespostaMixin:
+    # Mapa dos campos da linha do item no Vale Base Metals (conferido no portal em 10/11/2026, evento 59642):
+    #   s-price_amount_input  *Preço por unidade        s-lead_time_input  *Tempo de espera (dias)
+    #   s-price_currency_input *Moeda (já vem BRL)      s-custom_field_1    Preço líquido (NÃO preencher)
+    #   s-custom_field_2       ISS %                    s-custom_field_3    ICMS %
+    #   s-custom_field_4       ICMS ST%                 s-custom_field_5   *IPI %
+    #   s-custom_field_6       PIS %                    s-custom_field_7    COFINS %
+    #   s-custom_field_8      *NCM (ComboBox)           s-custom_field_9   *Material Origin (ComboBox)
+    # Impostos fixos, com os mesmos valores usados no perfil Vale normal. Ordem = ordem de preenchimento.
+    CAMPOS_FIXOS_VALE_METAIS = (
+        ('COFINS (%)', 'input.s-custom_field_7', '3'),
+        ('PIS (%)', 'input.s-custom_field_6', '0,65'),
+        ('IPI (%)', 'input.s-custom_field_5', '0'),
+        ('ISS (%)', 'input.s-custom_field_2', '0'),
+        ('ICMS ST (%)', 'input.s-custom_field_4', '0'),
+    )
+    SELETOR_ICMS_VALE_METAIS = 'input.s-custom_field_3'
+
+    # Setter nativo + eventos: faz o React/Coupa enxergar o valor (mesmo padrão do campo de prazo)
+    JS_DEFINIR_VALOR_INPUT = """
+        const el = arguments[0];
+        const val = String(arguments[1] || '');
+        if (!el || typeof el.dispatchEvent !== 'function') return;
+        const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+        if (el._valueTracker) el._valueTracker.setValue('');
+        if (desc && desc.set) { desc.set.call(el, val); } else { el.value = val; }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+    """
+
+    @staticmethod
+    def _valores_equivalentes(lido, esperado):
+        """Compara o valor lido do input com o esperado ('0,65' == '0.65' == '0,6500'; '3' == '3,00')."""
+        a = str(lido or '').strip()
+        b = str(esperado or '').strip()
+        if not a or not b:
+            return a == b
+
+        def _num(s):
+            s = re.sub(r'[R$\s%]', '', s)
+            if ',' in s and '.' in s:
+                s = s.replace('.', '').replace(',', '.')
+            elif ',' in s:
+                s = s.replace(',', '.')
+            try:
+                return float(s)
+            except ValueError:
+                return None
+
+        na, nb = _num(a), _num(b)
+        if na is not None and nb is not None:
+            return abs(na - nb) < 1e-9
+        return a.lower() == b.lower()
+
+    def _preencher_campo_texto_verificado(self, el, valor, nome_log, tentativas_js=2):
+        """
+        Preenche um input de texto e LÊ DE VOLTA para garantir que o valor ficou no campo.
+        1ª tentativa: clear + send_keys + TAB. Se o valor não ficou (AJAX do Coupa limpou, foco perdido...),
+        insiste via setter nativo do React até `tentativas_js` vezes. Retorna True se o valor ficou.
+        """
+        try:
+            el.clear()
+            time.sleep(0.2)
+            el.send_keys(valor)
+            el.send_keys(Keys.TAB)
+        except Exception:
+            pass
+        time.sleep(0.3)
+        if self._valores_equivalentes(self._obter_valor_input(el), valor):
+            return True
+
+        for tentativa in range(1, tentativas_js + 1):
+            try:
+                self.driver.execute_script(self.JS_DEFINIR_VALOR_INPUT, el, valor)
+            except Exception:
+                pass
+            time.sleep(0.5)
+            if self._valores_equivalentes(self._obter_valor_input(el), valor):
+                logger.info(f"      🔁 {nome_log} confirmado com '{valor}' na tentativa extra {tentativa}.")
+                return True
+
+        logger.warning(f"      ⚠️ {nome_log} não ficou com '{valor}' (lido: '{self._obter_valor_input(el)}').")
+        return False
+
+    def _aguardar_campos_item(self, linha, timeout=8):
+        """
+        Protocolo de segurança: espera os campos da linha aparecerem depois de expandir.
+        Sem isso, find_elements devolve [] e os campos ficam em branco sem nenhum aviso.
+        Na metade do tempo, clica de novo em expandir.
+        """
+        inicio = time.time()
+        reclicou = False
+        while time.time() - inicio < timeout:
+            try:
+                if linha.find_elements(By.CSS_SELECTOR, "input.s-lead_time_input") or \
+                        linha.find_elements(By.CSS_SELECTOR, "input.s-price_amount_input"):
+                    return True
+            except Exception:
+                pass
+            if not reclicou and time.time() - inicio >= timeout / 2:
+                reclicou = True
+                try:
+                    btn = linha.find_elements(By.CSS_SELECTOR, "div.s-expandSidebar, img.s-expandLines")
+                    if btn:
+                        self.driver.execute_script("arguments[0].click();", btn[0])
+                except Exception:
+                    pass
+            time.sleep(0.5)
+        logger.warning("      ⚠️ Campos do item não apareceram após expandir a linha.")
+        return False
+
+    def _garantir_campos_item_antes_salvar(self, linha, idx, preco_alvo="", prazo_alvo="", ncm_alvo="",
+                                           origem_alvo="", icms_alvo="", rodadas=2):
+        """
+        Protocolo de segurança antes de clicar em Salvar no item:
+        inspeciona todos os campos mapeados; o que estiver vazio ou com valor diferente do esperado
+        é preenchido de novo (até `rodadas` vezes). Retorna a lista de campos que continuaram vazios.
+        """
+        alvos = dict(preco_alvo=preco_alvo, prazo_alvo=prazo_alvo, ncm_alvo=ncm_alvo,
+                     origem_alvo=origem_alvo, icms_alvo=icms_alvo)
+        for rodada in range(1, rodadas + 1):
+            insp = self._inspecionar_campos_linha(linha, **alvos)
+            pendentes = {}
+            for nome, info in insp.items():
+                alvo = str(info.get('valor_alvo') or '').strip()
+                if not alvo:
+                    continue
+                atual = info.get('valor_atual', '')
+                tipo = info.get('tipo')
+                if info.get('vazio'):
+                    pendentes[nome] = info
+                elif tipo in ('cf', 'preco') and not self._valores_equivalentes(atual, alvo):
+                    pendentes[nome] = dict(info, vazio=True)
+                elif tipo == 'prazo' and re.sub(r'\D', '', str(atual)) != re.sub(r'\D', '', self._normalizar_prazo_dias(alvo)):
+                    pendentes[nome] = dict(info, vazio=True)
+            if not pendentes:
+                break
+            logger.warning(
+                f"      🛡️ Conferência {rodada}/{rodadas} do Item {idx+1}: refazendo {', '.join(pendentes)}..."
+            )
+            self._repreencher_campos_vazios_linha(linha, pendentes, idx)
+
+        insp_final = self._inspecionar_campos_linha(linha, **alvos)
+        vazios = [k for k, v in insp_final.items() if v.get('vazio')]
+        if vazios:
+            logger.warning(f"      ⚠️ Item {idx+1} segue com campo(s) vazio(s) antes de salvar: {', '.join(vazios)}")
+            try:
+                self.sio.emit('relatar_progresso', {
+                    'mensagem': f"⚠️ Item {idx+1}: campo(s) vazio(s) antes de salvar: {', '.join(vazios)}"
+                })
+            except Exception:
+                pass
+        else:
+            logger.info(f"      🛡️ Item {idx+1}: todos os campos conferidos antes de salvar.")
+        return vazios
+
     def _selecionar_cliente_sourcing(self, nome_cliente):
         eh_metais = "metal" in str(nome_cliente).lower() or "metais" in str(nome_cliente).lower()
         rotulo = "Vale Base Metals" if eh_metais else "Vale"
@@ -753,56 +909,26 @@ class RespostaMixin:
             except Exception:
                 pass
 
-            # 3. COFINS (%) (Vale Metais: custom_field_7)
-            try:
-                inp_cofins = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_7")
-                if inp_cofins:
-                    val = self._obter_valor_input(inp_cofins[0])
-                    resultado['COFINS (%)'] = {
-                        'nome': 'COFINS (%)',
-                        'elemento': inp_cofins[0],
-                        'vazio': (val == ""),
-                        'invalido_portal': self._campo_tem_erro_portal(inp_cofins[0]),
-                        'valor_atual': val,
-                        'valor_alvo': "3",
-                        'tipo': 'cf'
-                    }
-            except Exception:
-                pass
-
-            # 4. IPI (%) (Vale Metais: custom_field_5)
-            try:
-                inp_ipi = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_5")
-                if inp_ipi:
-                    val = self._obter_valor_input(inp_ipi[0])
-                    resultado['IPI (%)'] = {
-                        'nome': 'IPI (%)',
-                        'elemento': inp_ipi[0],
-                        'vazio': (val == ""),
-                        'invalido_portal': self._campo_tem_erro_portal(inp_ipi[0]),
-                        'valor_atual': val,
-                        'valor_alvo': "0",
-                        'tipo': 'cf'
-                    }
-            except Exception:
-                pass
-
-            # 5. ICMS (%) (Vale Metais: custom_field_3)
-            try:
-                inp_icms = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_3")
-                if inp_icms:
-                    val = self._obter_valor_input(inp_icms[0])
-                    resultado['ICMS (%)'] = {
-                        'nome': 'ICMS (%)',
-                        'elemento': inp_icms[0],
-                        'vazio': (val == ""),
-                        'invalido_portal': self._campo_tem_erro_portal(inp_icms[0]),
-                        'valor_atual': val,
-                        'valor_alvo': icms_alvo if icms_alvo else "0",
-                        'tipo': 'cf'
-                    }
-            except Exception:
-                pass
+            # 3. Impostos fixos (COFINS, PIS, IPI, ISS, ICMS ST) + ICMS da planilha
+            campos_cf = list(self.CAMPOS_FIXOS_VALE_METAIS) + [
+                ('ICMS (%)', self.SELETOR_ICMS_VALE_METAIS, icms_alvo if icms_alvo else "0")
+            ]
+            for nome_cf, seletor_cf, valor_cf in campos_cf:
+                try:
+                    inp_cf = linha.find_elements(By.CSS_SELECTOR, seletor_cf)
+                    if inp_cf:
+                        val = self._obter_valor_input(inp_cf[0])
+                        resultado[nome_cf] = {
+                            'nome': nome_cf,
+                            'elemento': inp_cf[0],
+                            'vazio': (val == ""),
+                            'invalido_portal': self._campo_tem_erro_portal(inp_cf[0]),
+                            'valor_atual': val,
+                            'valor_alvo': valor_cf,
+                            'tipo': 'cf'
+                        }
+                except Exception:
+                    pass
 
             # 6. Prazo (Tempo de espera (dias): s-lead_time_input / id^='lead_time_' / name^='lead_time_')
             try:
@@ -1373,19 +1499,7 @@ class RespostaMixin:
             logger.info(f"      [INFO] Repreenchendo campo em branco do Item {idx+1}: {nome_campo} com '{valor_alvo}'...")
             try:
                 if tipo == 'preco':
-                    try:
-                        el.clear()
-                        time.sleep(0.2)
-                        el.send_keys(valor_alvo)
-                        el.send_keys(Keys.TAB)
-                    except Exception:
-                        pass
-                    self.driver.execute_script("""
-                        arguments[0].value = arguments[1];
-                        arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-                        arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
-                        arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
-                    """, el, valor_alvo)
+                    self._preencher_campo_texto_verificado(el, valor_alvo, nome_campo)
                     time.sleep(1.0)
 
                 elif tipo == 'prazo':
@@ -1404,19 +1518,7 @@ class RespostaMixin:
                     time.sleep(1.0)
 
                 else: # cf ou genérico
-                    try:
-                        el.clear()
-                        time.sleep(0.2)
-                        el.send_keys(valor_alvo)
-                        el.send_keys(Keys.TAB)
-                    except Exception:
-                        pass
-                    self.driver.execute_script("""
-                        arguments[0].value = arguments[1];
-                        arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-                        arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
-                        arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
-                    """, el, valor_alvo)
+                    self._preencher_campo_texto_verificado(el, valor_alvo, nome_campo)
                     time.sleep(1.0)
 
             except Exception as e_rep:
@@ -2198,8 +2300,10 @@ class RespostaMixin:
                             btn_expandir = linha.find_element(By.CSS_SELECTOR, "div.s-expandSidebar, img.s-expandLines")
                             self.driver.execute_script("arguments[0].click();", btn_expandir)
                             time.sleep(2) # PAUSA: Espera a animação do Coupa abrir os campos
-                        except: 
-                            pass 
+                        except:
+                            pass
+                        # Segurança: só segue quando os campos da linha estiverem na tela
+                        self._aguardar_campos_item(linha)
 
                         if se_tem_ds_item:
                             self._anexar_datasheets_no_item(linha, idx, ds_item_atual)
@@ -2209,21 +2313,12 @@ class RespostaMixin:
                             def preencher_cf(seletor, valor_fixo, nome_log):
                                 cfs = linha.find_elements(By.CSS_SELECTOR, seletor)
                                 if cfs:
-                                    try:
-                                        cfs[0].clear()
-                                        time.sleep(0.2)
-                                        cfs[0].send_keys(valor_fixo)
-                                        cfs[0].send_keys(Keys.TAB) # Simula o usuário saindo do campo
-                                    except:
-                                        # Adicionado o evento 'blur' para forçar o auto-save de forma mais limpa
-                                        self.driver.execute_script("""
-                                            arguments[0].value = arguments[1];
-                                            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-                                            arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
-                                            arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));
-                                        """, cfs[0], valor_fixo)
-                                    logger.info(f"      ✅ {nome_log} preenchido com '{valor_fixo}'")
+                                    # Preenche e lê de volta; insiste via setter nativo se o valor não ficou
+                                    if self._preencher_campo_texto_verificado(cfs[0], valor_fixo, nome_log):
+                                        logger.info(f"      ✅ {nome_log} preenchido com '{valor_fixo}'")
                                     time.sleep(1.5) # O FREIO MÁGICO: Dá 1.5s para o servidor processar antes de ir pro próximo imposto
+                                elif eh_vale_metais:
+                                    logger.warning(f"      ⚠️ Campo {nome_log} ({seletor}) não encontrado na linha do Vale Base Metais.")
 
                             eh_vale_metais = self._eh_linha_vale_metais(linha, self._cliente_evento_atual)
                             ncm_atual = self._formatar_ncm(lista_ncms[idx]) if idx < len(lista_ncms) else ""
@@ -2266,14 +2361,18 @@ class RespostaMixin:
                                         logger.info(f"      ✅ Origem (Vale Metais - s-custom_field_9) preenchida e selecionada: {origem_atual}")
                                         time.sleep(1.5)
 
-                                # 3. COFINS % (custom_field_7)
-                                preencher_cf("input.s-custom_field_7", "3", "COFINS (%)")
+                                # NCM e Material Origin são obrigatórios (*) no Vale Base Metais
+                                if not ncm_atual:
+                                    logger.warning(f"      ⚠️ Item {idx+1} sem NCM informado: campo obrigatório no Vale Base Metais.")
+                                if not origem_atual:
+                                    logger.warning(f"      ⚠️ Item {idx+1} sem Origem informada: campo obrigatório no Vale Base Metais.")
 
-                                # 4. IPI % (custom_field_5 - obrigatório *)
-                                preencher_cf("input.s-custom_field_5", "0", "IPI (%)")
+                                # 3. Impostos fixos: COFINS (cf7) -> PIS (cf6) -> IPI* (cf5) -> ISS (cf2) -> ICMS ST (cf4)
+                                for nome_cf, seletor_cf, valor_cf in self.CAMPOS_FIXOS_VALE_METAIS:
+                                    preencher_cf(seletor_cf, valor_cf, nome_cf)
 
-                                # 5. ICMS % (custom_field_3)
-                                preencher_cf("input.s-custom_field_3", icms_atual if icms_atual else "0", "ICMS (%)")
+                                # 4. ICMS % (custom_field_3)
+                                preencher_cf(self.SELETOR_ICMS_VALE_METAIS, icms_atual if icms_atual else "0", "ICMS (%)")
                             else:
                                 # Layout Vale Padrão
                                 # 1. NCM da Planilha Base (ComboBox - custom_field_9)
@@ -2356,6 +2455,19 @@ class RespostaMixin:
                                     time.sleep(0.8)
                             except Exception:
                                 pass
+
+                        # Protocolo de segurança: confere TODOS os campos mapeados e refaz o que ficou vazio/errado
+                        try:
+                            self._garantir_campos_item_antes_salvar(
+                                linha, idx,
+                                preco_alvo=str(lista_precos[idx]).strip() if se_tem_preco else "",
+                                prazo_alvo=str(lista_prazos[idx]).strip() if se_tem_prazo else "",
+                                ncm_alvo=str(lista_ncms[idx]).strip() if idx < len(lista_ncms) else "",
+                                origem_alvo=str(lista_origens[idx]).strip() if idx < len(lista_origens) else "",
+                                icms_alvo=str(lista_icms[idx]).strip() if idx < len(lista_icms) else "",
+                            )
+                        except Exception as e_conf:
+                            logger.warning(f"      ⚠️ Falha na conferência dos campos do Item {idx+1}: {e_conf}")
 
                         # Captura print da área dos campos preenchidos do item
                         preco_log = str(lista_precos[idx]).strip() if se_tem_preco else ""
