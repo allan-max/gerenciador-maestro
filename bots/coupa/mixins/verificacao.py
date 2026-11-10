@@ -40,6 +40,8 @@ from docx.shared import Pt, RGBColor, Cm
 
 import base64
 
+from .. import api_json
+
 logger = logging.getLogger("CoupaApp")
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
@@ -93,6 +95,10 @@ class VerificacaoMixin:
 
     def _ler_lista(self, pendentes, max_paginas):
         """{número: respostas} da lista do portal. Se o portal falhar no meio, devolve o que já leu e o erro."""
+        lido = self._ler_lista_api(pendentes, max_paginas)
+        if lido is not None:
+            return lido
+        logger.info("    API JSON da lista indisponível; lendo a lista pela tela.")
         vistos, ilegiveis, paginas, anterior = {}, 0, 0, None
         ordem = lambda q: -1 if q is None else q   # número repetido na lista: vale a maior quantidade lida
         try:
@@ -134,6 +140,40 @@ class VerificacaoMixin:
             logger.exception(f"Leitura interrompida na página {paginas}; gravando o que já foi lido.")
             return vistos, ilegiveis, paginas, e
         return vistos, ilegiveis, paginas, None
+
+    def _ler_lista_api(self, pendentes, max_paginas):
+        """A mesma leitura pela API JSON da lista (bots/coupa/api_json.py), sem renderizar as páginas.
+        None = a API não respondeu como esperado em alguma página: quem chama relê tudo pela tela."""
+        vistos, paginas = {}, 0
+        ordem = lambda q: -1 if q is None else q   # número repetido na lista: vale a maior quantidade lida
+        try:
+            while not self.solicitacao_parada and paginas < max_paginas:
+                lido = api_json.ler_pagina_lista(self.driver, paginas + 1)
+                if lido is None:
+                    return None
+                linhas, proxima = lido
+                if not linhas:
+                    break
+                paginas += 1
+                for l in linhas:
+                    if l['num'] not in vistos or ordem(l['respostas']) > ordem(vistos[l['num']]):
+                        vistos[l['num']] = l['respostas']
+
+                faltam = sum(1 for n in pendentes if n not in vistos)
+                logger.info(f"    Página {paginas} (API): {len(linhas)} linhas, faltam {faltam} pendentes.")
+                self.sio.emit('relatar_progresso_coupa', {'mensagem': f"🔍 Verificando página {paginas} (faltam {faltam} pendentes)..."})
+                if not faltam:
+                    logger.info("    Todas as pendentes encontradas.")
+                    break
+                if not proxima:
+                    logger.info("    Fim da lista.")
+                    break
+        except Exception:
+            logger.exception("Leitura da lista pela API interrompida; relendo pela tela.")
+            return None
+        if not paginas:
+            return None   # nem a primeira página veio: confirma pela tela antes de dizer que a lista está vazia
+        return vistos, 0, paginas, None
 
     def _pendentes_coupa(self):
         """Cotações deste robô (as do eventos.jsonl do Coupa) sem resposta confirmada: vazias, RASCUNHO e

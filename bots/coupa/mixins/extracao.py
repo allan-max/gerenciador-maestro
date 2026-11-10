@@ -39,6 +39,8 @@ from docx.shared import Pt, RGBColor, Cm
 
 import base64
 
+from .. import api_json
+
 logger = logging.getLogger("CoupaApp")
 
 try:
@@ -541,7 +543,9 @@ class ExtracaoMixin:
                     linhas = self.driver.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine")
 
                 if len(linhas) > 0:
-                    itens, tem_anexo = self._extrair_itens_linhas(linhas)
+                    # API JSON só na primeira tentativa: se os itens dela não validarem, a releitura é pela tela
+                    lido_api = self._itens_pela_api(num) if tentativa == 1 else None
+                    itens, tem_anexo = lido_api or self._extrair_itens_linhas(linhas)
                     if tem_anexo: tem_anexo_geral = True
                 else:
                     itens = []
@@ -652,6 +656,60 @@ class ExtracaoMixin:
             time.sleep(5)
         return self.solicitacao_parada
 
+    def _painel_pela_api(self, pagina):
+        """(linhas, tem_proxima) da página da lista pela API JSON (bots/coupa/api_json.py). None = usar a tela."""
+        try:
+            painel = api_json.ler_pagina_lista(self.driver, pagina)
+        except Exception as e:
+            logger.warning(f"    API JSON da lista falhou ({type(e).__name__}); lendo a página {pagina} pela tela.")
+            return None
+        if painel is None:
+            logger.info(f"    API JSON da lista indisponível; lendo a página {pagina} pela tela.")
+        return painel
+
+    def _painel_pela_tela(self, pagina):
+        """(linhas, tem_proxima) da página da lista lida na tela. None = a tabela não carregou."""
+        self.driver.get(f"{self.EVENTS_URL}?page={pagina}")   # sem ?page= o Coupa reabre a última página visitada
+
+        try: WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
+        except: return None
+
+        has_next = False
+        try:
+            if self.driver.find_element(By.CSS_SELECTOR, "a.next_page:not(.disabled)"): has_next = True
+        except: pass
+
+        linhas = []
+        for r in self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr"):
+            try:
+                num = r.find_element(By.CSS_SELECTOR, "a span.dt_open_link").text.strip()
+                url = r.find_element(By.XPATH, ".//a").get_attribute('href')
+            except: continue
+
+            desc = ""
+            try: desc = r.find_element(By.CLASS_NAME, "s-datatable-cell-description").text
+            except: pass
+
+            data_venc_tabela = ""
+            try: data_venc_tabela = r.find_element(By.CLASS_NAME, "s-datatable-cell-end_time").text.strip()
+            except: pass
+
+            linhas.append({'num': num, 'url': url, 'descricao': desc, 'venc_tabela': data_venc_tabela})
+        return linhas, has_next
+
+    def _itens_pela_api(self, num):
+        """(itens, tem_anexo) pela API JSON dos itens do rascunho aberto. None = ler os itens pela tela."""
+        try:
+            lido = api_json.ler_itens(self.driver, num, self._filter_desc)
+        except Exception as e:
+            logger.warning(f"    API JSON dos itens falhou ({type(e).__name__}); lendo os itens pela tela.")
+            return None
+        if lido is None:
+            logger.info("    API JSON dos itens indisponível ou incompleta; lendo os itens pela tela.")
+        else:
+            logger.info(f"    Itens lidos pela API JSON: {len(lido[0])}.")
+        return lido
+
     def varrer_painel_eventos(self):
         logger.info("\n--- INICIANDO VARREDURA DE EVENTOS ---")
         curr = 1
@@ -678,35 +736,24 @@ class ExtracaoMixin:
 
                 self.garantir_logado(self.EVENTS_URL)
                 logger.info(f" Analisando Página {curr}...")
-                self.driver.get(f"{self.EVENTS_URL}?page={curr}")   # sem ?page= o Coupa reabre a última página visitada
-                
-                try: WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "table")))
-                except: break
-                
-                rows = self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
-                if not rows: break
-                
-                tarefas = []
-                has_next = False
-                try: 
-                    if self.driver.find_element(By.CSS_SELECTOR, "a.next_page:not(.disabled)"): has_next = True
-                except: pass
-                
-                for r in rows:
-                    try:
-                        num = r.find_element(By.CSS_SELECTOR, "a span.dt_open_link").text.strip()
-                        url = r.find_element(By.XPATH, ".//a").get_attribute('href')
-                        
-                        is_neg = False
-                        try:
-                            desc = r.find_element(By.CLASS_NAME, "s-datatable-cell-description").text.upper()
-                            if "EQUALIZAÇãO" in desc or "RODADA" in desc: is_neg = True
-                        except: pass
+                # Lista pela API JSON (sem renderizar a página); se ela não responder, pela tela como sempre
+                painel = self._painel_pela_api(curr)
+                if painel is None:
+                    painel = self._painel_pela_tela(curr)
+                if painel is None: break
+                linhas_painel, has_next = painel
+                if not linhas_painel: break
 
-                        data_venc_tabela = ""
-                        try:
-                            data_venc_tabela = r.find_element(By.CLASS_NAME, "s-datatable-cell-end_time").text.strip()
-                        except: pass
+                tarefas = []
+                for linha_painel in linhas_painel:
+                    try:
+                        num = linha_painel['num']
+                        url = linha_painel['url']
+
+                        desc = str(linha_painel.get('descricao') or '').upper()
+                        is_neg = "EQUALIZAÇãO" in desc or "RODADA" in desc
+
+                        data_venc_tabela = linha_painel.get('venc_tabela') or ""
 
                         re_extrair = False
                         if self.evento_ja_processado(num):
