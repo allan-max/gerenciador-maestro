@@ -1005,6 +1005,35 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
             'Deve sincronizar o _valueTracker do React/Coupa para garantir que o prazo não seja apagado ao salvar'
         )
 
+    def test_anexo_topo_escolhe_campo_pelo_titulo_vale_e_vale_base_metais(self):
+        import re
+        from selenium.webdriver.common.by import By
+        from test_fase0 import LOGGER, Relogio, carregar
+
+        raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
+        ns = carregar(raiz / 'bots/coupa/mixins/resposta.py', {'RespostaMixin'}, re=re, time=Relogio(), By=By)
+
+        class DriverTitulos:
+            def __init__(self, tipos):
+                self.tipos = tipos
+            def execute_script(self, s, *a):
+                return list(self.tipos) if 'data-maestro-top-anexo' in s else None
+
+        bot = type('Bot', (ns['RespostaMixin'],), {})()
+        with patch.object(LOGGER, 'handle'):
+            # Vale normal: 0 = Proposta Técnica, 1 = Proposta Comercial
+            bot.driver = DriverTitulos(['tecnica', 'comercial'])
+            self.assertEqual(bot._indice_anexo_topo('tecnica', 0), 0)
+            self.assertEqual(bot._indice_anexo_topo('comercial', 1), 1)
+            # Vale Base Metais: 0 = Proposta Comercial, 1 = Proposta Técnica
+            bot.driver = DriverTitulos(['comercial', 'tecnica'])
+            self.assertEqual(bot._indice_anexo_topo('tecnica', 0), 1, 'Datasheet deve ir na Proposta Técnica')
+            self.assertEqual(bot._indice_anexo_topo('comercial', 1), 0, 'DAV deve ir na Proposta Comercial')
+            # Sem título reconhecido: mantém a posição padrão
+            bot.driver = DriverTitulos([None, None])
+            self.assertEqual(bot._indice_anexo_topo('tecnica', 0), 0)
+            self.assertEqual(bot._indice_anexo_topo('comercial', 1), 1)
+
     def test_limpa_dav_e_datasheet_no_topo_somente_quando_anexados_e_permite_multiplos_datasheets(self):
         import os
         import re

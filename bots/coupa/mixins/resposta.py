@@ -1842,15 +1842,53 @@ class RespostaMixin:
         Identifica e marca no DOM os containers exclusivos dos campos de anexo do topo:
         índice 0 = Datasheet geral, índice 1 = DAV geral.
         Garante que jamais englobe campos de texto/preço/impostos ou linhas de itens (.s-itemsAndServicesLine).
+
+        Também identifica o título de cada campo e devolve a lista na ordem dos índices
+        ('tecnica', 'comercial' ou None). A ordem muda conforme o cliente (conferido em 10/11/2026):
+          Vale normal:      0 = Proposta Técnica,   1 = Proposta Comercial
+          Vale Base Metais: 0 = Proposta Comercial, 1 = Proposta Técnica
         """
         try:
-            self.driver.execute_script("""
+            tipos = self.driver.execute_script("""
                 const todosInputs = Array.from(
                     document.querySelectorAll("input[type='file'][name='attachment[file]']")
                 ).filter(inp => !inp.closest('.s-itemsAndServicesLine'));
 
+                const tiposDoTexto = (txt, re) => {
+                    const achados = new Set();
+                    let m;
+                    re.lastIndex = 0;
+                    while ((m = re.exec(txt)) !== null) {
+                        achados.add(/^t/i.test(m[1]) ? 'tecnica' : 'comercial');
+                    }
+                    return achados;
+                };
+                const tipoDoCampo = (inp) => {
+                    // Sobe até o bloco do campo (para antes de englobar outro input de anexo)
+                    // e procura o título "Resposta a Proposta Técnica/Comercial" (ou "Proposta ...").
+                    const padroes = [
+                        /Resposta a Proposta\\s+(T[ée]cnica|Comercial)/gi,
+                        /Proposta\\s+(T[ée]cnica|Comercial)/gi
+                    ];
+                    for (const re of padroes) {
+                        let atual = inp.parentElement;
+                        while (atual && atual !== document.body) {
+                            if (atual.querySelectorAll("input[type='file'][name='attachment[file]']").length > 1) break;
+                            const achados = tiposDoTexto(atual.innerText || atual.textContent || '', re);
+                            if (achados.size === 1) return Array.from(achados)[0];
+                            if (achados.size > 1) break;
+                            atual = atual.parentElement;
+                        }
+                    }
+                    return null;
+                };
+
+                const tipos = [];
                 todosInputs.forEach((inp, idx) => {
                     inp.setAttribute('data-maestro-top-input', String(idx));
+                    const tipo = tipoDoCampo(inp);
+                    tipos.push(tipo);
+                    if (tipo) inp.setAttribute('data-maestro-top-tipo', tipo);
                     let atual = inp.parentElement;
                     let melhorContainer = inp.parentElement;
                     while (atual && atual !== document.body) {
@@ -1869,9 +1907,26 @@ class RespostaMixin:
                         melhorContainer.setAttribute('data-maestro-top-anexo', String(idx));
                     }
                 });
+                return tipos;
             """)
+            return tipos if isinstance(tipos, list) else []
         except Exception:
-            pass
+            return []
+
+    def _indice_anexo_topo(self, tipo, padrao):
+        """
+        Índice do campo de anexo do topo pelo título ('tecnica' = Datasheet, 'comercial' = DAV).
+        Se o título não for encontrado, usa a posição padrão do Vale normal.
+        """
+        tipos = self._marcar_containers_anexo_topo()
+        if tipo in tipos:
+            idx = tipos.index(tipo)
+            if idx != padrao:
+                logger.info(f"   📎 Campo 'Proposta {'Técnica' if tipo == 'tecnica' else 'Comercial'}' está na posição {idx} (layout diferente do Vale normal).")
+            return idx
+        if tipos:
+            logger.warning(f"   ⚠️ Título do campo de anexo '{tipo}' não encontrado no topo ({tipos}); usando posição {padrao}.")
+        return padrao
 
     def _limpar_anexos_topo_campo(self, indice_campo, nome_campo):
         """
@@ -2256,10 +2311,12 @@ class RespostaMixin:
             )
             
             if ds_paths and not datasheet_por_linha:
-                self._anexar_arquivos_topo_campo(0, ds_paths, "Datasheet")
+                # Datasheet vai em "Proposta Técnica" (posição muda entre Vale e Vale Base Metais)
+                self._anexar_arquivos_topo_campo(self._indice_anexo_topo('tecnica', 0), ds_paths, "Datasheet")
             
             if dav_paths:
-                self._anexar_arquivos_topo_campo(1, dav_paths, "DAV")
+                # DAV vai em "Proposta Comercial"
+                self._anexar_arquivos_topo_campo(self._indice_anexo_topo('comercial', 1), dav_paths, "DAV")
             
             time.sleep(5) 
 
