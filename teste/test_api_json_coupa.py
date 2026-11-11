@@ -63,6 +63,7 @@ class Navegador:
         self.respostas = list(respostas)
         self.current_url = url
         self.pedidos = []
+        self.detalhes = []
         self.abertas = []
 
     def set_script_timeout(self, s):
@@ -75,8 +76,9 @@ class Navegador:
     def execute_script(self, script):
         return self.current_url
 
-    def execute_async_script(self, script, url, ms):
+    def execute_async_script(self, script, url, ms, metodo='GET', corpo=None, cabecalhos=None):
         self.pedidos.append(url)
+        self.detalhes.append({'url': url, 'metodo': metodo, 'corpo': corpo, 'cab': cabecalhos or {}})
         r = self.respostas.pop(0)
         if isinstance(r, Exception):
             raise r
@@ -203,6 +205,109 @@ class ItensDoEvento(unittest.TestCase):
 
     def test_sessao_expirada_nos_itens_devolve_none(self):
         self.assertIsNone(api_json.ler_itens(Navegador([{'status': 401, 'url': 'x', 'corpo': ''}], url=URL_EDICAO), '307802'))
+
+
+URL_TERMOS = 'https://vale.coupahost.com/quotes/external_responses/308191/terms'
+
+
+def tela_termos(estado='awaiting', termos=(), resposta_existente=None):
+    """Trecho da tela de termos no formato capturado em 10/11/2026 (evento 308191)."""
+    divs = ''.join(f'<div class="s-term term" data-id="{t}"><input type="radio" value="true"></div>' for t in termos)
+    link = (f'<a href="/quotes/external_responses/308191/edit?response_id={resposta_existente}"><span>Minhas respostas</span></a>'
+            if resposta_existente else '')
+    return (f'<html><head><meta name="csrf-token" content="TOKEN&#43;META" /></head><body>{link}'
+            f'<input type="hidden" name="existing_participation" id="existing_participation" value="{estado}" '
+            f'data-url="https://vale.coupahost.com/quotes/external_responses/set_participation?id=308191" autocomplete="off" />'
+            f'{divs}'
+            '<form class="new_quote_response" id="quote_response_new" action="https://vale.coupahost.com/quotes/external_responses" '
+            'accept-charset="UTF-8" method="post"><input name="utf8" type="hidden" value="&#x2713;" />'
+            '<input type="hidden" name="authenticity_token" value="TOKEN_FORM" autocomplete="off" />'
+            '<select name="participation" id="participation"><option value="true">Pretendo</option></select>'
+            '<textarea name="quote_supplier[decline_reason]"></textarea>'
+            '<input type="hidden" name="id" id="id" value="308191" autocomplete="off" />'
+            '<input type="hidden" name="terms" id="terms" autocomplete="off" />'
+            '<input type="submit" name="commit" value="Inserir resposta" id="quote_response_submit" /></form></body></html>')
+
+
+def http(corpo='', status=200, url=URL_TERMOS):
+    return {'status': status, 'url': url, 'corpo': corpo}
+
+
+EDITADO = 'https://vale.coupahost.com/quotes/external_responses/308191/edit?response_id=999'
+
+
+class RascunhoSemCliques(unittest.TestCase):
+    def test_le_a_tela_de_termos(self):
+        t = api_json.ler_tela_termos(tela_termos(termos=('11', '12')))
+        self.assertEqual(t['csrf'], 'TOKEN+META')
+        self.assertEqual(t['token_form'], 'TOKEN_FORM')
+        self.assertEqual(t['participacao']['estado'], 'awaiting')
+        self.assertTrue(t['participacao']['url'].endswith('set_participation?id=308191'))
+        self.assertEqual(t['termos'], ['11', '12'])
+        self.assertFalse(t['encerrado'])
+
+    def test_pretendo_e_inserir_resposta_sem_cliques(self):
+        nav = Navegador([http(tela_termos()), http('{}'), http('<html>', url=EDITADO)], url=URL_TERMOS)
+        self.assertEqual(api_json.criar_rascunho(nav, '308191'), EDITADO)
+        get, patch, post = nav.detalhes
+        self.assertEqual((get['metodo'], patch['metodo'], post['metodo']), ('GET', 'PATCH', 'POST'))
+        self.assertIn('set_participation?id=308191', patch['url'])
+        self.assertEqual(patch['corpo'], 'decline_reason=&participation=true')
+        self.assertEqual(patch['cab']['X-CSRF-Token'], 'TOKEN+META')
+        self.assertEqual(post['url'], 'https://vale.coupahost.com/quotes/external_responses')
+        for campo in ('authenticity_token=TOKEN_FORM', 'participation=true', 'id=308191', 'commit=Inserir+resposta'):
+            self.assertIn(campo, post['corpo'])
+
+    def test_intencao_ja_enviada_nao_repete_o_pretendo(self):
+        nav = Navegador([http(tela_termos(estado='intended')), http('<html>', url=EDITADO)], url=URL_TERMOS)
+        self.assertEqual(api_json.criar_rascunho(nav, '308191'), EDITADO)
+        self.assertEqual([d['metodo'] for d in nav.detalhes], ['GET', 'POST'])
+
+    def test_termos_sao_aceitos_antes_de_inserir(self):
+        nav = Navegador([http(tela_termos(termos=('11',))), http('{}'), http('{"all_terms_accepted": true}'),
+                         http('<html>', url=EDITADO)], url=URL_TERMOS)
+        self.assertEqual(api_json.criar_rascunho(nav, '308191'), EDITADO)
+        termos = nav.detalhes[2]
+        self.assertTrue(termos['url'].endswith('/set_terms_responses'))
+        self.assertIn('terms_responses%5B11%5D%5Baccepted%5D=true', termos['corpo'])
+        self.assertIn('terms=accepted', nav.detalhes[3]['corpo'])
+
+    def test_termo_recusado_nao_insere_resposta(self):
+        nav = Navegador([http(tela_termos(termos=('11',))), http('{}'), http('{"all_terms_accepted": false}')], url=URL_TERMOS)
+        self.assertIsNone(api_json.criar_rascunho(nav, '308191'))
+        self.assertNotIn('POST', [d['metodo'] for d in nav.detalhes])
+
+    def test_pretendo_recusado_nao_insere_resposta(self):
+        nav = Navegador([http(tela_termos()), http('', status=422)], url=URL_TERMOS)
+        self.assertIsNone(api_json.criar_rascunho(nav, '308191'))
+        self.assertEqual(len(nav.detalhes), 2)
+
+    def test_resposta_existente_e_reaproveitada_menos_na_negociacao(self):
+        nav = Navegador([http(tela_termos(resposta_existente='555'))], url=URL_TERMOS)
+        self.assertTrue(api_json.criar_rascunho(nav, '308191').endswith('response_id=555'))
+        self.assertEqual(len(nav.detalhes), 1)
+        nav = Navegador([http(tela_termos(resposta_existente='555')), http('{}'), http('<html>', url=EDITADO)], url=URL_TERMOS)
+        self.assertEqual(api_json.criar_rascunho(nav, '308191', reaproveitar=False), EDITADO)
+
+    def test_ja_na_edicao_nao_faz_pedido(self):
+        nav = Navegador([], url=URL_EDICAO)
+        self.assertEqual(api_json.criar_rascunho(nav, '307802'), URL_EDICAO)
+        self.assertEqual(nav.detalhes, [])
+
+    def test_fora_do_coupa_da_vale_nao_faz_pedido(self):
+        nav = Navegador([], url='https://supplier.coupahost.com/quotes/private_events/308191')
+        self.assertIsNone(api_json.criar_rascunho(nav, '308191'))
+        self.assertEqual(nav.detalhes, [])
+
+    def test_inserir_sem_redirecionar_para_a_edicao_devolve_none(self):
+        nav = Navegador([http(tela_termos()), http('{}'), http('<html>erro', url=URL_TERMOS)], url=URL_TERMOS)
+        self.assertIsNone(api_json.criar_rascunho(nav, '308191'))
+
+    def test_sessao_caida_ou_evento_encerrado_devolve_none(self):
+        login = http('<html>', url='https://vale.coupahost.com/sessions/supplier_login')
+        self.assertIsNone(api_json.criar_rascunho(Navegador([login], url=URL_TERMOS), '308191'))
+        fim = http('<h1>Este evento já terminou</h1>')
+        self.assertIsNone(api_json.criar_rascunho(Navegador([fim], url=URL_TERMOS), '308191'))
 
 
 if __name__ == '__main__':

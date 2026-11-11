@@ -65,6 +65,35 @@ OOPS_POR_PAUSA = 3
 PAUSA_OOPS_S = 600
 MAX_PAUSAS_OOPS = 3
 
+
+def data_da_lista(texto):
+    """Data do vencimento da lista do Coupa: '06/11/26' e '06/11/2026' são o mesmo dia. None se não for data."""
+    m = re.search(r'(\d{1,2})/(\d{1,2})/(\d{2,4})', str(texto or ''))
+    if not m:
+        return None
+    dia, mes, ano = (int(x) for x in m.groups())
+    if ano < 100:
+        ano += 2000
+    try:
+        return datetime(ano, mes, dia).date()
+    except ValueError:
+        return None
+
+
+def vencimento_reabriu(venc_lista, venc_salvo, hoje=None):
+    """O evento já gravado deve ser extraído de novo? Só se o vencimento mudou de verdade e ainda não passou.
+
+    Desde 07/11/2026 a lista mostra o ano com 4 dígitos ('06/11/2026') e o banco guardava '06/11/26': comparar
+    o texto reabria centenas de eventos sem mudança, inclusive vencidos, e cada um virava e-mail de erro."""
+    if not venc_lista or not venc_salvo:
+        return False
+    nova, antiga = data_da_lista(venc_lista), data_da_lista(venc_salvo)
+    if not nova or not antiga:
+        return str(venc_lista).strip() != str(venc_salvo).strip()
+    if nova == antiga:
+        return False
+    return nova >= (hoje or datetime.now().date())   # prazo novo já vencido: o evento fechou, não há o que tirar
+
 class ExtracaoMixin:
     def _obter_novo_link_evento(self, target_num):
         logger.info(f"🔍 Buscando novo link para o evento {target_num} no painel...")
@@ -361,10 +390,14 @@ class ExtracaoMixin:
             vencimento = venc_tabela if venc_tabela else "N/A"
             frete = "EXW"
 
+            # 0. PELA API: 'Pretendo', termos e 'Inserir resposta' pelos mesmos pedidos da tela, sem cliques.
+            #    Se algo fugir do esperado, segue pelos cliques abaixo, como antes.
+            entrou_nos_itens = self._rascunho_pela_api(num, is_negotiation)
+
             # 1. ACESSO DIRETO (PULANDO O 'PRETENDO' SE NãO FOR NEGOCIAÇãO)
-            entrou_nos_itens = False
-            
-            if not is_negotiation:
+            if entrou_nos_itens:
+                pass
+            elif not is_negotiation:
                 xpath_botoes_acesso = [
                     "//a[contains(., 'VENTURA COMERCIO VAREJISTA')]",
                     "//span[contains(text(), 'VENTURA COMERCIO VAREJISTA')]",
@@ -697,6 +730,29 @@ class ExtracaoMixin:
             linhas.append({'num': num, 'url': url, 'descricao': desc, 'venc_tabela': data_venc_tabela})
         return linhas, has_next
 
+    def _rascunho_pela_api(self, num, is_negotiation):
+        """Abre o rascunho de resposta criado pela API (bots/coupa/api_json.py). False = seguir pelos cliques."""
+        try:
+            edicao = api_json.criar_rascunho(self.driver, num, reaproveitar=not is_negotiation)
+        except Exception as e:
+            logger.warning(f"    Rascunho pela API falhou ({type(e).__name__}); seguindo pelos cliques.")
+            edicao = None
+        if not edicao:
+            return False
+        try:
+            self.driver.switch_to.default_content()
+            self.driver.get(edicao)   # a edição abre direto no Coupa da Vale (sem o frame do Supplier Portal)
+            WebDriverWait(self.driver, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, "div.s-itemsAndServicesLine"))
+        except Exception:
+            logger.warning("    Rascunho criado pela API, mas os itens não apareceram; seguindo pelos cliques.")
+            try:
+                self.driver.get(edicao)
+            except Exception:
+                pass
+            return False
+        logger.info("    Rascunho aberto pela API (sem cliques no 'Pretendo').")
+        return True
+
     def _itens_pela_api(self, num):
         """(itens, tem_anexo) pela API JSON dos itens do rascunho aberto. None = ler os itens pela tela."""
         try:
@@ -760,8 +816,8 @@ class ExtracaoMixin:
                             evento_salvo = self.db_eventos.get(num, {})
                             data_salva = evento_salvo.get("vencimento_tabela", "")
                             
-                            # Se tem data na tela, tem data no banco, e elas são diferentes: É UMA SEGUNDA CHANCE!
-                            if data_venc_tabela and data_salva and data_venc_tabela != data_salva:
+                            # Vencimento mudou de verdade (não só o formato) e ainda está aberto: É UMA SEGUNDA CHANCE!
+                            if vencimento_reabriu(data_venc_tabela, data_salva):
                                 logger.info(f"🔄 Evento {num} REABERTO! Data mudou de {data_salva} para {data_venc_tabela}.")
                                 re_extrair = True
                             else:

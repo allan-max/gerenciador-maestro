@@ -9,6 +9,7 @@ import html
 import json
 import logging
 import re
+from urllib.parse import urlencode
 
 logger = logging.getLogger("CoupaApp")
 
@@ -36,6 +37,39 @@ fetch(url, {headers: {'Accept': 'application/json', 'X-Requested-With': 'XMLHttp
 """
 
 
+_JS_REQUISICAO = """
+var url = arguments[0], ms = arguments[1], metodo = arguments[2], corpo = arguments[3], cab = arguments[4] || {};
+var fim = arguments[arguments.length - 1];
+var c = new AbortController();
+var t = setTimeout(function () { c.abort(); }, ms);
+var op = {method: metodo, headers: cab, credentials: 'same-origin', signal: c.signal, redirect: 'follow'};
+if (corpo !== null && corpo !== undefined) { op.body = corpo; }
+fetch(url, op)
+  .then(function (r) { return r.text().then(function (s) { fim({status: r.status, url: r.url, corpo: s}); }); })
+  .catch(function (e) { fim({erro: String(e)}); })
+  .finally(function () { clearTimeout(t); });
+"""
+
+
+def _sessao_caida(r):
+    u = str(r.get('url') or '')
+    return 'login' in u or '/sessions/' in u
+
+
+def requisitar(driver, url, timeout_s, metodo='GET', corpo=None, cabecalhos=None):
+    """Pedido HTTP pelo navegador do robô (mesma sessão). {status, url, corpo} ou None (erro de rede/timeout)."""
+    try:
+        driver.set_script_timeout(timeout_s + 10)
+        r = driver.execute_async_script(_JS_REQUISICAO, url, int(timeout_s * 1000), metodo, corpo, cabecalhos or {}) or {}
+    except Exception as e:
+        logger.warning(f"    API JSON: falha no {metodo} ({type(e).__name__}).")
+        return None
+    if r.get('erro'):
+        logger.warning(f"    API JSON: {metodo} falhou ({r.get('erro')}).")
+        return None
+    return r
+
+
 def buscar_json(driver, url, timeout_s):
     """GET pelo navegador do robô (mesma sessão). Devolve o JSON ou None (sessão caída, erro, não-JSON)."""
     try:
@@ -47,7 +81,7 @@ def buscar_json(driver, url, timeout_s):
     if r.get('erro') or r.get('status') != 200:
         logger.warning(f"    API JSON: resposta inválida ({r.get('erro') or r.get('status')}).")
         return None
-    if 'login' in str(r.get('url') or '') or '/sessions/' in str(r.get('url') or ''):
+    if _sessao_caida(r):
         logger.warning("    API JSON: sessão expirada (redirecionou para o login).")
         return None
     try:
@@ -249,3 +283,143 @@ def ler_itens(driver, evento, filtrar_desc=lambda t: t):
     if not itens or len(itens) != esperado or not all(item_completo(i) for i in itens):
         return None
     return itens, tem_anexo
+
+
+# ---------------------------------------------------------------- intenção e rascunho (sem cliques)
+# Os mesmos pedidos que a tela de termos faz (JS quote_external_responce, conferido em 10/11/2026):
+#   "Pretendo" + Enviar   -> PATCH set_participation?id=X  (participation=true)
+#   Termos (div.s-term)   -> PATCH set_terms_responses     (terms_responses[id][accepted]=true)
+#   Inserir resposta      -> POST  /quotes/external_responses (formulário; redireciona para edit?response_id=N)
+
+URL_TERMOS = ORIGEM + "/quotes/external_responses/{evento}/terms"
+URL_EDITAR = ORIGEM + "/quotes/external_responses/{evento}/edit?response_id={resposta}"
+URL_TERMOS_RESPOSTAS = ORIGEM + "/quotes/external_responses/set_terms_responses"
+URL_CRIAR_RESPOSTA = ORIGEM + "/quotes/external_responses"
+TIMEOUT_RASCUNHO_S = 40
+
+_CAB_HTML = {'Accept': 'text/html,application/xhtml+xml'}
+_FORM = 'application/x-www-form-urlencoded; charset=UTF-8'
+
+
+def _resposta_existente(html_ou_url, evento):
+    m = re.search(rf'/quotes/external_responses/{re.escape(str(evento))}/edit\?response_id=(\d+)', html_ou_url or '')
+    return m.group(1) if m else None
+
+
+def _atributo(tag, nome):
+    m = re.search(rf'\b{nome}="([^"]*)"', tag or '')
+    return html.unescape(m.group(1)) if m else None
+
+
+def _input(html_txt, nome):
+    """value do <input name=nome> (o atributo pode vir antes ou depois do name)."""
+    for tag in re.findall(r'<input\b[^>]*>', html_txt or ''):
+        if _atributo(tag, 'name') == nome:
+            return _atributo(tag, 'value') or ''
+    return None
+
+
+def ler_tela_termos(html_txt):
+    """O que a tela de termos traz para os pedidos: tokens, intenção atual, termos e o formulário da resposta."""
+    t = html_txt or ''
+    meta = re.search(r'<meta\s+name="csrf-token"\s+content="([^"]+)"', t)
+    form = None
+    for m in re.finditer(r'(<form\b[^>]*>)([\s\S]*?)</form>', t):
+        if re.search(r'action="[^"]*/quotes/external_responses"', m.group(1)) and (_atributo(m.group(1), 'method') or '').lower() == 'post':
+            form = m.group(2)
+            break
+    participacao = None
+    for tag in re.findall(r'<input\b[^>]*>', t):
+        if _atributo(tag, 'id') == 'existing_participation':
+            participacao = {'estado': _atributo(tag, 'value') or '', 'url': _atributo(tag, 'data-url') or ''}
+            break
+    termos = set()
+    for tag in re.findall(r'<div\b[^>]*>', t):
+        if re.search(r'\bs-term\b', _atributo(tag, 'class') or '') and _atributo(tag, 'data-id'):
+            termos.add(_atributo(tag, 'data-id'))
+    return {
+        'csrf': html.unescape(meta.group(1)) if meta else None,
+        'form': form,
+        'token_form': _input(form, 'authenticity_token') if form else None,
+        'termos_valor': (_input(form, 'terms') or '') if form else '',
+        'participacao': participacao,
+        'termos': sorted(termos),
+        'encerrado': 'já terminou' in t,
+    }
+
+
+def _ok(r):
+    return r is not None and 200 <= int(r.get('status') or 0) < 300 and not _sessao_caida(r)
+
+
+def criar_rascunho(driver, evento, reaproveitar=True):
+    """URL de edição do rascunho de resposta do evento, criando-o pelos pedidos da tela (sem cliques).
+
+    Precisa do go_to_csp já aberto (a sessão do Coupa fica presa no evento) e do navegador no frame do Coupa
+    da Vale. reaproveitar=False (rodada de negociação) não usa a resposta que já existe.
+    None = algo fugiu do esperado: quem chama segue pela tela, como antes."""
+    try:
+        endereco = str(driver.execute_script("return location.href") or '')
+    except Exception:
+        return None
+    if not endereco.startswith(ORIGEM):
+        return None
+    existente = _resposta_existente(endereco, evento)
+    if existente and reaproveitar:
+        return URL_EDITAR.format(evento=evento, resposta=existente)
+
+    r = requisitar(driver, URL_TERMOS.format(evento=evento), TIMEOUT_RASCUNHO_S, cabecalhos=_CAB_HTML)
+    if not _ok(r):
+        logger.info("    Rascunho pela API: tela de termos não respondeu.")
+        return None
+    existente = _resposta_existente(r.get('url'), evento) or _resposta_existente(r.get('corpo'), evento)
+    if existente and reaproveitar:
+        logger.info(f"    Rascunho pela API: resposta {existente} já existia.")
+        return URL_EDITAR.format(evento=evento, resposta=existente)
+
+    tela = ler_tela_termos(r.get('corpo'))
+    if tela['encerrado'] or not tela['form'] or not tela['token_form'] or not tela['csrf']:
+        logger.info("    Rascunho pela API: tela de termos sem o formulário da resposta.")
+        return None
+    cab = {'X-CSRF-Token': tela['csrf'], 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': _FORM,
+           'Accept': 'application/json, text/javascript, */*'}
+
+    # 1. "Pretendo" (o mesmo PATCH do botão Enviar)
+    part = tela['participacao']
+    if part and part['estado'] != 'intended':
+        if not part['url'].startswith(ORIGEM):
+            return None
+        r = requisitar(driver, part['url'], TIMEOUT_RASCUNHO_S, 'PATCH',
+                       urlencode([('decline_reason', ''), ('participation', 'true')]), cab)
+        if not _ok(r):
+            logger.warning(f"    Rascunho pela API: 'Pretendo' recusado ({r and r.get('status')}).")
+            return None
+        logger.info("    'Pretendo' enviado pela API.")
+
+    # 2. Termos e condições: aceita todos (a tela marca 'Sim' em cada um)
+    if tela['termos']:
+        pares = []
+        for t in tela['termos']:
+            pares += [(f'terms_responses[{t}][accepted]', 'true'), (f'terms_responses[{t}][comment]', '')]
+        r = requisitar(driver, URL_TERMOS_RESPOSTAS, TIMEOUT_RASCUNHO_S, 'PATCH', urlencode(pares), cab)
+        try:
+            aceitos = _ok(r) and json.loads(r.get('corpo') or '{}').get('all_terms_accepted') is True
+        except ValueError:
+            aceitos = False
+        if not aceitos:
+            logger.warning("    Rascunho pela API: termos não aceitos.")
+            return None
+        logger.info(f"    {len(tela['termos'])} termo(s) aceito(s) pela API.")
+
+    # 3. "Inserir resposta": o POST do formulário; o portal redireciona para a edição do rascunho
+    corpo = urlencode([('utf8', '✓'), ('authenticity_token', tela['token_form']), ('participation', 'true'),
+                       ('quote_supplier[decline_reason]', ''), ('id', str(evento)),
+                       ('terms', 'accepted' if tela['termos'] else tela['termos_valor']), ('commit', 'Inserir resposta')])
+    r = requisitar(driver, URL_CRIAR_RESPOSTA, TIMEOUT_RASCUNHO_S, 'POST', corpo,
+                   {'Content-Type': 'application/x-www-form-urlencoded', **_CAB_HTML})
+    nova = _resposta_existente(r.get('url'), evento) if _ok(r) else None
+    if not nova:
+        logger.warning(f"    Rascunho pela API: 'Inserir resposta' não criou o rascunho ({r and r.get('status')}).")
+        return None
+    logger.info(f"    Rascunho {nova} criado pela API.")
+    return URL_EDITAR.format(evento=evento, resposta=nova)
