@@ -7,7 +7,7 @@ import urllib.parse
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from bots.termos_participacao import aceitar_termos
+from bots.termos_participacao import aceitar_termos, termos_pendentes
 
 
 def _termo(data_id, marcado=False, desabilitado=False):
@@ -77,6 +77,34 @@ class TestAceitarTermosNoChrome(unittest.TestCase):
         self.abrir(_termo(124363, marcado=True, desabilitado=True))
         self.assertEqual(aceitar_termos(self.driver), 0)
         self.assertEqual(self.marcados(), ['term_124363_true'])
+
+    def test_sim_com_valor_fora_do_padrao(self):
+        # o "Sim" com value="Sim" (sem a classe s-termAccept) travava o evento
+        html = _termo(5).replace('value="true" class="s-termAccept"', 'value="Sim"').replace('class="s-termReject"', '')
+        self.abrir(html)
+        self.assertEqual(aceitar_termos(self.driver), 1)
+        self.assertEqual(self.marcados(), ['term_5_true'])
+        self.assertEqual(termos_pendentes(self.driver), 0)
+
+    def test_sim_reconhecido_so_pelo_rotulo(self):
+        html = _termo(6).replace('value="true" class="s-termAccept"', 'value="A"').replace(
+            'value="false" class="s-termReject"', 'value="B"')
+        self.abrir(html)
+        self.assertEqual(aceitar_termos(self.driver), 1)
+        self.assertEqual(self.marcados(), ['term_6_true'])
+
+    def test_nunca_marca_o_nao(self):
+        html = _termo(7).replace('value="true" class="s-termAccept"', 'value="x"').replace(' Sim\n', ' Concordo\n')
+        self.abrir(html)
+        self.assertEqual(aceitar_termos(self.driver), 0)
+        self.assertEqual(self.marcados(), [])
+        self.assertEqual(termos_pendentes(self.driver), 1)
+
+    def test_termos_pendentes_conta_os_sem_sim(self):
+        self.abrir(_termo(8) + _termo(9, marcado=True))
+        self.assertEqual(termos_pendentes(self.driver), 1)
+        aceitar_termos(self.driver)
+        self.assertEqual(termos_pendentes(self.driver), 0)
 
     def test_sem_termos_nao_faz_nada(self):
         self.abrir('<select id="participation"><option value="true">Pretendo</option></select>')

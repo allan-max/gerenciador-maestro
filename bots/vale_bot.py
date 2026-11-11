@@ -37,7 +37,7 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import NoAlertPresentException
-from bots.termos_participacao import aceitar_termos
+from bots.termos_participacao import aceitar_termos, termos_pendentes
 from selenium.webdriver.common.action_chains import ActionChains
 
 from docx import Document
@@ -188,7 +188,7 @@ class ValeScraper(RespostaMixin):
         return num in self.db_eventos
 
     def setup_driver(self):
-        logger.info("ðŸš— Configurando Navegador...")
+        logger.info("🚗 Configurando Navegador...")
         ops = Options()
         ops.add_argument("--no-sandbox")
         ops.add_argument("--disable-dev-shm-usage")
@@ -214,7 +214,7 @@ class ValeScraper(RespostaMixin):
         #==============================================
         self.memoria_associativa = {}
         
-        # === 1. VARIÃVEL E OUVINTE DO OTP ===
+        # === 1. VARIÁVEL E OUVINTE DO OTP ===
         self.otp_atual = None 
         
         @self.sio.on('receber_otp_frontend')
@@ -246,7 +246,7 @@ class ValeScraper(RespostaMixin):
         except Exception as e: 
             logger.error(f" Erro Crítico na Tarefa: {e}")
 
-    # ============================ 1. LOGIN HÃBRIDO ============================
+    # ============================ 1. LOGIN HÍBRIDO ============================
     def fazer_login_hibrido(self):
         logger.info(" Iniciando Login Inteligente. Acompanhe pelo Painel Web!")
         try:
@@ -416,7 +416,7 @@ class ValeScraper(RespostaMixin):
                     if inicio_captcha is not None:
                         parar_transmissao(self)
                         self.sio.emit('captcha_resolvido_do_robo', {'resolvido': True})
-                    # MUDANÃ‡A: Adicionado o id='login_button' na varredura
+                    # MUDANÇA: Adicionado o id='login_button' na varredura
                     botoes = self.driver.find_elements(By.XPATH, "//button[@type='submit' or @id='login-submit' or @id='login_button']")
                     for btn in botoes:
                         if btn.is_displayed() or self.driver.execute_script("return arguments[0].offsetWidth > 0;", btn):
@@ -436,14 +436,14 @@ class ValeScraper(RespostaMixin):
                     valor_atual = self.driver.execute_script("return arguments[0].value;", campo) or ""
                     
                     if visivel and valor_atual.strip() == "":
-                        logger.info("ðŸ“§ Injetando E-mail...")
+                        logger.info("📧 Injetando E-mail...")
                         try: campo.clear(); campo.send_keys(email)
                         except: self.driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", campo, email)
                         email_encontrado_e_vazio = True
                         break
                         
                 if email_encontrado_e_vazio:
-                    # MUDANÃ‡A: Adicionado o id='login_button' na varredura
+                    # MUDANÇA: Adicionado o id='login_button' na varredura
                     botoes = self.driver.find_elements(By.XPATH, "//button[@type='submit' or @id='login-submit' or @id='login_button']")
                     for btn in botoes:
                         if btn.is_displayed() or self.driver.execute_script("return arguments[0].offsetWidth > 0;", btn):
@@ -484,7 +484,7 @@ class ValeScraper(RespostaMixin):
                             break
 
                 if senha_encontrada:
-                    # MUDANÃ‡A: Adicionado o id='login_button' na varredura
+                    # MUDANÇA: Adicionado o id='login_button' na varredura
                     botoes = self.driver.find_elements(By.XPATH, "//button[@type='submit' or @id='login-submit' or @id='login_button']")
                     if not botoes and dentro_de_iframe:
                         self.driver.switch_to.default_content()
@@ -501,7 +501,7 @@ class ValeScraper(RespostaMixin):
 
                 if dentro_de_iframe: self.driver.switch_to.default_content()
 
-                # --- D. BOTÃƒO AZUL TEIMOSO (A NOVA TRAVA DE SEGURANÃ‡A) ---
+                # --- D. BOTÃO AZUL TEIMOSO (A NOVA TRAVA DE SEGURANÇA) ---
                 # Se o bot preencheu tudo, mas a tela não avançou e o botão "Log in" está moscando lá:
                 if not captcha_pendente and (time.time() - ultimo_clique_botao > 5):
                     botoes_esquecidos = self.driver.find_elements(By.XPATH, "//button[@type='submit' or @id='login-submit' or @id='login_button']")
@@ -586,7 +586,7 @@ class ValeScraper(RespostaMixin):
             self.sio.emit('tarefa_concluida', {'evento': 'Login do Robo', 'sucesso': False, 'erro': msg})
             return
         log_robos.configurar(logger, 'log-vale.txt')   # o servidor podia estar fora quando o módulo foi importado
-        logger.info(" INICIANDO ROBÃ” (FASE 1: PREPARAÃ‡ÃƒO E LOGIN)...")
+        logger.info(" INICIANDO ROBÔ (FASE 1: PREPARAÇÃO E LOGIN)...")
         self.verificar_acesso_pastas()
         self.carregar_banco_dados()
         try:
@@ -594,8 +594,8 @@ class ValeScraper(RespostaMixin):
             if self.fazer_login_hibrido():
                 logger.info("✅ Robo pronto para receber tarefas da nuvem.")
                 self.is_ready = True
-                # Avisa a Nuvem que o login acabou e libera os botÃµes na tela do site!
-                self.sio.emit('tarefa_concluida', {'evento': 'Login do RobÃ´', 'sucesso': True})
+                # Avisa a Nuvem que o login acabou e libera os botões na tela do site!
+                self.sio.emit('tarefa_concluida', {'evento': 'Login do Robô', 'sucesso': True})
         except Exception as e: 
             logger.error(f" Erro Crítico no Login: {e}")
             try:
@@ -608,11 +608,11 @@ class ValeScraper(RespostaMixin):
 
 {traceback.format_exc()}""")
             except: pass
-            self.sio.emit('tarefa_concluida', {'evento': 'Login do RobÃ´', 'sucesso': False, 'erro': str(e)})
+            self.sio.emit('tarefa_concluida', {'evento': 'Login do Robô', 'sucesso': False, 'erro': str(e)})
 
     # ============================ 2. DROPDOWN VALE BASE METALS ============================
     def selecionar_cliente_vale_base_metals(self):
-        logger.info("ðŸ¢ Selecionando o cliente 'Vale Base Metals' no dropdown...")
+        logger.info("🏢 Selecionando o cliente 'Vale Base Metals' no dropdown...")
         try:
             input_cliente = self.wait.until(EC.presence_of_element_located((By.ID, "customersList_1")))
             self.driver.execute_script("arguments[0].click();", input_cliente)
@@ -626,7 +626,7 @@ class ValeScraper(RespostaMixin):
         except Exception as e:
             logger.warning(f"    Cliente não encontrado ou já está selecionado.")
 
-    # ============================ 3. VARREDURA (LISTA E PAGINAÃ‡ÃƒO) ============================
+    # ============================ 3. VARREDURA (LISTA E PAGINAÇÃO) ============================
     def _pausa_por_oops(self):
         """Conta telas 'Oops' seguidas. A cada OOPS_POR_PAUSA pausa PAUSA_OOPS_S; passou de MAX_PAUSAS_OOPS,
         abandona o ciclo (liga a parada e guarda o motivo). Devolve True quando é para parar de tentar."""
@@ -672,7 +672,7 @@ class ValeScraper(RespostaMixin):
             self.selecionar_cliente_vale_base_metals()
             
             # 3. Mudar para 90 itens por página
-            logger.info("ðŸ”Ž Mudando para 90 resultados por página...")
+            logger.info("🔎 Mudando para 90 resultados por página...")
             try:
                 btn_90 = self.wait.until(EC.element_to_be_clickable((By.XPATH, "//button[.//span[text()='90']]")))
                 self.driver.execute_script("arguments[0].click();", btn_90)
@@ -685,7 +685,7 @@ class ValeScraper(RespostaMixin):
             paginas_vazias_seguidas = 0
             while True:
                 if self.solicitacao_parada: break
-                logger.info(f"ðŸ“„ Analisando Página {pag}...")
+                logger.info(f"📄 Analisando Página {pag}...")
                 
                 try: self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "tr.coupaTable__row")))
                 except: logger.info("Nenhuma linha encontrada."); break
@@ -799,7 +799,7 @@ class ValeScraper(RespostaMixin):
                 # 5. Ir para a próxima página
                 pag += 1
                 try:
-                    # Busca o botão com o número da PRÃ“XIMA página
+                    # Busca o botão com o número da PRÓXIMA página
                     btn_next = self.driver.find_element(By.XPATH, f"//button[.//span[text()='{pag}']]")
                     
                     # Se ele estiver desativado ou for a página atual, terminamos.
@@ -845,7 +845,7 @@ class ValeScraper(RespostaMixin):
             logger_inst=logger
         )
 
-    # ============================ 4. EXTRAÃ‡ÃƒO DO EVENTO (Interno) ============================
+    # ============================ 4. EXTRAÇÃO DO EVENTO (Interno) ============================
     def _filter_desc(self, t):
         if "PT ||" in t:
             try:
@@ -861,7 +861,7 @@ class ValeScraper(RespostaMixin):
         p = [x.strip() for x in t.split('-')]
         ufs = {"AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"}
         
-        # LÃª de trás para a frente procurando o Estado (UF)
+        # Lê de trás para a frente procurando o Estado (UF)
         for i in range(len(p)-1, 0, -1):
             if p[i].upper().replace(".", "") in ufs:
                 c = p[i-1]
@@ -926,9 +926,13 @@ class ValeScraper(RespostaMixin):
         if m_coupa:
             p1, p2, p3 = int(m_coupa.group(1)), int(m_coupa.group(2)), int(m_coupa.group(3))
             ano = p3 if p3 >= 1000 else (2000 + p3 if p3 < 100 else p3)
+            # Sem AM/PM a tela está em português (dia/mês), igual a "04/05/2026" acima; com AM/PM é o formato
+            # americano (mês/dia). Antes "4/5/2026" virava 05/04 e "04/05/2026" ficava 04/05.
+            americano = bool(m_coupa.group(6))
             if p1 > 12: dia, mes = p1, p2
             elif p2 > 12: dia, mes = p2, p1
-            else: mes, dia = p1, p2
+            elif americano: mes, dia = p1, p2
+            else: dia, mes = p1, p2
             hora_str = ""
             if m_coupa.group(4) and m_coupa.group(5):
                 h = int(m_coupa.group(4))
@@ -1244,7 +1248,7 @@ class ValeScraper(RespostaMixin):
             except Exception: pass
 
             if self.driver.find_elements(By.XPATH, "//h1[contains(text(), 'já terminou')]"):
-                logger.warning("   âš ï¸ Evento encerrado."); self.driver.switch_to.default_content(); return "ENCERRADO"
+                logger.warning("   ⚠️ Evento encerrado."); self.driver.switch_to.default_content(); return "ENCERRADO"
 
             req = "N/A"
             try: 
@@ -1265,7 +1269,7 @@ class ValeScraper(RespostaMixin):
             frete = "EXW"
 
             # ==========================================================
-            # 3. ACESSO DIRETO (PULANDO O 'PRETENDO' SE NÃƒO FOR NEGOCIAÃ‡ÃƒO)
+            # 3. ACESSO DIRETO (PULANDO O 'PRETENDO' SE NÃO FOR NEGOCIAÇÃO)
             # ==========================================================
             entrou_nos_itens = False
             
@@ -1283,7 +1287,7 @@ class ValeScraper(RespostaMixin):
                     botoes = self.driver.find_elements(By.XPATH, xpath)
                     for b in botoes:
                         if b.is_displayed() or self.driver.execute_script("return arguments[0].offsetWidth > 0;", b):
-                            logger.info(f"   ðŸŽ¯ Resposta/Rascunho detectado! Pulando o 'Pretendo'.")
+                            logger.info(f"   🎯 Resposta/Rascunho detectado! Pulando o 'Pretendo'.")
                             self.driver.execute_script("arguments[0].click();", b)
                             time.sleep(4)
                             entrou_nos_itens = True
@@ -1293,7 +1297,7 @@ class ValeScraper(RespostaMixin):
                 logger.info("    Rodada de Negociação detectada! Forçando novo aceite...")
 
             # ==========================================================
-            # 4. SE Ã‰ NEGOCIAÃ‡ÃƒO OU NÃƒO TEM RASCUNHO, FAZ O ACEITE NORMAL
+            # 4. SE É NEGOCIAÇÃO OU NÃO TEM RASCUNHO, FAZ O ACEITE NORMAL
             # ==========================================================
             if not entrou_nos_itens:
                 # "Aceita os Termos e condições?" (div.s-term): marca o Sim de cada termo antes do Pretendo
@@ -1433,6 +1437,9 @@ class ValeScraper(RespostaMixin):
                     logger.warning(f"    ⚠️ Falha na validação do evento {num} (Tentativa {tentativa}/{MAX_TENTATIVAS_ITENS}): {motivo}")
 
             if not itens_validados:
+                pendentes_termo = termos_pendentes(self.driver)
+                if pendentes_termo:
+                    ultimo_motivo_invalido += f" | {pendentes_termo} termo(s) e condições sem o 'Sim' (o portal recusa o 'Pretendo')"
                 logger.error(f"   ❌ FALHA DEFINITIVA: Evento {num} persistiu sem itens válidos após {MAX_TENTATIVAS_ITENS} tentativas! ({ultimo_motivo_invalido})")
                 self.relatorio_email_stats.setdefault('eventos_sem_itens', []).append(num)
                 if teve_expected_quantity:
@@ -1518,7 +1525,7 @@ class ValeScraper(RespostaMixin):
             logger.exception(f"Rascunho salvo no portal, mas não deu para marcar {evento} como RASCUNHO no banco")
 
 
-    # ============================ 6. GERAÃ‡ÃƒO DE WORD / EXCEL ============================
+    # ============================ 6. GERAÇÃO DE WORD / EXCEL ============================
     def gerar_word(self):
         if not self.dados_processados_lote: return
         logger.info("\n GERANDO DOCUMENTOS WORD (Agrupados por Data e Complexidade)...")
@@ -1654,7 +1661,7 @@ class ValeScraper(RespostaMixin):
             self.salvar_doc(lote_hw, self.PASTA_RELATORIOS, "HARDWARE_Eventos", mensagem_final=adicionar_mensagem_hardware)
             validos_para_excel.extend(lote_hw)
 
-        # PadrÃµes: Salva agrupado por data, no máximo 5 por arquivo
+        # Padrões: Salva agrupado por data, no máximo 5 por arquivo
         for data, eventos in agrupados_por_data.items():
             data_limpa = data.replace('/', '-') # Troca a / por - para o Windows não dar erro no nome do arquivo
             
@@ -1714,7 +1721,7 @@ class ValeScraper(RespostaMixin):
                     p_linha.paragraph_format.space_before = Pt(10)
                 
                 if ev.get('marca_bloqueada'): 
-                    r = doc.add_paragraph().add_run(f"âš ï¸ BLOQUEADO: {ev['marca_bloqueada']}")
+                    r = doc.add_paragraph().add_run(f"⚠️ BLOQUEADO: {ev['marca_bloqueada']}")
                     r.bold = True; r.font.color.rgb = RGBColor(255,0,0)
                 
                 p_cabecalho = doc.add_paragraph()
@@ -1739,7 +1746,7 @@ class ValeScraper(RespostaMixin):
                         p_titulo.add_run(f" {item['titulo']}")
                         
                         p_desc = doc.add_paragraph()
-                        p_desc.add_run("DESCRIÃ‡ÃƒO:\n").bold = True
+                        p_desc.add_run("DESCRIÇÃO:\n").bold = True
                         p_desc.add_run(f"{item['descricao']}")
                     else:
                         p_titulo.add_run(f"ITEM {item['item_num']}: ").bold = True
@@ -2132,7 +2139,7 @@ class ValeScraper(RespostaMixin):
                         self.relatorio_email_stats['erros_planilha'].append(ev['numero_evento'])
             return False
     # ========================================================
-    # 8. VERIFICAÃ‡ÃƒO DE EVENTOS (COM GESTÃƒO DE NOVA ABA)
+    # 8. VERIFICAÇÃO DE EVENTOS (COM GESTÃO DE NOVA ABA)
     # ========================================================
     def verificar_eventos(self):
         """Lê a coluna de respostas enviadas (precisa do OTP) e aplica planilha_manager.novo_status nas cotações da Vale.
