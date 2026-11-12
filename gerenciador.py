@@ -1142,6 +1142,13 @@ def comando_para_robo(dados):
             threading.Thread(target=desligar_comprasgov, daemon=True).start()
         return
 
+    if portal == 'arcelormittal':
+        if modo == 'ligar_robo':
+            threading.Thread(target=ligar_arcelormittal, daemon=True).start()
+        elif modo == 'desligar_robo':
+            threading.Thread(target=desligar_arcelormittal, daemon=True).start()
+        return
+
     if portal == 'me':
         if modo == 'extrair':
             if me_esta_rodando():
@@ -1755,6 +1762,116 @@ def vigiar_comprasgov(intervalo_s=5, reenvio_s=60):
 @sio.on('pedir_estado_comprasgov')
 def responder_estado_comprasgov(dados=None):
     sio.emit('sincronizar_estado_comprasgov', {'status': 'ligado' if comprasgov_esta_rodando() else estado_comprasgov})
+
+
+# ========================================================
+# 🔥 ARCELORMITTAL (ROBÔ .NET VIA "dotnet run")
+# ========================================================
+PASTA_ARCELORMITTAL_PADRAO = r"C:\Users\Administrator\Desktop\SAP_ArcellorMittal\SAP_ArcellorMittal"
+TITULO_JANELA_ARCELORMITTAL = "ROBO_ARCELORMITTAL"
+bot_arcelormittal = None            # Popen do cmd.exe aberto pelo gerenciador
+estado_arcelormittal = 'desligado'  # último estado enviado ao portal
+
+
+def obter_pasta_arcelormittal():
+    return CONFIG_GLOBAL.get("caminho_arcelormittal") or PASTA_ARCELORMITTAL_PADRAO
+
+
+def processos_arcelormittal():
+    """Processos do robô ArcelorMittal rodando: o 'dotnet run' da pasta do projeto e o executável que ele compila."""
+    return processos_robos.processos_dotnet(obter_pasta_arcelormittal(), termos_cmd=('sap_arcellormittal',))
+
+
+def arcelormittal_esta_rodando():
+    try:
+        return bool(processos_arcelormittal())
+    except Exception as e:
+        logger.debug(f"Erro ao checar processo do ArcelorMittal: {e}")
+        return False
+
+
+def _emitir_estado_arcelormittal(status, mensagem=None):
+    global estado_arcelormittal
+    estado_arcelormittal = status
+    sio.emit('sincronizar_estado_arcelormittal', {'status': status})
+    if mensagem:
+        sio.emit('relatar_progresso_arcelormittal', {'mensagem': mensagem})
+
+
+def ligar_arcelormittal():
+    global bot_arcelormittal
+    if arcelormittal_esta_rodando():
+        _emitir_estado_arcelormittal('ligado', '⚠️ O robô ArcelorMittal já está rodando.')
+        return
+    pasta = obter_pasta_arcelormittal()
+    if not os.path.isdir(pasta):
+        msg = f"Pasta do ArcelorMittal não encontrada: {pasta}"
+        logger.error(msg)
+        _emitir_estado_arcelormittal('desligado', f"❌ {msg}")
+        return
+    # Janela antiga (robô que caiu com o cmd aberto) não fica acumulando
+    if bot_arcelormittal is not None and bot_arcelormittal.poll() is None:
+        os.system(f"taskkill /F /T /PID {bot_arcelormittal.pid} >nul 2>&1")
+    try:
+        _emitir_estado_arcelormittal('iniciando', f"🚀 Abrindo o cmd em {pasta} e executando 'dotnet run'...")
+        # /k: se o robô cair, a janela fica aberta mostrando o erro
+        bot_arcelormittal = subprocess.Popen(
+            f'cmd.exe /k "title {TITULO_JANELA_ARCELORMITTAL} & dotnet run"',
+            cwd=pasta,
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+        )
+        eventos.registrar('arcelormittal', 'ciclo', 'ok', 'Robô ArcelorMittal iniciado (dotnet run)')
+    except Exception as e:
+        logger.error(f"Erro ao iniciar o ArcelorMittal: {e}")
+        eventos.registrar('arcelormittal', 'ciclo', 'erro', f'Falha ao iniciar o ArcelorMittal: {e}')
+        bot_arcelormittal = None
+        _emitir_estado_arcelormittal('desligado', f"❌ Falha ao iniciar: {e}")
+
+
+def desligar_arcelormittal():
+    global bot_arcelormittal
+    sio.emit('relatar_progresso_arcelormittal', {'mensagem': '🛑 Encerrando o robô ArcelorMittal...'})
+    if bot_arcelormittal is not None:
+        os.system(f"taskkill /F /T /PID {bot_arcelormittal.pid} >nul 2>&1")
+        bot_arcelormittal = None
+    # Também derruba o que foi aberto à mão (fora do gerenciador)
+    try:
+        processos_robos.matar(processos_arcelormittal())
+    except Exception as e:
+        logger.warning(f"Erro ao encerrar processos do ArcelorMittal: {e}")
+    eventos.registrar('arcelormittal', 'ciclo', 'info', 'Robô ArcelorMittal desligado')
+    _emitir_estado_arcelormittal('desligado', '⏹️ Robô ArcelorMittal desligado.')
+
+
+def vigiar_arcelormittal(intervalo_s=5, reenvio_s=60):
+    """Checa se há 'dotnet run' do ArcelorMittal rodando e mantém o botão do portal no estado real."""
+    ultimo_envio = 0.0
+    while True:
+        try:
+            rodando = arcelormittal_esta_rodando()
+            if rodando:
+                novo = 'ligado'
+            elif estado_arcelormittal == 'iniciando' and bot_arcelormittal is not None and bot_arcelormittal.poll() is None:
+                novo = 'iniciando'   # cmd aberto, dotnet ainda subindo
+            else:
+                novo = 'desligado'
+            agora = time.time()
+            if novo != estado_arcelormittal:
+                msg = {'ligado': '✅ Robô ArcelorMittal rodando.',
+                       'desligado': '⏹️ Robô ArcelorMittal não está mais rodando.'}.get(novo)
+                _emitir_estado_arcelormittal(novo, msg)
+                ultimo_envio = agora
+            elif agora - ultimo_envio >= reenvio_s:   # portal reiniciado não fica com o botão errado
+                sio.emit('sincronizar_estado_arcelormittal', {'status': novo})
+                ultimo_envio = agora
+        except Exception as e:
+            logger.debug(f"Vigia do ArcelorMittal: {e}")
+        time.sleep(intervalo_s)
+
+
+@sio.on('pedir_estado_arcelormittal')
+def responder_estado_arcelormittal(dados=None):
+    sio.emit('sincronizar_estado_arcelormittal', {'status': 'ligado' if arcelormittal_esta_rodando() else estado_arcelormittal})
 
 
 # ========================================================
@@ -3352,6 +3469,7 @@ if __name__ == '__main__':
     threading.Thread(target=loop_agendamento, daemon=True).start()
     threading.Thread(target=loop_metricas_servidor, daemon=True).start()
     threading.Thread(target=vigiar_comprasgov, daemon=True).start()
+    threading.Thread(target=vigiar_arcelormittal, daemon=True).start()
     threading.Thread(target=vigiar_robos, daemon=True).start()
     backup_inicial()
     # Portal fora do ar na partida (reinício do Site-Maestro, reboot) não fecha o gerenciador: tenta até conectar.
