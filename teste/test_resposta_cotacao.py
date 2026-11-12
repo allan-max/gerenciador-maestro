@@ -1005,6 +1005,64 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
             'Deve sincronizar o _valueTracker do React/Coupa para garantir que o prazo não seja apagado ao salvar'
         )
 
+    def test_anexo_topo_espera_portal_confirmar_upload_e_avisa_quando_nao_confirma(self):
+        import os
+        import re
+        from selenium.webdriver.common.by import By
+        from test_fase0 import LOGGER, Relogio, carregar
+
+        raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
+        ns = carregar(raiz / 'bots/coupa/mixins/resposta.py', {'RespostaMixin'}, os=os, re=re, time=Relogio(), By=By)
+
+        class Bloco:
+            def __init__(self):
+                self.concluidos = 0
+                self.input = None
+            def find_elements(self, by, value):
+                return [self.input] if 'file' in value else []
+
+        class InputArquivo:
+            def __init__(self, bloco, confirma):
+                self.bloco, self.confirma, self.envios = bloco, confirma, []
+            def send_keys(self, v):
+                self.envios.append(v)
+                if self.confirma:
+                    self.bloco.concluidos += 1   # o portal lista o arquivo (li.attachment)
+
+        class Driver:
+            def __init__(self, bloco):
+                self.bloco = bloco
+            def execute_script(self, s, *a):
+                if 'closest' in s:
+                    return self.bloco
+                if 'li.attachment' in s:
+                    return {'concluidos': self.bloco.concluidos, 'andamento': 0}
+                return None
+            def find_elements(self, by, value):
+                return [self.bloco.input] if "attachment[file]" in value else []
+
+        bot = type('Bot', (ns['RespostaMixin'],), {})()
+        bot._limpar_anexos_topo_campo = lambda i, n: None
+        bot._marcar_containers_anexo_topo = lambda: []
+        with patch.object(LOGGER, 'handle'):
+            # Portal confirma: anexa uma vez e não registra falha
+            bloco_ok = Bloco()
+            bloco_ok.input = InputArquivo(bloco_ok, confirma=True)
+            bot.driver = Driver(bloco_ok)
+            bot._anexos_nao_confirmados = []
+            bot._anexar_arquivos_topo_campo(0, ['/tmp/DAV_123.pdf'], 'DAV')
+            self.assertEqual(bloco_ok.input.envios, ['/tmp/DAV_123.pdf'])
+            self.assertEqual(bot._anexos_nao_confirmados, [])
+
+            # Portal nunca confirma: tenta de novo e registra o DAV como não anexado
+            bloco_ruim = Bloco()
+            bloco_ruim.input = InputArquivo(bloco_ruim, confirma=False)
+            bot.driver = Driver(bloco_ruim)
+            bot._anexos_nao_confirmados = []
+            bot._anexar_arquivos_topo_campo(1, ['/tmp/DAV_456.pdf'], 'DAV')
+            self.assertEqual(bloco_ruim.input.envios, ['/tmp/DAV_456.pdf', '/tmp/DAV_456.pdf'])
+            self.assertEqual(bot._anexos_nao_confirmados, ['DAV (DAV_456.pdf)'])
+
     def test_anexo_topo_escolhe_campo_pelo_titulo_vale_e_vale_base_metais(self):
         import re
         from selenium.webdriver.common.by import By

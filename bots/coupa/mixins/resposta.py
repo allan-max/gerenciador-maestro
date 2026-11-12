@@ -1034,6 +1034,23 @@ class RespostaMixin:
             except Exception:
                 pass
 
+            # 4.1 ICMS ST (%) (Vale normal: custom_field_5, sempre 0)
+            try:
+                inp_icms_st = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_5")
+                if inp_icms_st:
+                    val = self._obter_valor_input(inp_icms_st[0])
+                    resultado['ICMS ST (%)'] = {
+                        'nome': 'ICMS ST (%)',
+                        'elemento': inp_icms_st[0],
+                        'vazio': (val == ""),
+                        'invalido_portal': self._campo_tem_erro_portal(inp_icms_st[0]),
+                        'valor_atual': val,
+                        'valor_alvo': "0",
+                        'tipo': 'cf'
+                    }
+            except Exception:
+                pass
+
             # 5. ISS (%)
             try:
                 inp_iss = linha.find_elements(By.CSS_SELECTOR, "input.s-custom_field_3")
@@ -1812,9 +1829,13 @@ class RespostaMixin:
                         pass
 
                 if inp_alvo is not None:
+                    escopo_it = self._escopo_do_anexo(inp_alvo)
+                    antes_it = self._estado_anexos(escopo_it)
                     inp_alvo.send_keys(path)
-                    logger.info(f"      ✅ Datasheet anexado no Item {idx+1}: {os.path.basename(path)}")
-                    time.sleep(3.5)
+                    if self._aguardar_anexo_concluido(escopo_it, antes_it, f"Datasheet do Item {idx+1}"):
+                        logger.info(f"      ✅ Datasheet anexado no Item {idx+1}: {os.path.basename(path)}")
+                    else:
+                        self._registrar_anexo_nao_confirmado(f"Datasheet do Item {idx+1}", path)
 
                     # Se abriu um modal de anexo com botão de confirmação/upload, clica para concluir
                     try:
@@ -2108,11 +2129,103 @@ class RespostaMixin:
                             self.driver.execute_script("try { arguments[0].value = ''; } catch(e) {}", inp_alvo)
                         except Exception:
                             pass
+                    escopo = self._escopo_do_anexo(inp_alvo)
+                    antes = self._estado_anexos(escopo)
                     inp_alvo.send_keys(path)
-                    logger.info(f"   ✅ {nome_campo} ({idx_arq + 1}/{len(arquivos_validos)}) anexado: {os.path.basename(path)}")
-                    time.sleep(4)
+                    rotulo = f"{nome_campo} ({idx_arq + 1}/{len(arquivos_validos)})"
+                    if self._aguardar_anexo_concluido(escopo, antes, rotulo):
+                        logger.info(f"   ✅ {rotulo} anexado: {os.path.basename(path)}")
+                    else:
+                        # Segunda tentativa no input atual do mesmo campo (o uploader pode ter trocado o elemento)
+                        logger.warning(f"   🔁 {rotulo} sem confirmação do portal. Tentando anexar de novo...")
+                        try:
+                            novos = escopo.find_elements(By.CSS_SELECTOR, "input[type='file']") if escopo is not None else []
+                            inp_retry = novos[-1] if novos else inp_alvo
+                            self.driver.execute_script("try { arguments[0].value = ''; } catch(e) {}", inp_retry)
+                            antes = self._estado_anexos(escopo)
+                            inp_retry.send_keys(path)
+                        except Exception as e_retry:
+                            logger.warning(f"   ⚠️ Erro na nova tentativa de anexar {rotulo}: {e_retry}")
+                        if self._aguardar_anexo_concluido(escopo, antes, rotulo):
+                            logger.info(f"   ✅ {rotulo} anexado na 2ª tentativa: {os.path.basename(path)}")
+                        else:
+                            self._registrar_anexo_nao_confirmado(nome_campo, path)
+                else:
+                    logger.warning(f"   ⚠️ Campo de anexo do {nome_campo} não encontrado no topo.")
+                    self._registrar_anexo_nao_confirmado(nome_campo, path)
             except Exception as e:
                 logger.warning(f" Erro ao anexar {nome_campo} ({path}): {e}")
+                self._registrar_anexo_nao_confirmado(nome_campo, path)
+
+    def _escopo_do_anexo(self, inp):
+        """Bloco do campo de anexo onde o portal lista os arquivos enviados (div.quote_attachment / div.file_upload)."""
+        try:
+            el = self.driver.execute_script(
+                "const i = arguments[0];"
+                "return i && i.closest ? (i.closest('div.quote_attachment') || i.closest('div.file_upload')"
+                " || i.closest('.s-itemsAndServicesLine') || i.closest('div.field')) : null;",
+                inp
+            )
+            return el if hasattr(el, 'find_elements') else None
+        except Exception:
+            return None
+
+    def _estado_anexos(self, escopo):
+        """
+        {'concluidos': nº de <li class="attachment" id="attachment_N"> no bloco, 'andamento': uploads visíveis em curso}.
+        None quando não dá para medir (sem bloco ou driver sem suporte): aí não bloqueia o fluxo.
+        """
+        if escopo is None:
+            return None
+        try:
+            r = self.driver.execute_script("""
+                const b = arguments[0];
+                if (!b || !b.querySelectorAll) return null;
+                const visivel = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+                const concluidos = b.querySelectorAll("li.attachment[id^='attachment_']").length;
+                const andamento = Array.from(b.querySelectorAll(
+                    ".qq-in-progress, .qq-upload-spinner, .qq-upload-spinner-selector, .qq-upload-list-selector li:not(.qq-upload-success):not(.qq-upload-fail)"
+                )).filter(visivel).length;
+                return { concluidos: concluidos, andamento: andamento };
+            """, escopo)
+        except Exception:
+            return None
+        return r if isinstance(r, dict) and 'concluidos' in r else None
+
+    def _aguardar_anexo_concluido(self, escopo, antes, rotulo, timeout=120):
+        """
+        Protocolo de segurança dos anexos: o upload do Coupa (Fine Uploader) é assíncrono.
+        Espera o portal listar o arquivo novo (li.attachment a mais) e terminar os uploads em curso
+        antes de seguir para o próximo campo / Salvar rascunho. Sem isso, salvar no meio do upload
+        perde o arquivo (era o que acontecia com o DAV, o último e maior PDF).
+        """
+        if antes is None:
+            time.sleep(4)   # sem como medir: mantém a espera antiga
+            return True
+        inicio = time.time()
+        ultimo_log = inicio
+        while time.time() - inicio < timeout:
+            atual = self._estado_anexos(escopo)
+            if atual is None:
+                time.sleep(4)
+                return True
+            if atual['concluidos'] > antes['concluidos'] and not atual['andamento']:
+                time.sleep(1)   # deixa o portal gravar os campos ocultos do anexo
+                return True
+            if time.time() - ultimo_log >= 15:
+                ultimo_log = time.time()
+                logger.info(f"   ⏳ Aguardando o portal concluir o upload do {rotulo} ({int(time.time() - inicio)}s)...")
+            time.sleep(1)
+        logger.warning(f"   ⚠️ O portal não confirmou o upload do {rotulo} em {timeout}s.")
+        return False
+
+    def _registrar_anexo_nao_confirmado(self, nome_campo, path):
+        if not hasattr(self, '_anexos_nao_confirmados') or self._anexos_nao_confirmados is None:
+            self._anexos_nao_confirmados = []
+        nome = f"{nome_campo} ({os.path.basename(str(path))})"
+        if nome not in self._anexos_nao_confirmados:
+            self._anexos_nao_confirmados.append(nome)
+        logger.error(f"   ❌ {nome} NÃO foi anexado no portal.")
 
     def _preencher_nome_vendedor(self, nome):
         """Preenche o nome de quem respondeu (input#quote_response_name) no fim da resposta."""
@@ -2165,6 +2278,7 @@ class RespostaMixin:
         prints_itens_map = {}
         self._email_erro_enviado = False
         self._cliente_evento_atual = "Vale"
+        self._anexos_nao_confirmados = []
 
         logger.info(f"🚀 Iniciando Resposta do Evento {evento}...")
 
@@ -2444,7 +2558,7 @@ class RespostaMixin:
                                 preencher_cf("input.s-custom_field_8", "3", "COFINS (%)")    # Campo 8
                                 preencher_cf("input.s-custom_field_7", "0,65", "PIS (%)")    # Campo 7
                                 preencher_cf("input.s-custom_field_6", "0", "IPI (%)")       # Campo 6
-                                preencher_cf("input.s-custom_field_5", "0", "Campo 5")       # Campo 5 (sempre 0)
+                                preencher_cf("input.s-custom_field_5", "0", "ICMS ST (%)")   # Campo 5 (sempre 0)
                                 preencher_cf("input.s-custom_field_3", "0", "ISS (%)")       # Campo 3 (0 para material)
 
                                 # 3. ICMS se o utilizador informou (Campo 4)
@@ -2677,6 +2791,13 @@ class RespostaMixin:
             prints_finais = [prints_itens_map[k] for k in sorted(prints_itens_map.keys())]
             if prints_finais:
                 self.sio.emit('prints_resposta_evento', {'evento': str(evento), 'prints': prints_finais})
+
+            # Anexos que o portal não confirmou (DAV / Datasheet) também são falha: o vendedor precisa saber
+            for anexo_falho in (getattr(self, '_anexos_nao_confirmados', None) or []):
+                falhas.append(f"anexo {anexo_falho} não confirmado pelo portal")
+                rotulo_curto = "DAV não anexado" if anexo_falho.startswith("DAV") else "Datasheet não anexado"
+                if rotulo_curto not in motivos_curtos_evento:
+                    motivos_curtos_evento.append(rotulo_curto)
 
             self._marcar_rascunho(evento)
             if falhas:
