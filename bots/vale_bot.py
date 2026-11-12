@@ -1576,14 +1576,17 @@ class ValeScraper(RespostaMixin):
         try:
             from bots.itens_dell import evento_tem_dell, adicionar_mensagem_dell, EVENTOS_POR_WORD_DELL
             from bots.itens_hardware import evento_tem_hardware, adicionar_mensagem_hardware, lotes_hardware, chave_semelhanca
+            from bots.itens_eletroportateis import evento_tem_eletro, adicionar_mensagem_eletro, lotes_eletro
         except ImportError:
             from itens_dell import evento_tem_dell, adicionar_mensagem_dell, EVENTOS_POR_WORD_DELL
             from itens_hardware import evento_tem_hardware, adicionar_mensagem_hardware, lotes_hardware, chave_semelhanca
+            from itens_eletroportateis import evento_tem_eletro, adicionar_mensagem_eletro, lotes_eletro
 
         bloqs = []
         complexos = []
         dells = []
         hardwares = []
+        eletros = []
         agrupados_por_data = {}
 
         for d in self.dados_processados_lote:
@@ -1612,6 +1615,12 @@ class ValeScraper(RespostaMixin):
             # Itens da marca DELL: Words próprios, 3 eventos por arquivo, com a orientação Dell no final
             if evento_tem_dell(d):
                 dells.append(d)
+                continue
+
+            # Eletroportáteis (cafeteira, air fryer, liquidificador...): Words próprios, no máximo 3 eventos,
+            # porque a orientação de onde orçar e a regra de compra ocupam bastante espaço
+            if evento_tem_eletro(d):
+                eletros.append(d)
                 continue
 
             # Informática/hardware/TV/tecnologia: Words próprios, no máximo 3 eventos, marcas/modelos parecidos juntos
@@ -1655,6 +1664,11 @@ class ValeScraper(RespostaMixin):
             lote_dell = dells[i:i + EVENTOS_POR_WORD_DELL]
             self.salvar_doc(lote_dell, self.PASTA_RELATORIOS, "DELL_Eventos", mensagem_final=lambda doc: adicionar_mensagem_dell(doc, getattr(self, 'config', None)))
             validos_para_excel.extend(lote_dell)
+
+        # Eletroportáteis: no máximo 3 eventos por arquivo, produtos parecidos juntos, orientação de compra no final
+        for lote_eletro in lotes_eletro(eletros):
+            self.salvar_doc(lote_eletro, self.PASTA_RELATORIOS, "ELETROPORTATEIS_Eventos", mensagem_final=adicionar_mensagem_eletro)
+            validos_para_excel.extend(lote_eletro)
 
         # Hardware: no máximo 3 eventos por arquivo, lista de fornecedores de hardware no final de cada arquivo
         for lote_hw in lotes_hardware(hardwares):
@@ -1700,6 +1714,11 @@ class ValeScraper(RespostaMixin):
     def salvar_doc(self, lista, pasta, prefixo, mensagem_final=None):
         if not lista: return
         try:
+            try:
+                from bots.itens_marcas import marcas_no_final, mensagem_depois_do_evento, adicionar_mensagem_marca
+            except ImportError:
+                from itens_marcas import marcas_no_final, mensagem_depois_do_evento, adicionar_mensagem_marca
+            lista = marcas_no_final(lista)   # Intelbras/Logitech no final do Word, produtos parecidos juntos
             nome = f"{prefixo}_{'_'.join([x['numero_evento'] for x in lista])}.docx"
             doc = Document()
 
@@ -1786,6 +1805,10 @@ class ValeScraper(RespostaMixin):
                         except ImportError:
                             from classificador_tecnologia import adicionar_paragrafo_onde_encontrar
                         adicionar_paragrafo_onde_encontrar(doc, item)
+
+                marca = mensagem_depois_do_evento(lista, i)
+                if marca:
+                    adicionar_mensagem_marca(doc, marca)   # onde cotar a marca, logo depois dos eventos dela
 
             if mensagem_final:
                 mensagem_final(doc)   # ex.: orientação "Itens Dell" no final do arquivo
