@@ -38,6 +38,9 @@ from docx.shared import Pt, RGBColor, Cm
 
 import base64
 
+from bots.coupa.pedidos_novos import (carregar_lidos, enviar_email_pedidos_novos, gravar_fora_planilha,
+                                      numeros_planilha, registrar_lido)
+
 logger = logging.getLogger("CoupaApp")
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
@@ -55,17 +58,16 @@ class PedidosMixin:
 
         pedidos_detalhes = []
         
-        # Carrega pedidos ja existentes para checagem rapida (se disponivel)
-        pedidos_existentes = set()
-        arq_db = getattr(self, 'ARQUIVO_PEDIDOS_JSON', None)
-        if arq_db and __import__('os').path.exists(arq_db):
-            try:
-                import json
-                with open(arq_db, 'r', encoding='utf-8') as f:
-                    dados = json.load(f)
-                    for d in dados:
-                        if 'pedido' in d: pedidos_existentes.add(d['pedido'])
-            except: pass
+        # Já conhecidos = lidos antes pelo robô + os que estão na planilha (PEDIDOS.json, só leitura).
+        # Sem conseguir ler a planilha todo pedido pareceria novo: aborta sem varrer nem mandar e-mail.
+        try:
+            pedidos_existentes = {str(p.get('pedido', '')).strip() for p in carregar_lidos(self.ARQUIVO_PEDIDOS_LIDOS)}
+            pedidos_existentes |= numeros_planilha(self.ARQUIVO_PLANILHA_PEDIDOS)
+        except Exception as e:
+            logger.error(f" Não foi possível carregar os pedidos já conhecidos: {e}")
+            self.sio.emit('tarefa_concluida', {'evento': 'Listagem de Pedidos', 'sucesso': False, 'erro': str(e), 'portal': 'coupa'})
+            return []
+        logger.info(f" {len(pedidos_existentes)} pedidos já conhecidos (lidos + planilha).")
 
         clientes_alvo = ["Vale", "Vale Base Metals"]
 
@@ -302,63 +304,6 @@ class PedidosMixin:
                                     'alertas': alertas_chamado
                                 })
                         
-                            try:
-                                self.driver.switch_to.default_content() # Garante que está fora do iframe
-                                time.sleep(1)
-                            
-                                def buscar_botao_impressao():
-                                    btn = self.driver.find_elements(By.XPATH, "//a[contains(., 'Exibição da impressão')]")
-                                    if not btn:
-                                        btn = self.driver.find_elements(By.XPATH, "//img[contains(@class, 'sprite-printer')]/ancestor::a")
-                                    return btn
-
-                                btn_impressao = buscar_botao_impressao()
-                            
-                                # Se não achou, tenta dentro do iframe
-                                if not btn_impressao:
-                                    try:
-                                        iframe = self.driver.find_element(By.TAG_NAME, "iframe")
-                                        self.driver.switch_to.frame(iframe)
-                                        btn_impressao = buscar_botao_impressao()
-                                    except:
-                                        pass
-                                
-                                if btn_impressao:
-                                    href_impressao = btn_impressao[0].get_attribute("href")
-                                    if href_impressao:
-                                        logger.info(f" Baixando impressão do pedido {num}. URL: {href_impressao}")
-                                    
-                                        # Abre a aba de impressão
-                                        self.driver.execute_script(f"window.open('{href_impressao}', '_blank');")
-                                        time.sleep(2)
-                                        self.driver.switch_to.window(self.driver.window_handles[-1])
-                                        time.sleep(5) # Aguarda renderizar a página de impressão
-                                    
-                                        try:
-                                            import base64
-                                            from selenium.webdriver.common.print_page_options import PrintOptions
-                                        
-                                            print_options = PrintOptions()
-                                            pdf_b64 = self.driver.print_page(print_options)
-                                        
-                                            pasta_pdfs = r"\\SERVIDOR2\Publico\ALLAN\PEDIDOS"
-                                            os.makedirs(pasta_pdfs, exist_ok=True)
-                                            caminho_pdf = os.path.join(pasta_pdfs, f"Pedido_{num}.pdf")
-                                        
-                                            with open(caminho_pdf, "wb") as f:
-                                                f.write(base64.b64decode(pdf_b64))
-                                            
-                                            logger.info(f" PDF do pedido {num} salvo com sucesso em {caminho_pdf}")
-                                        except Exception as ex_print:
-                                            logger.warning(f" Falha ao gerar PDF via print_page: {ex_print}")
-                                        
-                                        # Fecha a aba da impressão e volta para a aba do pedido
-                                        if len(self.driver.window_handles) > 2:
-                                            self.driver.close()
-                                            self.driver.switch_to.window(self.driver.window_handles[-1])
-                            except Exception as e:
-                                logger.error(f" Erro ao tentar baixar a impressão do pedido {num}: {e}")
-
                             novo_pedido = {
                                 'pedido': num,
                                 'cidade_estado': cidade_estado,
@@ -367,20 +312,12 @@ class PedidosMixin:
                                 'evento': evento_num,
                                 'vendedor': vendedor_encontrado,
                                 'itens': itens,
-                                'caminho_pdf': os.path.join(r"\\SERVIDOR2\Publico\ALLAN\PEDIDOS", f"Pedido_{num}.pdf")
+                                'lido_em': datetime.now().strftime('%d/%m/%Y %H:%M'),
                             }
                             pedidos_detalhes.append(novo_pedido)
                             pedidos_existentes.add(num)
-                            
-                            # Salva imediatamente na planilha para feedback em tempo real
-                            self.atualizar_pedidos_excel([novo_pedido])
-                            
-                            # Salva o pedido no banco de dados JSON centralizado
-                            try:
-                                if hasattr(self, 'salvar_pedido_database'):
-                                    self.salvar_pedido_database(novo_pedido)
-                            except Exception as e:
-                                logger.error(f" Falha ao salvar no banco: {e}")
+                            # Só no arquivo do robô: a planilha (PEDIDOS.json) não é tocada
+                            registrar_lido(self.ARQUIVO_PEDIDOS_LIDOS, novo_pedido)
                         
                         except Exception as e:
                             logger.error(f" Erro ao extrair detalhes do pedido {num}: {e}")
@@ -416,10 +353,29 @@ class PedidosMixin:
                         logger.warning(f' Nao foi possivel avancar a pagina: {e}')
                         break
 
-            self.sio.emit('tarefa_concluida', {'evento': 'Listagem de Pedidos', 'sucesso': True, 'total': len(pedidos_detalhes), 'detalhes': pedidos_detalhes})
-            return pedidos_detalhes
-            
+            erro = None
         except Exception as e:
             logger.error(f" Erro Crítico na extração de pedidos: {e}")
-            self.sio.emit('tarefa_concluida', {'evento': 'Listagem de Pedidos', 'sucesso': False, 'erro': str(e)})
-            return []
+            erro = str(e)
+
+        # Também depois de parada ou erro: o que já foi lido está em PEDIDOS-LIDOS-COUPA.json e não seria
+        # visto de novo na próxima vez, então o aviso sai agora
+        email_enviado = False
+        try:
+            gravar_fora_planilha(self.ARQUIVO_PEDIDOS_FORA_PLANILHA, carregar_lidos(self.ARQUIVO_PEDIDOS_LIDOS),
+                                 numeros_planilha(self.ARQUIVO_PLANILHA_PEDIDOS))
+        except Exception as e:
+            logger.error(f" Falha ao gravar PEDIDOS-FORA-PLANILHA.json: {e}")
+        try:
+            email_enviado = enviar_email_pedidos_novos(pedidos_detalhes, self.config, logger)
+        except Exception as e:
+            logger.error(f" Falha ao enviar e-mail dos pedidos novos: {e}")
+        logger.info(f" {len(pedidos_detalhes)} pedido(s) novo(s) encontrado(s).")
+
+        conclusao = {'evento': 'Listagem de Pedidos', 'sucesso': erro is None, 'total': len(pedidos_detalhes),
+                     'email_enviado': email_enviado, 'portal': 'coupa',
+                     'pedidos': [p['pedido'] for p in pedidos_detalhes]}
+        if erro:
+            conclusao['erro'] = erro
+        self.sio.emit('tarefa_concluida', conclusao)
+        return pedidos_detalhes

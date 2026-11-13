@@ -90,6 +90,10 @@ class CoupaScraper(UtilitariosMixin, Banco_dadosMixin, PlanilhasMixin, Autentica
         
         self.ARQUIVO_JSONL = self.config.get("caminho_database_coupa", os.path.join(self.PASTA_DATABASE, "eventos.jsonl"))
         self.ARQUIVO_PEDIDOS_JSON = self.config.get("caminho_pedidos_json", os.path.join(self.PASTA_DATABASE, "pedidos.json"))
+        # Pedidos novos (extrair_pedidos): a planilha só é lida; o robô guarda o que leu num arquivo próprio
+        self.ARQUIVO_PLANILHA_PEDIDOS = os.path.join(ambiente.pasta_banco(), "PEDIDOS.json")
+        self.ARQUIVO_PEDIDOS_LIDOS = os.path.join(ambiente.pasta_banco(), "PEDIDOS-LIDOS-COUPA.json")
+        self.ARQUIVO_PEDIDOS_FORA_PLANILHA = os.path.join(ambiente.pasta_banco(), "PEDIDOS-FORA-PLANILHA.json")
         self.ARQUIVO_MARCAS_BLOQUEADAS = os.path.join(self.PASTA_DATABASE, "marcas_bloqueadas.xlsx")
         self.ARQUIVO_PLANILHA_CONTROLE = self.config.get("caminho_excel", r"\\SERVIDOR2\Publico\PLANILHA DE CONTROLE VALE - ESTAGIARIOS (copia 1).xlsx")
         self.solicitacao_parada = False

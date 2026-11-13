@@ -117,5 +117,66 @@ class EmailTest(unittest.TestCase):
         enviar.assert_not_called()
 
 
+class ExtrairPedidosFonteTest(unittest.TestCase):
+    """O fluxo Selenium não roda aqui: confere no fonte que ele não baixa PDF nem grava na planilha."""
+
+    def setUp(self):
+        self.pedidos = (RAIZ / 'bots' / 'coupa' / 'mixins' / 'pedidos.py').read_text(encoding='utf-8')
+        self.principal = (RAIZ / 'bots' / 'coupa' / 'principal.py').read_text(encoding='utf-8')
+
+    def test_nao_baixa_pdf_nem_grava_planilha(self):
+        for proibido in ('print_page', 'PEDIDOS\\', 'caminho_pdf', 'atualizar_pedidos_excel', 'salvar_pedido_database'):
+            self.assertNotIn(proibido, self.pedidos)
+
+    def test_usa_modulo_pedidos_novos(self):
+        for nome in ('numeros_planilha', 'registrar_lido', 'gravar_fora_planilha', 'enviar_email_pedidos_novos'):
+            self.assertIn(nome, self.pedidos)
+
+    def test_caminhos_no_banco(self):
+        for trecho in ('PEDIDOS-LIDOS-COUPA.json', 'PEDIDOS-FORA-PLANILHA.json', 'pasta_banco()'):
+            self.assertIn(trecho, self.principal)
+
+
+class ExtrairPedidosFimTest(unittest.TestCase):
+    """Sem navegador: o login falha logo no início e só o fim da extração roda."""
+
+    def setUp(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from bots.coupa.mixins.pedidos import PedidosMixin
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        self.planilha, self.lidos, self.fora = d / 'PEDIDOS.json', d / 'PEDIDOS-LIDOS-COUPA.json', d / 'PEDIDOS-FORA-PLANILHA.json'
+        self.bot = type('Bot', (PedidosMixin,), {})()
+        self.bot.ARQUIVO_PLANILHA_PEDIDOS, self.bot.ARQUIVO_PEDIDOS_LIDOS = str(self.planilha), str(self.lidos)
+        self.bot.ARQUIVO_PEDIDOS_FORA_PLANILHA = str(self.fora)
+        self.bot.BASE_SUPPLIER_URL, self.bot.config, self.bot.sio = 'https://x', {}, MagicMock()
+        self.bot.garantir_logado = MagicMock(side_effect=RuntimeError('login caiu'))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def conclusao(self):
+        return self.bot.sio.emit.call_args.args[1]
+
+    def test_erro_no_meio_ainda_grava_fora_planilha(self):
+        self.planilha.write_text(json.dumps({'PEDIDOS': [{'PEDIDO': '2'}]}), encoding='utf-8')
+        self.lidos.write_text(json.dumps([{'pedido': '1'}, {'pedido': '2'}]), encoding='utf-8')
+        with patch('bots.coupa.mixins.pedidos.enviar_email_pedidos_novos', return_value=False) as enviar:
+            self.assertEqual(self.bot.extrair_pedidos(), [])
+        self.assertEqual(json.loads(self.fora.read_text(encoding='utf-8')), [{'pedido': '1'}])
+        enviar.assert_called_once()
+        c = self.conclusao()
+        self.assertEqual((c['evento'], c['sucesso'], c['total'], c['erro']), ('Listagem de Pedidos', False, 0, 'login caiu'))
+
+    def test_planilha_ilegivel_aborta_sem_email(self):
+        with patch('bots.coupa.mixins.pedidos.enviar_email_pedidos_novos') as enviar, patch.object(pn.time, 'sleep'):
+            self.assertEqual(self.bot.extrair_pedidos(), [])
+        enviar.assert_not_called()
+        self.bot.garantir_logado.assert_not_called()
+        self.assertFalse(self.conclusao()['sucesso'])
+        self.assertFalse(self.fora.exists())
+
+
 if __name__ == '__main__':
     unittest.main()
