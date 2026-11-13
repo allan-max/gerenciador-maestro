@@ -102,10 +102,11 @@ class EstadoDoGerenciadorTest(unittest.TestCase):
             ns = carregar(RAIZ / 'gerenciador.py', {'robos_ocupados', 'gravar_estado'}, os=os, json=json, time=__import__('time'),
                           ARQ_ESTADO=arq, VERSAO='abc123', bot_coupa=SimpleNamespace(thread_atual=th),
                           bot_vale=SimpleNamespace(thread_atual=None), processo_me=aberto, bot_ariba=fechado, bot_findes=None)
-            self.assertEqual(ns['robos_ocupados'](), ['coupa', 'me'])
+            # ME aberto (robô externo, 24/7) não entra: o reinício não o fecha e o gerenciador novo o readota
+            self.assertEqual(ns['robos_ocupados'](), ['coupa'])
             ns['gravar_estado']()
             estado = json.loads(Path(arq).read_text(encoding='utf-8'))
-        self.assertEqual((estado['pid'], estado['versao'], estado['ocupados']), (os.getpid(), 'abc123', ['coupa', 'me']))
+        self.assertEqual((estado['pid'], estado['versao'], estado['ocupados']), (os.getpid(), 'abc123', ['coupa']))
 
 
 class NavegadorTest(unittest.TestCase):

@@ -17,7 +17,8 @@ GER = RAIZ / 'gerenciador.py'
 FUNCOES = {'rodar_ciclo', 'loop_automacao', 'comando_sincronizacao', 'comando_sincronizacao_estado', '_ciclo_manual',
            '_backup_manual', '_responder_sincronizacao', 'estado_sincronizacao', 'rotina_backup', 'deve_verificar_vale',
            '_trava_ciclo', 'ciclo_em_andamento', 'CICLOS_MANUAIS', 'ULTIMAS_SINCRONIZACAO', 'ultimo_dia_verificacao_vale',
-           'esperar_robo_desligado', '_trava_backup', '_fazer_backup', 'modo_resposta_ativo', 'ciclo_interrompido'}
+           'esperar_robo_desligado', '_trava_backup', '_fazer_backup', 'modo_resposta_ativo', 'ciclo_interrompido',
+           'ultimo_ciclo_piloto', 'PAUSA_PILOTO_S'}
 
 
 class ThreadNaHora:
@@ -172,7 +173,7 @@ class PilotoEsperaOManualTest(unittest.TestCase):
                 pausou.set()
                 nunca.wait()          # para o piloto aqui (thread daemon)
 
-        ns = gerenciador(time=SimpleNamespace(sleep=dormir))
+        ns = gerenciador(time=SimpleNamespace(sleep=dormir, time=time_real.time))
         ns['rodar_ciclo'] = MagicMock(return_value=(True, 'ok'))
         ns['_trava_ciclo'].acquire()                  # "ciclo manual" rodando
         piloto = threading.Thread(target=ns['loop_automacao'], daemon=True)

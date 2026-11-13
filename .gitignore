@@ -21,3 +21,9 @@ gerenciador.estado.tmp
 base_teste/
 relatorios/
 perfis_chrome/
+
+# reinício suave (reinicio.py)
+gerenciador.reiniciar
+gerenciador.reiniciar.tmp
+gerenciador.troca
+gerenciador.troca.tmp

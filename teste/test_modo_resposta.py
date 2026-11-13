@@ -149,7 +149,7 @@ class PilotoRefazCicloTest(unittest.TestCase):
                 pausou.set()
                 nunca.wait()
 
-        ns = gerenciador(time=SimpleNamespace(sleep=dormir))
+        ns = gerenciador(time=SimpleNamespace(sleep=dormir, time=lambda: 0))
         chamadas = []
 
         def ciclo(portal):

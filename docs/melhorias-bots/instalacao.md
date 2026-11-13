@@ -28,7 +28,8 @@ Vários merges dentro dos mesmos 5 minutos são aplicados juntos, numa única ro
 ## 2. Ligar, desligar e acompanhar
 
 - **Liga/desliga:** a chave `atualizacao_automatica` (`sim`/`não`) fica em **Configurações** no dashboard2. Com `não`, nada é baixado.
-- **Log:** `logs\atualizador\atualizador.log`. Uma rodada sem novidade não escreve nada. "atualização pendente; robôs ocupados" quer dizer que o atualizador vai tentar de novo em 5 min.
+- **Log:** `logs\atualizador\atualizador.log`. Uma rodada sem novidade não escreve nada. "atualização pendente; em andamento (…)" quer dizer que o atualizador vai tentar de novo em 5 min.
+- **Reinício suave:** o atualizador não fecha o gerenciador. Ele grava `gerenciador.reiniciar` e o gerenciador troca a si mesmo quando nada está em andamento (tarefa do Coupa/Vale, comando de usuário, backup). Robô externo ligado (ME, Ariba, Findes, ComprasGov) não segura a atualização e segue ligado durante a troca. O portal só reinicia sem ação de usuário nos últimos 3 minutos (`portal.estado`).
 - **Atividade:** os eventos aparecem como serviço **gerenciador**, tipo `atualizacao`. Por exemplo, "Gerenciador atualizado: abc1234 -> def5678 (…OK)", "Gerenciador reiniciado na versão …" e "Portal atualizado …".
 - **Qual versão está rodando:** na pasta do gerenciador,
   ```powershell

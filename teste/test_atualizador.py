@@ -38,6 +38,7 @@ class Repos(unittest.TestCase):
         logs.mkdir()
         for alvo in (patch.object(atualizador.eventos, 'registrar', lambda *a, **k: self.eventos.append(a)),
                      patch.object(atualizador, 'pasta', lambda: str(logs)),   # 21/10: os testes escreviam no atualizador.log de produção
+                     patch.object(atualizador, 'LOG_CENTRAL', str(logs / 'gerenciador.txt')),   # nunca o da rede
                      patch.object(atualizador, 'enviar_email', lambda msg: None)):
             alvo.start()
             self.addCleanup(alvo.stop)
@@ -75,15 +76,22 @@ class GerenciadorTest(Repos):
         alvo = patch.object(atualizador, 'RAIZ', str(self.servidor))
         alvo.start()
         self.addCleanup(alvo.stop)
-        self.reiniciados, self.passa = [], True
+        self.reiniciados, self.pedidos, self.iniciados, self.passa, self.trocou = [], [], [], True, True
 
-    def estado(self, ocupados=(), versao=None):
-        (self.servidor / 'gerenciador.estado').write_text(json.dumps(
-            {'pid': 4321, 'em': time.time(), 'versao': versao or self.antigo, 'ocupados': list(ocupados)}), encoding='utf-8')
+    def estado(self, ocupados=(), versao=None, suave=True, pid=4321):
+        dados = {'pid': pid, 'em': time.time(), 'versao': versao or self.antigo, 'ocupados': list(ocupados)}
+        if suave:
+            dados['suave'] = True   # gerenciador que reinicia sozinho (reinicio.py); sem a chave = versão antiga
+        (self.servidor / 'gerenciador.estado').write_text(json.dumps(dados), encoding='utf-8')
+
+    def pedir(self, estado, versao):
+        self.pedidos.append(versao)
+        return self.trocou
 
     def rodar(self):
         atualizador.atualizar_gerenciador(testar=lambda repo: (self.passa, 'Ran 9 tests OK'),
-                                          reiniciar=lambda pid: self.reiniciados.append(pid))
+                                          reiniciar=lambda pid: self.reiniciados.append(pid),
+                                          pedir=self.pedir, iniciar=lambda: self.iniciados.append(1))
 
     def test_commit_que_tira_o_config_do_repo_nao_apaga_o_de_producao(self):
         # 21/10: o Allan tirou CONFIG.json do repositório; o git pull do servidor travou (ou apagaria o arquivo)
@@ -93,19 +101,29 @@ class GerenciadorTest(Repos):
         self.assertEqual(git(self.servidor, 'rev-parse', 'HEAD'), novo)
         self.assertEqual((self.servidor / 'app.py').read_text(), 'v2')
         self.assertEqual((self.servidor / 'CONFIG.json').read_text(), '{"SMTP_USER": "producao"}')
-        self.assertEqual(self.reiniciados, [4321])
+        self.assertEqual((self.pedidos, self.reiniciados), ([novo], []))
         self.assertTrue(any('atualizado' in e[3] for e in self.eventos))
+
+    def test_reinicio_fica_registrado_no_log_central_com_as_versoes(self):
+        # 11/11: o gerenciador "sumia" sem nenhuma linha no gerenciador.txt dizendo quem o encerrou
+        novo = self.commit(self.dev, {'app.py': 'v2'}, 'v2')
+        self.estado()
+        self.rodar()
+        texto = (self.tmp / 'logs' / 'gerenciador.txt').read_text(encoding='utf-8')
+        self.assertIn('PID 4321', texto)
+        self.assertIn('atualizador', texto)
+        self.assertIn(f'{self.antigo[:7]} -> {novo[:7]}', texto)
 
     def test_robo_trabalhando_espera_e_atualiza_depois(self):
         novo = self.commit(self.dev, {'app.py': 'v2'}, 'v2')
         self.estado(ocupados=['coupa'])
         self.rodar()
         self.assertEqual(git(self.servidor, 'rev-parse', 'HEAD'), self.antigo)      # nem baixou
-        self.assertEqual(self.reiniciados, [])
+        self.assertEqual((self.pedidos, self.reiniciados), ([], []))
         self.estado()                                                                # robô terminou
         self.rodar()
         self.assertEqual(git(self.servidor, 'rev-parse', 'HEAD'), novo)
-        self.assertEqual(self.reiniciados, [4321])
+        self.assertEqual((self.pedidos, self.reiniciados), ([novo], []))
 
     def test_teste_que_falha_volta_a_versao_e_avisa(self):
         self.commit(self.dev, {'app.py': 'quebrado'}, 'quebra')
@@ -115,23 +133,95 @@ class GerenciadorTest(Repos):
         self.assertEqual(git(self.servidor, 'rev-parse', 'HEAD'), self.antigo)
         self.assertEqual((self.servidor / 'app.py').read_text(), 'v1')
         self.assertEqual((self.servidor / 'CONFIG.json').read_text(), '{"SMTP_USER": "producao"}')
-        self.assertEqual(self.reiniciados, [])
+        self.assertEqual((self.pedidos, self.reiniciados), ([], []))
         self.assertEqual(self.eventos[-1][2], 'erro')
 
     def test_rodando_versao_velha_reinicia_mesmo_sem_commit_novo(self):
         self.estado(versao='0' * 40)            # baixado numa rodada em que um robô começou a trabalhar
         self.rodar()
-        self.assertEqual(self.reiniciados, [4321])
+        self.assertEqual((self.pedidos, self.reiniciados), ([self.antigo], []))
 
     def test_em_dia_nao_faz_nada_e_gerenciador_parado_nao_e_iniciado(self):
         self.estado()
         self.rodar()
-        self.assertEqual((self.reiniciados, self.eventos), ([], []))
+        self.assertEqual((self.reiniciados, self.pedidos, self.eventos), ([], [], []))
         novo = self.commit(self.dev, {'app.py': 'v2'}, 'v2')
         (self.servidor / 'gerenciador.estado').unlink()                            # gerenciador desligado
         self.rodar()
         self.assertEqual(git(self.servidor, 'rev-parse', 'HEAD'), novo)
+        self.assertEqual((self.reiniciados, self.pedidos, self.iniciados), ([], [], []))
+
+    # ---------- reinício suave: o atualizador pede, o gerenciador troca sozinho (reinicio.py) ----------
+    def test_reinicio_suave_avisa_quando_o_gerenciador_ja_voltou_na_versao_nova(self):
+        novo = self.commit(self.dev, {'app.py': 'v2'}, 'v2')
+        self.estado()
+        self.rodar()
         self.assertEqual(self.reiniciados, [])
+        self.assertIn(f'reiniciado na versão {novo[:7]}', self.eventos[-1][3])
+
+    def test_gerenciador_ocupado_recebe_o_pedido_uma_vez_e_o_aviso_sai_quando_ele_trocar(self):
+        novo = self.commit(self.dev, {'app.py': 'v2'}, 'v2')
+        self.estado()
+        self.trocou = False                       # um usuário começou um comando: o gerenciador espera ficar livre
+        self.rodar()
+        self.assertFalse(any('reiniciado' in e[3] for e in self.eventos))
+        self.rodar()                              # rodada seguinte: ainda na versão antiga
+        self.assertEqual(self.pedidos, [novo])    # não fica esperando de novo a cada 5 min
+        self.assertEqual(json.loads((self.servidor / atualizador.reinicio.ARQ_PEDIDO).read_text())['versao'], novo)
+        self.estado(versao=novo, pid=999)         # ficou livre e trocou sozinho
+        self.rodar()
+        self.assertIn(f'reiniciado na versão {novo[:7]}', self.eventos[-1][3])
+        self.assertEqual(self.reiniciados, [])
+
+    def test_gerenciador_que_nao_voltou_depois_do_pedido_e_aberto_e_avisado(self):
+        self.commit(self.dev, {'app.py': 'v2'}, 'v2')
+        self.estado()
+        self.trocou = False
+        self.rodar()
+        (self.servidor / 'gerenciador.estado').unlink()      # fechou para trocar e o novo não subiu
+        self.rodar()
+        self.assertEqual(self.iniciados, [1])
+        self.assertEqual(self.eventos[-1][2], 'erro')
+        self.rodar()                                          # não abre um segundo a cada rodada
+        self.assertEqual(self.iniciados, [1])
+
+    def test_gerenciador_antigo_e_reiniciado_uma_ultima_vez_sem_esperar_robo_externo(self):
+        # versão sem reinicio.py: lista ME/Ariba/Findes como ocupados enquanto ligados (24/7) e não lê pedido
+        novo = self.commit(self.dev, {'app.py': 'v2'}, 'v2')
+        self.estado(ocupados=['me', 'ariba'], suave=False)
+        self.rodar()
+        self.assertEqual(git(self.servidor, 'rev-parse', 'HEAD'), novo)
+        self.assertEqual((self.reiniciados, self.pedidos), ([4321], []))
+
+    def test_gerenciador_antigo_com_coupa_trabalhando_ainda_espera(self):
+        self.commit(self.dev, {'app.py': 'v2'}, 'v2')
+        self.estado(ocupados=['coupa', 'me'], suave=False)
+        self.rodar()
+        self.assertEqual(git(self.servidor, 'rev-parse', 'HEAD'), self.antigo)
+        self.assertEqual(self.reiniciados, [])
+
+
+class ReinicioTest(Repos):
+    def test_pedir_reinicio_espera_o_gerenciador_trocar_de_processo(self):
+        estados = [{'pid': 1, 'versao': 'v1'}, {'pid': 1, 'versao': 'v1'}, {'pid': 2, 'versao': 'v2'}]
+        esperas = []
+        with tempfile.TemporaryDirectory() as raiz, patch.object(atualizador, 'RAIZ', raiz):
+            trocou = atualizador.pedir_reinicio({'pid': 1, 'versao': 'v1'}, 'v2', ler=lambda: estados.pop(0), espera=esperas.append)
+            self.assertEqual(atualizador.reinicio.ler_pedido(raiz)['versao'], 'v2')
+        self.assertTrue(trocou)
+        self.assertEqual(len(esperas), 3)
+
+    def test_pedir_reinicio_desiste_de_esperar_se_o_gerenciador_segue_ocupado(self):
+        with tempfile.TemporaryDirectory() as raiz, patch.object(atualizador, 'RAIZ', raiz):
+            self.assertFalse(atualizador.pedir_reinicio({'pid': 1, 'versao': 'v1'}, 'v2',
+                                                        ler=lambda: {'pid': 1, 'versao': 'v1'}, espera=lambda s: None))
+
+    def test_reinicio_a_forca_nao_leva_junto_os_robos_externos(self):
+        comandos, abertos = [], []
+        atualizador.reiniciar_gerenciador(4321, rodar=lambda cmd, cwd, timeout=0: comandos.append(cmd) or (0, ''),
+                                          iniciar=lambda: abertos.append(1), espera=lambda s: None)
+        self.assertEqual(comandos, [['taskkill', '/PID', '4321', '/F']])   # sem /T: ME, Ariba e Findes seguem ligados
+        self.assertEqual(abertos, [1])
 
 
 class PortalTest(Repos):
@@ -167,6 +257,28 @@ class PortalTest(Repos):
         self.commit(self.dev, {'package.json': '{"dependencies": {}}'}, 'deps')
         self.atualizar()
         self.assertIn([atualizador.NPM, 'ci'], self.comandos)
+
+    def uso(self, ha_s, gravado_ha_s=5):
+        agora = time.time() * 1000
+        (self.portal / 'portal.estado').write_text(json.dumps(
+            {'em': agora - gravado_ha_s * 1000, 'ultima_acao_em': agora - ha_s * 1000}), encoding='utf-8')
+
+    def test_usuario_ativo_adia_o_restart_do_portal_e_site_quieto_atualiza(self):
+        novo = self.commit(self.dev, {'server.js': 'v2'}, 'v2')
+        self.uso(ha_s=20)                                     # alguém clicou há 20 s
+        self.atualizar()
+        self.assertEqual(git(self.portal, 'rev-parse', 'HEAD'), self.antigo)
+        self.assertNotIn([atualizador.PM2, 'restart'], self.comandos)
+        self.uso(ha_s=atualizador.PORTAL_QUIETO_S + 60)
+        self.atualizar()
+        self.assertEqual(git(self.portal, 'rev-parse', 'HEAD'), novo)
+        self.assertIn([atualizador.PM2, 'restart'], self.comandos)
+
+    def test_portal_estado_velho_nao_segura_a_atualizacao(self):
+        novo = self.commit(self.dev, {'server.js': 'v2'}, 'v2')
+        self.uso(ha_s=20, gravado_ha_s=3600)                  # arquivo de um portal que caiu: não vale
+        self.atualizar()
+        self.assertEqual(git(self.portal, 'rev-parse', 'HEAD'), novo)
 
     def test_site_que_nao_sobe_volta_a_versao(self):
         self.commit(self.dev, {'server.js': 'quebrado'}, 'quebra')

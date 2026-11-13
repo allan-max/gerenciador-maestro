@@ -168,12 +168,22 @@ else:
 import eventos
 import seguranca
 import processos_robos
+import reinicio
+TROCA = {}   # o que o processo anterior deixou ao reiniciar pelo atualizador (reinicio.py); vazio na partida normal
 if __name__ == '__main__':
     eventos.ativar()   # só o gerenciador de verdade grava eventos; testes importam sem gravar
+    TROCA = reinicio.ler_troca(PASTA_GERENCIADOR)
     # Dois gerenciadores na mesma base brigam pelos JSONs (13-14/10: 790 gravações recusadas)
     from instancia_unica import JaRodando, instancia_unica
     try:
-        _TRAVA_INSTANCIA = instancia_unica(CONFIG_GLOBAL["caminho_banco_dados"])
+        for _tentativa in range(15 if TROCA else 1):   # reinício: o processo anterior ainda está soltando a trava
+            try:
+                _TRAVA_INSTANCIA = instancia_unica(CONFIG_GLOBAL["caminho_banco_dados"])
+                break
+            except JaRodando:
+                if _tentativa == (14 if TROCA else 0):
+                    raise
+                time.sleep(2)
     except JaRodando as e:
         logger.error(f"Já existe um gerenciador rodando ({e}). Feche-o antes de abrir outro.")
         # ponytail: o recusado acrescenta 1 linha no arquivo do que está rodando; nunca limpa nem regrava
@@ -212,23 +222,31 @@ VERSAO = versao_do_codigo()
 
 
 def robos_ocupados():
+    """O que está em andamento agora e seguraria um reinício. Robô externo ligado (ME, Ariba, Findes, ComprasGov)
+    não entra: muitos ficam ligados 24/7, rodam em janela própria e o gerenciador novo os readota (readotar_robos)."""
+    g = globals()   # roda desde a partida (loop_estado), antes de o resto do arquivo existir
     ocupados = []
-    for nome in ('coupa', 'vale'):
-        bot = globals().get(f'bot_{nome}')
-        th = getattr(bot, 'thread_atual', None) if bot else None
-        if th is not None and th.is_alive():
+    for nome in ('coupa', 'vale'):   # dentro do gerenciador: tarefa ou login em andamento
+        bot = g.get(f'bot_{nome}')
+        if any(t is not None and t.is_alive() for t in (getattr(bot, 'thread_atual', None), getattr(bot, 'thread_login', None))):
             ocupados.append(nome)
-    for nome, var in (('me', 'processo_me'), ('ariba', 'bot_ariba'), ('findes', 'bot_findes')):
-        proc = globals().get(var)
-        if proc is not None and proc.poll() is None:
-            ocupados.append(nome)
+    em_andamento = (('ciclo', g.get('_trava_ciclo')), ('respostas', g.get('modo_resposta_ativo')), ('backup', g.get('_trava_backup')))
+    ocupados += [nome for nome, valor in em_andamento if (valor.locked() if hasattr(valor, 'locked') else valor)]
+    agora = time.time()   # recém-ligado: o Ariba recebe digitação na janela e o Findes antigo, eventos pelo pipe
+    ocupados += [f'{robo} iniciando' for robo, em in list(g.get('_ultimo_inicio', {}).items())
+                 if agora - em < g.get('_GRACA_INICIO_S', 60)]
+    if g.get('findes_recebendo_eventos'):
+        ocupados.append('findes recebendo eventos')
+    if g.get('reinicio') is not None:   # comando de usuário (salvar, registrar, imprimir...) no meio
+        ocupados += g['reinicio'].comandos.ativos()
     return ocupados
 
 
 def gravar_estado():
     tmp = ARQ_ESTADO + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump({'pid': os.getpid(), 'em': time.time(), 'versao': VERSAO, 'ocupados': robos_ocupados()}, f)
+        # 'suave': este gerenciador reinicia sozinho quando o atualizador pede (reinicio.py)
+        json.dump({'pid': os.getpid(), 'em': time.time(), 'versao': VERSAO, 'ocupados': robos_ocupados(), 'suave': True}, f)
     os.replace(tmp, ARQ_ESTADO)
 
 
@@ -350,6 +368,17 @@ def _safe_emit(*args, **kwargs):
         logger.warning(f"Falha no Socket.IO (emit): {e}")
 sio.emit = _safe_emit
 
+# Todo comando que chega do portal é contado enquanto roda: o reinício suave espera ele terminar (reinicio.py)
+_sio_on = sio.on
+def _on_contado(evento, *args, **kwargs):
+    registrar = _sio_on(evento, *args, **kwargs)
+    def decorar(funcao):
+        registrar(funcao if evento in ('connect', 'disconnect') else reinicio.comandos.contar(evento)(funcao))
+        return funcao
+    return decorar
+sio.on = _on_contado
+
+findes_recebendo_eventos = False   # Findes antigo recebendo os eventos pelo pipe: reiniciar agora cortaria o envio
 bot_coupa = None
 bot_vale = None
 portal_atual = None
@@ -487,12 +516,23 @@ def obter_pasta_me():
     return CONFIG_GLOBAL.get("caminho_me") or PASTA_ME_PADRAO
 
 
+LOGS_ROBOS = {'me': r"\\SERVIDOR2\Publico\ALLAN\Logs\mercadoeletronico.txt",
+              'findes_antigo': r"\\SERVIDOR2\Publico\ALLAN\Logs\log-findes.txt",
+              'ariba': r"\\SERVIDOR2\Publico\ALLAN\Logs\aribasourcing.txt"}
+
+
+def _ir_para_o_fim_do_log(f, robo):
+    """Só linhas novas. Depois de um reinício suave continua de onde o processo anterior parou (não perde o "FINALIZADA")."""
+    salvo = (TROCA.get('logs') or {}).pop(robo, None)
+    f.seek(reinicio.posicao_log(f.seek(0, os.SEEK_END), salvo))
+
+
 def monitorar_log_me():
     global rodando_monitor_me, processo_me
-    caminho_log = r"\\SERVIDOR2\Publico\ALLAN\Logs\mercadoeletronico.txt"
+    caminho_log = LOGS_ROBOS['me']
     try:
         with open(caminho_log, 'r', encoding='utf-8', errors='ignore') as f:
-            f.seek(0, os.SEEK_END)
+            _ir_para_o_fim_do_log(f, 'me')
             while rodando_monitor_me:
                 linha = f.readline()
                 if linha and linha.strip():
@@ -605,7 +645,7 @@ def monitorar_log_findes_novo():
 
 def monitorar_log_findes():
     global bot_findes, rodando_monitor_findes
-    caminho_log = r"\\SERVIDOR2\Publico\ALLAN\Logs\log-findes.txt" 
+    caminho_log = LOGS_ROBOS['findes_antigo']
 
     # O VIGIA ESPERA PACIENTEMENTE O ARQUIVO NASCER
     while rodando_monitor_findes and not os.path.exists(caminho_log):
@@ -619,7 +659,7 @@ def monitorar_log_findes():
 
     try:
         with open(caminho_log, 'r', encoding='utf-8', errors='ignore') as f:
-            f.seek(0, os.SEEK_END)
+            _ir_para_o_fim_do_log(f, 'findes_antigo')
             while rodando_monitor_findes:
                 linha = f.readline()
                 if linha and linha.strip():
@@ -668,14 +708,14 @@ def monitorar_log_findes():
 
 def monitorar_log_ariba():
     global rodando_monitor_ariba
-    caminho_log = r"\\SERVIDOR2\Publico\ALLAN\Logs\aribasourcing.txt"
+    caminho_log = LOGS_ROBOS['ariba']
 
     # ?? Aumentamos para 10 segundos porque o 'dotnet run'  demorado!
-    time.sleep(10) 
+    time.sleep(10)
 
     try:
         with open(caminho_log, 'r', encoding='utf-8', errors='ignore') as f:
-            f.seek(0, os.SEEK_END)
+            _ir_para_o_fim_do_log(f, 'ariba')
             while rodando_monitor_ariba:
                 linha = f.readline()
                 if linha and linha.strip():
@@ -816,6 +856,7 @@ def validar_login(dados):
                 'hasEmailsAccess': emails_acc,
                 'vendedor': usuarios[email].get('vendedor', ''),
                 'nome': usuarios[email].get('nome', ''),
+                'setor': usuarios[email].get('setor', ''),  # financeiro cai direto na tela do Financeiro
                 'clientId': cid
             })
     else: 
@@ -1140,6 +1181,13 @@ def comando_para_robo(dados):
             threading.Thread(target=ligar_comprasgov, daemon=True).start()
         elif modo == 'desligar_robo':
             threading.Thread(target=desligar_comprasgov, daemon=True).start()
+        return
+
+    if portal == 'arcelormittal':
+        if modo == 'ligar_robo':
+            threading.Thread(target=ligar_arcelormittal, daemon=True).start()
+        elif modo == 'desligar_robo':
+            threading.Thread(target=desligar_arcelormittal, daemon=True).start()
         return
 
     if portal == 'me':
@@ -1562,7 +1610,8 @@ WshShell.SendKeys "~"
             sio.emit('relatar_progresso_findes', {'mensagem': f"🚀 Iniciando Módulo .NET Findes para os eventos: {eventos_str}"})
 
             def run_findes():
-                global bot_findes, rodando_monitor_findes
+                global bot_findes, rodando_monitor_findes, findes_recebendo_eventos
+                findes_recebendo_eventos = True   # até o "sair" (ou o erro): o reinício suave espera
                 try:
                     caminho_findes_local = CONFIG_GLOBAL.get("caminho_findes", r"C:\Users\Administrator\Desktop\FINDES")
                     env_findes = os.environ.copy()
@@ -1589,6 +1638,7 @@ WshShell.SendKeys "~"
                     sio.emit('relatar_progresso_findes_antigo', {'mensagem': '🚀 Robô .NET iniciado com sucesso! Preparando envio dos eventos...'})
 
                     def injetar_eventos():
+                        global findes_recebendo_eventos
                         try:
                             # Aguarda o .NET carregar antes de mandar os eventos pelo pipe direto
                             time.sleep(10)
@@ -1605,6 +1655,8 @@ WshShell.SendKeys "~"
                                     bot_findes.stdin.flush()
                         except Exception as e_inj:
                             logger.warning(f"Aviso ao injetar eventos no Findes via stdin: {e_inj}")
+                        finally:
+                            findes_recebendo_eventos = False
 
                     threading.Thread(target=injetar_eventos, daemon=True).start()
 
@@ -1615,6 +1667,7 @@ WshShell.SendKeys "~"
                     logger.error(f"Erro na execução do Findes antigo: {e}")
                     sio.emit('relatar_progresso_findes_antigo', {'mensagem': f'❌ Erro Crítico ao iniciar: {e}'})
                 finally:
+                    findes_recebendo_eventos = False
                     if bot_findes:
                         bot_findes = None
                     rodando_monitor_findes = False
@@ -1755,6 +1808,116 @@ def vigiar_comprasgov(intervalo_s=5, reenvio_s=60):
 @sio.on('pedir_estado_comprasgov')
 def responder_estado_comprasgov(dados=None):
     sio.emit('sincronizar_estado_comprasgov', {'status': 'ligado' if comprasgov_esta_rodando() else estado_comprasgov})
+
+
+# ========================================================
+# 🔥 ARCELORMITTAL (ROBÔ .NET VIA "dotnet run")
+# ========================================================
+PASTA_ARCELORMITTAL_PADRAO = r"C:\Users\Administrator\Desktop\SAP_ArcellorMittal\SAP_ArcellorMittal"
+TITULO_JANELA_ARCELORMITTAL = "ROBO_ARCELORMITTAL"
+bot_arcelormittal = None            # Popen do cmd.exe aberto pelo gerenciador
+estado_arcelormittal = 'desligado'  # último estado enviado ao portal
+
+
+def obter_pasta_arcelormittal():
+    return CONFIG_GLOBAL.get("caminho_arcelormittal") or PASTA_ARCELORMITTAL_PADRAO
+
+
+def processos_arcelormittal():
+    """Processos do robô ArcelorMittal rodando: o 'dotnet run' da pasta do projeto e o executável que ele compila."""
+    return processos_robos.processos_dotnet(obter_pasta_arcelormittal(), termos_cmd=('sap_arcellormittal',))
+
+
+def arcelormittal_esta_rodando():
+    try:
+        return bool(processos_arcelormittal())
+    except Exception as e:
+        logger.debug(f"Erro ao checar processo do ArcelorMittal: {e}")
+        return False
+
+
+def _emitir_estado_arcelormittal(status, mensagem=None):
+    global estado_arcelormittal
+    estado_arcelormittal = status
+    sio.emit('sincronizar_estado_arcelormittal', {'status': status})
+    if mensagem:
+        sio.emit('relatar_progresso_arcelormittal', {'mensagem': mensagem})
+
+
+def ligar_arcelormittal():
+    global bot_arcelormittal
+    if arcelormittal_esta_rodando():
+        _emitir_estado_arcelormittal('ligado', '⚠️ O robô ArcelorMittal já está rodando.')
+        return
+    pasta = obter_pasta_arcelormittal()
+    if not os.path.isdir(pasta):
+        msg = f"Pasta do ArcelorMittal não encontrada: {pasta}"
+        logger.error(msg)
+        _emitir_estado_arcelormittal('desligado', f"❌ {msg}")
+        return
+    # Janela antiga (robô que caiu com o cmd aberto) não fica acumulando
+    if bot_arcelormittal is not None and bot_arcelormittal.poll() is None:
+        os.system(f"taskkill /F /T /PID {bot_arcelormittal.pid} >nul 2>&1")
+    try:
+        _emitir_estado_arcelormittal('iniciando', f"🚀 Abrindo o cmd em {pasta} e executando 'dotnet run'...")
+        # /k: se o robô cair, a janela fica aberta mostrando o erro
+        bot_arcelormittal = subprocess.Popen(
+            f'cmd.exe /k "title {TITULO_JANELA_ARCELORMITTAL} & dotnet run"',
+            cwd=pasta,
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+        )
+        eventos.registrar('arcelormittal', 'ciclo', 'ok', 'Robô ArcelorMittal iniciado (dotnet run)')
+    except Exception as e:
+        logger.error(f"Erro ao iniciar o ArcelorMittal: {e}")
+        eventos.registrar('arcelormittal', 'ciclo', 'erro', f'Falha ao iniciar o ArcelorMittal: {e}')
+        bot_arcelormittal = None
+        _emitir_estado_arcelormittal('desligado', f"❌ Falha ao iniciar: {e}")
+
+
+def desligar_arcelormittal():
+    global bot_arcelormittal
+    sio.emit('relatar_progresso_arcelormittal', {'mensagem': '🛑 Encerrando o robô ArcelorMittal...'})
+    if bot_arcelormittal is not None:
+        os.system(f"taskkill /F /T /PID {bot_arcelormittal.pid} >nul 2>&1")
+        bot_arcelormittal = None
+    # Também derruba o que foi aberto à mão (fora do gerenciador)
+    try:
+        processos_robos.matar(processos_arcelormittal())
+    except Exception as e:
+        logger.warning(f"Erro ao encerrar processos do ArcelorMittal: {e}")
+    eventos.registrar('arcelormittal', 'ciclo', 'info', 'Robô ArcelorMittal desligado')
+    _emitir_estado_arcelormittal('desligado', '⏹️ Robô ArcelorMittal desligado.')
+
+
+def vigiar_arcelormittal(intervalo_s=5, reenvio_s=60):
+    """Checa se há 'dotnet run' do ArcelorMittal rodando e mantém o botão do portal no estado real."""
+    ultimo_envio = 0.0
+    while True:
+        try:
+            rodando = arcelormittal_esta_rodando()
+            if rodando:
+                novo = 'ligado'
+            elif estado_arcelormittal == 'iniciando' and bot_arcelormittal is not None and bot_arcelormittal.poll() is None:
+                novo = 'iniciando'   # cmd aberto, dotnet ainda subindo
+            else:
+                novo = 'desligado'
+            agora = time.time()
+            if novo != estado_arcelormittal:
+                msg = {'ligado': '✅ Robô ArcelorMittal rodando.',
+                       'desligado': '⏹️ Robô ArcelorMittal não está mais rodando.'}.get(novo)
+                _emitir_estado_arcelormittal(novo, msg)
+                ultimo_envio = agora
+            elif agora - ultimo_envio >= reenvio_s:   # portal reiniciado não fica com o botão errado
+                sio.emit('sincronizar_estado_arcelormittal', {'status': novo})
+                ultimo_envio = agora
+        except Exception as e:
+            logger.debug(f"Vigia do ArcelorMittal: {e}")
+        time.sleep(intervalo_s)
+
+
+@sio.on('pedir_estado_arcelormittal')
+def responder_estado_arcelormittal(dados=None):
+    sio.emit('sincronizar_estado_arcelormittal', {'status': 'ligado' if arcelormittal_esta_rodando() else estado_arcelormittal})
 
 
 # ========================================================
@@ -3219,13 +3382,25 @@ def esperar_robo_desligado(portal, espera_s=60):
         time.sleep(1)
 
 
-def loop_automacao():
+PAUSA_PILOTO_S = 90 * 60
+ultimo_ciclo_piloto = {}   # {'portal', 'fim'}: vai no arquivo de troca para o reinício suave não disparar ciclo extra
+
+
+def loop_automacao(retomar=None):
+    """retomar = {'portal': último ciclo antes de um reinício suave, 'falta_s': resto da pausa} (reinicio.retomada_piloto)."""
     logger.info("Auto-Pilot: Coupa (extração + verificação) -> 1h30 -> Vale (extração + verificação diária) -> 1h30")
     time.sleep(10)
 
     global ciclo_interrompido
+    pular_coupa = bool(retomar) and retomar['portal'] == 'coupa'   # depois do Coupa vem a Vale; depois da Vale, o Coupa
+    if retomar:
+        logger.info(f"Auto-Pilot: retomando depois do reinício; próximo ciclo em {retomar['falta_s'] // 60} min")
+        time.sleep(retomar['falta_s'])
     while True:
         for portal in ('coupa', 'vale'):
+            if pular_coupa:
+                pular_coupa = False
+                continue
             while True:
                 while modo_resposta_ativo:   # respostas do Minhas Cotações primeiro
                     time.sleep(5)
@@ -3237,7 +3412,8 @@ def loop_automacao():
                 logger.info(f"Auto-Pilot: ciclo do {portal} interrompido pelo modo resposta; refazendo depois das respostas")
             sio.emit(f'relatar_progresso_{portal}', {'mensagem': 'Auto-Pilot: pausa de 1h30...'})
             logger.info("Auto-Pilot: pausa de 1h30...")
-            time.sleep(90 * 60)
+            ultimo_ciclo_piloto.update(portal=portal, fim=time.time())
+            time.sleep(PAUSA_PILOTO_S)
 
 
 # === SINCRONIZAÇÃO MANUAL (botões do dashboard do admin; docs/sincronizacao no portal) ===
@@ -3342,28 +3518,137 @@ def backup_inicial():
 
 RECONECTAR_S = 10
 
-if __name__ == '__main__':
-    # Threads só no gerenciador de verdade: importar este arquivo (testes, bots) não liga o piloto
-    if os.environ.get('MAESTRO_SEM_PILOTO') != '1':
-        threading.Thread(target=loop_automacao, daemon=True).start()
-        threading.Thread(target=monitorar_pastas_impressao, daemon=True).start()
-    
 
-    threading.Thread(target=loop_agendamento, daemon=True).start()
-    threading.Thread(target=loop_metricas_servidor, daemon=True).start()
-    threading.Thread(target=vigiar_comprasgov, daemon=True).start()
-    threading.Thread(target=vigiar_robos, daemon=True).start()
-    backup_inicial()
+def conectar_ao_servidor():
     # Portal fora do ar na partida (reinício do Site-Maestro, reboot) não fecha o gerenciador: tenta até conectar.
     # Depois de conectado, quedas são reconectadas pelo próprio socketio.
     while True:
         try:
             logger.info(f"Conectando ao servidor: {URL_DO_SERVIDOR} ...")
             sio.connect(URL_DO_SERVIDOR, auth={"robo_secret": ROBO_SECRET})
-            break
+            return
         except Exception as e:
             logger.error(f"Erro ao conectar com o servidor: {e}. Nova tentativa em {RECONECTAR_S} s.")
             time.sleep(RECONECTAR_S)
-    sio.wait()
+
+
+# === REINÍCIO SUAVE (reinicio.py): o atualizador pede; o gerenciador troca a si mesmo quando fica livre ===
+REINICIO_INTERVALO_S = 3
+ESPERA_COMANDOS_S = 30
+
+
+def readotar_robos():
+    """Robôs externos que já estão rodando na partida (seguiram ligados num reinício, ou foram abertos à mão):
+    volta a ler o log de cada um, para o terminal do site continuar e o fim da rotina ser percebido."""
+    global rodando_monitor_me, rodando_monitor_ariba, rodando_monitor_findes, rodando_monitor_findes_novo
+    achados = []
+    if me_esta_rodando() and not rodando_monitor_me:
+        rodando_monitor_me = True
+        threading.Thread(target=monitorar_log_me, daemon=True).start()
+        achados.append('me')
+    if ariba_esta_rodando() and not rodando_monitor_ariba:
+        rodando_monitor_ariba = True
+        threading.Thread(target=monitorar_log_ariba, daemon=True).start()
+        achados.append('ariba')
+    if findes_antigo_esta_rodando() and not rodando_monitor_findes:
+        rodando_monitor_findes = True
+        threading.Thread(target=monitorar_log_findes, daemon=True).start()
+        achados.append('findes_antigo')
+    if findes_novo_esta_rodando() and not rodando_monitor_findes_novo:
+        rodando_monitor_findes_novo = True
+        threading.Thread(target=monitorar_log_findes_novo, daemon=True).start()
+        achados.append('findes')
+    if achados:
+        logger.info(f"Robôs já ligados na partida, acompanhando de novo: {', '.join(achados)}")
+    return achados
+
+
+def _tamanhos_dos_logs():
+    tamanhos = {}
+    for robo, caminho in LOGS_ROBOS.items():
+        try:
+            tamanhos[robo] = os.path.getsize(caminho)
+        except OSError:
+            pass
+    return tamanhos
+
+
+def fechar_para_reiniciar():
+    """Solta o que o processo novo vai usar: socket, navegador do Coupa/Vale e a trava de instância.
+    Devolve False (e volta a conectar) se algo começou depois da checagem: o pedido fica para a próxima."""
+    try:
+        sio.disconnect()   # nenhum comando novo chega daqui em diante
+    except Exception:
+        logger.exception('Reinício: falha ao desconectar do portal')
+    limite = time.time() + ESPERA_COMANDOS_S
+    while reinicio.comandos.ativos() and time.time() < limite:   # o que já estava rodando termina
+        time.sleep(0.2)
+    ocupados = robos_ocupados()
+    if ocupados:
+        logger.info(f"Reinício adiado: começou {', '.join(ocupados)} bem na hora da troca")
+        conectar_ao_servidor()
+        return False
+    reinicio.salvar_troca(PASTA_GERENCIADOR, {'ultimo_ciclo': dict(ultimo_ciclo_piloto), 'logs': _tamanhos_dos_logs()})
+    for portal in ('coupa', 'vale'):   # ligado e parado (sem tarefa): fecha o navegador para não sobrar Chrome
+        if globals().get('bot_' + portal) is not None:
+            try:
+                desligar_coupa_vale(portal)
+            except Exception:
+                logger.exception(f'Reinício: falha ao desligar o robô {portal}')
+    trava = globals().get('_TRAVA_INSTANCIA')
+    if trava is not None:
+        trava.close()
+    return True
+
+
+def _abrir_o_novo():
+    reinicio.relancar()
+    logging.shutdown()
+    os._exit(0)   # sem taskkill: os robôs externos (ME, Ariba, Findes, ComprasGov) seguem nas janelas deles
+
+
+def loop_reinicio():
+    avisado = None
+    while True:
+        time.sleep(REINICIO_INTERVALO_S)
+        try:
+            pedido = reinicio.ler_pedido(PASTA_GERENCIADOR)
+            if pedido and pedido.get('versao') != VERSAO and avisado != pedido.get('versao'):
+                avisado = pedido.get('versao')
+                logger.warning(f"Atualização pronta ({str(avisado)[:7]}): reinicio assim que nada estiver em andamento "
+                               f"(agora: {', '.join(robos_ocupados()) or 'livre'}). Robôs externos seguem ligados.")
+            reinicio.tentar(PASTA_GERENCIADOR, VERSAO, robos_ocupados, fechar_para_reiniciar, _abrir_o_novo)
+        except Exception:
+            logger.exception('Falha no reinício suave')
+
+
+if __name__ == '__main__':
+    # Threads só no gerenciador de verdade: importar este arquivo (testes, bots) não liga o piloto
+    if os.environ.get('MAESTRO_SEM_PILOTO') != '1':
+        _retomar = reinicio.retomada_piloto(TROCA, time.time(), PAUSA_PILOTO_S)
+        threading.Thread(target=loop_automacao, args=(_retomar,), daemon=True).start()
+        threading.Thread(target=monitorar_pastas_impressao, daemon=True).start()
+
+
+    threading.Thread(target=loop_agendamento, daemon=True).start()
+    threading.Thread(target=loop_metricas_servidor, daemon=True).start()
+    threading.Thread(target=vigiar_comprasgov, daemon=True).start()
+    threading.Thread(target=vigiar_arcelormittal, daemon=True).start()
+    threading.Thread(target=vigiar_robos, daemon=True).start()
+    if TROCA:
+        logger.warning(f"Gerenciador reiniciado pelo atualizador na versão {VERSAO[:7]} (PID {os.getpid()}).")
+    _readotados = []
+    try:
+        _readotados = readotar_robos()
+    except Exception:
+        logger.exception('Falha ao readotar os robôs já ligados')
+    backup_inicial()
+    conectar_ao_servidor()
+    for _robo in _readotados:   # o botão do portal mostra o estado real logo na conexão
+        sio.emit(_ESTADOS_ROBOS[_robo][0], {'status': _ESTADOS_ROBOS[_robo][1]})
+    threading.Thread(target=loop_reinicio, daemon=True).start()
+    while True:
+        sio.wait()
+        time.sleep(1)   # desconexão de propósito no reinício suave: quem encerra o processo é o loop_reinicio
 
 

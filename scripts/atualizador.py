@@ -1,10 +1,13 @@
 """Atualização automática do gerenciador e do portal (rodado a cada 5 min pelo Agendador de Tarefas).
 
-Gerenciador: com os robôs parados, guarda os arquivos de dados, avança para o commit novo do GitHub, devolve os
-arquivos de dados (o pull pode apagá-los, como em 21/10), roda os testes e reinicia; teste que falha volta a versão.
+Gerenciador: sem nada em andamento, guarda os arquivos de dados, avança para o commit novo do GitHub, devolve os
+arquivos de dados (o pull pode apagá-los, como em 21/10), roda os testes e pede o reinício; teste que falha volta a versão.
+Reinício suave (reinicio.py): o atualizador não mata nem abre o gerenciador. Grava o pedido e o gerenciador troca
+a si mesmo quando fica livre, no mesmo contexto em que foi aberto. Robô externo ligado 24/7 (ME, Ariba, Findes,
+ComprasGov) não segura a atualização nem é fechado por ela; só tarefa do Coupa/Vale ou comando de usuário no meio.
 Portal: avança, instala dependências se mudaram, confere a sintaxe e faz pm2 restart; site que não sobe volta a versão.
-Nunca reinicia com robô trabalhando (gerenciador.estado). Liga/desliga: "atualizacao_automatica" no CONFIG.json
-(Configurações do dashboard2). Resultado na Atividade; erro também por e-mail.
+Só reinicia o portal sem usuário mexendo nos últimos minutos (portal.estado). Liga/desliga: "atualizacao_automatica"
+no CONFIG.json (Configurações do dashboard2). Resultado na Atividade; erro também por e-mail.
 
 Instalação: scripts/instalar_atualizador.ps1. Rodar à mão: python scripts/atualizador.py
 """
@@ -23,6 +26,7 @@ sys.path.insert(0, RAIZ)
 import ambiente        # noqa: E402
 import eventos         # noqa: E402
 import instancia_unica  # noqa: E402
+import reinicio        # noqa: E402
 
 DADOS = ('CONFIG.json', '.env', 'banco_usuarios.json', 'banco_ips_bloqueados.json')   # do servidor: produção vence
 DADOS_PORTAL = ('.env', 'dados/prints_respostas.json', 'dados/erros_respostas.json')
@@ -30,6 +34,10 @@ PORTAL_PM2 = 'Site-Maestro'
 ESTADO_VALIDO_S = 120           # gerenciador.estado mais velho que isso = gerenciador não está rodando
 AVISO_ESPERA_S = 2 * 3600       # atualização esperando robôs há mais que isso: avisa na Atividade (e continua esperando)
 REPETIR_AVISO_S = 6 * 3600      # o mesmo erro não é avisado a cada 5 min
+ESPERA_TROCA_S = 60             # quanto esta rodada espera o gerenciador trocar; ocupado, ele troca depois sozinho
+PASSO_TROCA_S = 2
+PORTAL_QUIETO_S = 180           # portal só reinicia sem ação de usuário há mais que isso
+ROBOS_INTERNOS = ('coupa', 'vale')   # rodam dentro do gerenciador; os outros têm janela própria e sobrevivem ao reinício
 BACKUPS_GUARDADOS = 10
 DESLIGADO = {'nao', 'não', 'n', 'false', '0', 'off', 'desligado', 'desligada'}
 PM2 = 'pm2.cmd' if os.name == 'nt' else 'pm2'
@@ -124,10 +132,18 @@ def ler_estado():
     return estado if time.time() - estado.get('em', 0) <= ESTADO_VALIDO_S else None
 
 
+def em_andamento(estado):
+    """O que segura a atualização. O gerenciador novo ('suave') já lista só isso; o antigo listava também os robôs
+    externos enquanto ligados (24/7: a atualização nunca entrava), que aqui não contam."""
+    nomes = list((estado or {}).get('ocupados') or [])
+    return nomes if (estado or {}).get('suave') else [n for n in nomes if n in ROBOS_INTERNOS]
+
+
 def ocupado(estado):
-    """True se há robô trabalhando (só chamado com atualização pendente). Espera longa é avisada uma vez."""
+    """True se há algo em andamento (só chamado com atualização pendente). Espera longa é avisada uma vez."""
     ctl = _controle()
-    if not (estado and estado.get('ocupados')):
+    nomes = em_andamento(estado)
+    if not nomes:
         if ctl.pop('espera', None) is not None:
             _salvar_controle(ctl)
         return False
@@ -136,8 +152,8 @@ def ocupado(estado):
     espera['avisado'] = espera['avisado'] or avisa
     _salvar_controle(ctl)
     if avisa:
-        avisar('espera', 'aviso', f"Atualização esperando há mais de {AVISO_ESPERA_S // 3600} h: robôs ocupados "
-                                  f"({', '.join(estado['ocupados'])}).")
+        avisar('espera', 'aviso', f"Atualização esperando há mais de {AVISO_ESPERA_S // 3600} h: em andamento "
+                                  f"({', '.join(nomes)}).")
     return True
 
 
@@ -219,28 +235,89 @@ def rodar_testes(repo, rodar=rodar):
     return codigo == 0, (saida.strip().splitlines() or [''])[-1]
 
 
-def _pythonw():
-    candidato = os.path.join(os.path.dirname(sys.executable), 'pythonw.exe' if os.name == 'nt' else 'python3')
-    return candidato if os.path.exists(candidato) else _python()
+# Log central do gerenciador (gerenciador.py grava nele): o reinício aparece entre as linhas dele, com hora
+LOG_CENTRAL = r"\\SERVIDOR2\Publico\ALLAN\Logs\gerenciador.txt"
 
 
-def reiniciar_gerenciador(pid, rodar=rodar):
+def log_central(msg):
+    """Linha no gerenciador.txt da rede e no logs/gerenciador.log local; sem rede só fica no log do atualizador."""
+    log(msg)
+    linha = f"{datetime.now():%Y-%m-%d %H:%M:%S},000 [PID {os.getpid()}] [atualizador] atualizador WARNING {msg}\n"
+    for caminho in (LOG_CENTRAL, os.path.join(RAIZ, 'logs', 'gerenciador.log')):
+        try:
+            with open(caminho, 'a', encoding='utf-8') as f:
+                f.write(linha)
+        except OSError as e:
+            log(f"Falha ao gravar em {caminho}: {e}")
+
+
+def iniciar_gerenciador():
+    """Reserva: abre o gerenciador a partir do atualizador (nasce no contexto da tarefa agendada, não no de quem o
+    abriu). Só para o gerenciador antigo, que não reinicia sozinho, ou para um que não voltou depois do pedido."""
+    # python.exe em console próprio: volta na tela como quem abriu à mão (pythonw sumia em segundo plano)
+    if os.name == 'nt':
+        subprocess.Popen([_python(), 'gerenciador.py'], cwd=RAIZ, creationflags=subprocess.CREATE_NEW_CONSOLE)
+    else:
+        subprocess.Popen([_python(), 'gerenciador.py'], cwd=RAIZ, start_new_session=True)
+
+
+def reiniciar_gerenciador(pid, rodar=rodar, iniciar=iniciar_gerenciador, espera=time.sleep):
+    """À força, só para o gerenciador antigo. Sem /T: os robôs externos (ME, Ariba, Findes) seguem ligados; o Chrome
+    do Coupa/Vale que sobrar é fechado pelo navegador.preparar no próximo ligar."""
     if pid:
-        rodar(['taskkill', '/PID', str(pid), '/T', '/F'], RAIZ, timeout=60)   # /T leva junto o Chrome dos robôs
-        time.sleep(5)
-    subprocess.Popen(f'start "" "{_pythonw()}" gerenciador.py', cwd=RAIZ, shell=True)
+        rodar(['taskkill', '/PID', str(pid), '/F'], RAIZ, timeout=60)
+        espera(5)
+    iniciar()
 
 
-def atualizar_gerenciador(rodar=rodar, testar=None, reiniciar=reiniciar_gerenciador):
+def pedir_reinicio(estado, versao, ler=ler_estado, espera=time.sleep):
+    """Grava o pedido e espera um pouco. True se o gerenciador já trocou de processo para a versão nova; False se
+    segue ocupado (ele troca sozinho quando ficar livre; a rodada seguinte confere)."""
+    reinicio.pedir(RAIZ, versao)
+    for _ in range(ESPERA_TROCA_S // PASSO_TROCA_S):
+        espera(PASSO_TROCA_S)
+        novo = ler()
+        if novo and novo.get('pid') != estado.get('pid') and novo.get('versao') == versao:
+            return True
+    return False
+
+
+def _conferir_pedido(estado, iniciar):
+    """Pedido de reinício de uma rodada anterior: voltou na versão nova (avisa), sumiu (abre e avisa) ou ainda espera.
+    True se a rodada acaba aqui."""
+    ctl = _controle()
+    pedido = ctl.get('pedido')
+    if not pedido:
+        return False
+    if estado and estado.get('versao') != pedido['versao']:
+        return False                                   # ainda ocupado na versão antiga: o pedido continua valendo
+    ctl.pop('pedido')
+    _salvar_controle(ctl)
+    if estado:
+        avisar('gerenciador-reinicio', 'ok', f"Gerenciador reiniciado na versão {pedido['versao'][:7]}.")
+        return False
+    reinicio.limpar_pedido(RAIZ)
+    log_central(f"Gerenciador não voltou depois do pedido de reinício para {pedido['versao'][:7]}: aberto pelo atualizador.")
+    iniciar()
+    avisar('gerenciador-reinicio', 'erro', f"O gerenciador fechou para atualizar para {pedido['versao'][:7]} e não voltou "
+                                           f"sozinho; foi aberto pelo atualizador. Confira o logs/gerenciador.log.", email=True)
+    return True
+
+
+def atualizar_gerenciador(rodar=rodar, testar=None, reiniciar=reiniciar_gerenciador, pedir=pedir_reinicio,
+                          iniciar=iniciar_gerenciador):
     testar = testar or (lambda repo: rodar_testes(repo, rodar))
     estado = ler_estado()
+    if _conferir_pedido(estado, iniciar):
+        return
     nova = novidade(RAIZ, rodar)
     # rodando com código velho: atualização baixada numa rodada em que um robô começou a trabalhar, ou pull à mão
     desatualizado = bool(estado and estado.get('versao') and estado['versao'] != head(RAIZ, rodar))
     if not (nova or desatualizado):
         return
-    if ocupado(estado):
-        log(f"Gerenciador: atualização pendente; robôs ocupados ({', '.join(estado['ocupados'])}).")
+    suave = bool(estado and estado.get('suave'))
+    if (nova or not suave) and ocupado(estado):   # baixar código com tarefa no meio mistura versões; o antigo é morto
+        log(f"Gerenciador: atualização pendente; em andamento ({', '.join(em_andamento(estado))}).")
         return
     if nova:
         atual, remoto = nova
@@ -260,8 +337,26 @@ def atualizar_gerenciador(rodar=rodar, testar=None, reiniciar=reiniciar_gerencia
     if not estado:
         log("Gerenciador não está rodando: código atualizado, mas não foi iniciado.")
         return
-    reiniciar(estado.get('pid'))
-    avisar('gerenciador-reinicio', 'ok', f"Gerenciador reiniciado na versão {head(RAIZ, rodar)[:7]}.")
+    versao = head(RAIZ, rodar)
+    versoes = f"versão {str(estado.get('versao') or '?')[:7]} -> {versao[:7]}"
+    if not suave:   # gerenciador de antes do reinício suave: não lê pedido; esta é a última vez à força
+        log_central(f"Gerenciador PID {estado.get('pid')} encerrado pelo atualizador automático para reiniciar: {versoes}.")
+        reiniciar(estado.get('pid'))
+        avisar('gerenciador-reinicio', 'ok', f"Gerenciador reiniciado na versão {versao[:7]}.")
+        return
+    ctl = _controle()
+    if (ctl.get('pedido') or {}).get('versao') == versao:
+        reinicio.pedir(RAIZ, versao)   # já pedido numa rodada anterior: só garante o arquivo, sem esperar de novo
+        return
+    log_central(f"Gerenciador PID {estado.get('pid')}: reinício pedido pelo atualizador automático ({versoes}). "
+                f"Ele troca sozinho quando nada estiver em andamento; os robôs externos seguem ligados.")
+    if pedir(estado, versao):
+        avisar('gerenciador-reinicio', 'ok', f"Gerenciador reiniciado na versão {versao[:7]}.")
+        return
+    ctl = _controle()
+    ctl['pedido'] = {'versao': versao, 'em': time.time()}
+    _salvar_controle(ctl)
+    log("Gerenciador: pedido de reinício entregue; ele troca quando ficar livre.")
 
 
 # ---------- portal ----------
@@ -304,6 +399,20 @@ def _instalar_e_reiniciar(repo, deps, rodar):
         raise Falha(f"pm2 restart falhou: {saida.strip()[:200]}")
 
 
+def portal_em_uso(repo):
+    """Alguém mexeu no site nos últimos PORTAL_QUIETO_S? O portal grava portal.estado (lib/atividade-usuarios.js).
+    Sem o arquivo, ou com ele velho (portal de antes disso, ou caído), não segura a atualização."""
+    try:
+        with open(os.path.join(repo, 'portal.estado'), encoding='utf-8') as f:
+            estado = json.load(f)
+        agora = time.time() * 1000
+        if agora - estado['em'] > ESTADO_VALIDO_S * 1000:
+            return False
+        return agora - estado['ultima_acao_em'] < PORTAL_QUIETO_S * 1000
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def atualizar_portal(rodar=rodar, espera=time.sleep):
     processo = _portal(rodar)
     if not processo:
@@ -314,7 +423,10 @@ def atualizar_portal(rodar=rodar, espera=time.sleep):
     if not nova:
         return
     if ocupado(ler_estado()):   # o restart do portal derruba a conexão do gerenciador
-        log("Portal: atualização pendente; robôs ocupados.")
+        log("Portal: atualização pendente; gerenciador com tarefa em andamento.")
+        return
+    if portal_em_uso(repo):     # o restart derruba quem está no meio de uma ação no site
+        log("Portal: atualização pendente; usuário usando o site agora.")
         return
     atual, remoto = nova
     deps = any(n.startswith('package') for n in git(repo, 'diff', '--name-only', atual, remoto, rodar=rodar)[1].split())
