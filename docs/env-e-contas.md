@@ -12,6 +12,16 @@ anteriores, e os testes (`python -m pytest -q` ou `python -m unittest discover -
 | `ROBO_SECRET` | conexão com o portal (32+ caracteres, igual ao do portal) | o gerenciador não sobe |
 | `PORTAL_SENHA` | login dos robôs Coupa e Vale | o login do robô falha com "PORTAL_SENHA não configurada" |
 
+## Variáveis do DAV pelo Cotafrete (`ponte_dav.py`)
+
+| Variável | Para quê | Sem ela |
+|---|---|---|
+| `COTAFRETE_TOKEN` | token da API `/api/dav` do Cotafrete; igual ao `DAV_API_TOKEN` do `.env` do Cotafrete | o portal mostra "Gerenciador sem COTAFRETE_TOKEN" e não gera o DAV |
+| `COTAFRETE_URL` | endereço do Cotafrete na rede local (padrão `http://192.168.1.250:8000`) | usa o padrão |
+
+Se o Cotafrete passar a ouvir só em `127.0.0.1` (`setx /M COTAFRETE_HOST 127.0.0.1`), a rede local fecha e o portal
+mostra "Cotafrete fora do alcance".
+
 Senhas e chaves ficam só no `.env` e no `CONFIG.json` do servidor, nunca no código: o repositório é público.
 O atualizador automático (`scripts/atualizador.py`) preserva esses arquivos.
 

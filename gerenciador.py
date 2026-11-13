@@ -169,6 +169,7 @@ import eventos
 import seguranca
 import processos_robos
 import reinicio
+import ponte_dav
 TROCA = {}   # o que o processo anterior deixou ao reiniciar pelo atualizador (reinicio.py); vazio na partida normal
 if __name__ == '__main__':
     eventos.ativar()   # só o gerenciador de verdade grava eventos; testes importam sem gravar
@@ -2257,6 +2258,12 @@ def admin_alterar_vendedor_usuario(dados):
 def connect():
     logger.info("?? Conectado!")
     sio.emit('sou_o_robo')
+
+@sio.on('gerar_dav')
+def gerar_dav(dados):
+    # Planilha Base -> DAV pelo Cotafrete (ponte_dav.py). Thread à parte: a
+    # espera pelo HSE não segura o socket nem a fila dos robôs.
+    ponte_dav.iniciar(dados or {}, sio.emit)
 
 @sio.on('comando_imprimir')
 def comando_imprimir(dados):
