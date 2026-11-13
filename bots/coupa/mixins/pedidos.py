@@ -39,7 +39,8 @@ from docx.shared import Pt, RGBColor, Cm
 import base64
 
 from bots.coupa.pedidos_novos import (carregar_lidos, enviar_email_pedidos_novos, gravar_fora_planilha,
-                                      numeros_planilha, registrar_lido)
+                                      marcar_avisados, numeros_planilha, pendentes_aviso, registrar_lido,
+                                      registrar_lidos)
 
 logger = logging.getLogger("CoupaApp")
 logger.setLevel(logging.INFO)
@@ -68,6 +69,11 @@ class PedidosMixin:
             self.sio.emit('tarefa_concluida', {'evento': 'Listagem de Pedidos', 'sucesso': False, 'erro': str(e), 'portal': 'coupa'})
             return []
         logger.info(f" {len(pedidos_existentes)} pedidos já conhecidos (lidos + planilha).")
+        # Primeira execução (sem PEDIDOS-LIDOS-COUPA.json): só anota os números do histórico, sem abrir nem
+        # avisar; senão abriria centenas de pedidos antigos e mandaria um e-mail com todos
+        semente = not os.path.exists(self.ARQUIVO_PEDIDOS_LIDOS)
+        if semente:
+            logger.info(" Primeira execução: registrando o histórico de pedidos sem abrir nem enviar e-mail.")
 
         clientes_alvo = ["Vale", "Vale Base Metals"]
 
@@ -166,6 +172,14 @@ class PedidosMixin:
                     else:
                         paginas_sem_novo = 0
                 
+                    if semente:
+                        agora = datetime.now().strftime('%d/%m/%Y %H:%M')
+                        registrar_lidos(self.ARQUIVO_PEDIDOS_LIDOS, [
+                            {'pedido': p['num'], 'avisado': True, 'semente': True, 'lido_em': agora}
+                            for p in pedidos_novos_na_pagina])
+                        pedidos_existentes.update(p['num'] for p in pedidos_novos_na_pagina)
+                        pedidos_novos_na_pagina = []
+
                     for p in pedidos_novos_na_pagina:
                         if self.solicitacao_parada:
                             break
@@ -313,6 +327,7 @@ class PedidosMixin:
                                 'vendedor': vendedor_encontrado,
                                 'itens': itens,
                                 'lido_em': datetime.now().strftime('%d/%m/%Y %H:%M'),
+                                'avisado': False,
                             }
                             pedidos_detalhes.append(novo_pedido)
                             pedidos_existentes.add(num)
@@ -360,21 +375,26 @@ class PedidosMixin:
 
         # Também depois de parada ou erro: o que já foi lido está em PEDIDOS-LIDOS-COUPA.json e não seria
         # visto de novo na próxima vez, então o aviso sai agora
+        # O aviso leva os novos desta vez e os de antes cujo e-mail falhou (avisado False), se ainda fora da planilha
         email_enviado = False
+        pendentes = []
         try:
-            gravar_fora_planilha(self.ARQUIVO_PEDIDOS_FORA_PLANILHA, carregar_lidos(self.ARQUIVO_PEDIDOS_LIDOS),
-                                 numeros_planilha(self.ARQUIVO_PLANILHA_PEDIDOS))
+            lidos, planilha = carregar_lidos(self.ARQUIVO_PEDIDOS_LIDOS), numeros_planilha(self.ARQUIVO_PLANILHA_PEDIDOS)
+            gravar_fora_planilha(self.ARQUIVO_PEDIDOS_FORA_PLANILHA, lidos, planilha)
+            pendentes = pendentes_aviso(lidos, planilha)
         except Exception as e:
-            logger.error(f" Falha ao gravar PEDIDOS-FORA-PLANILHA.json: {e}")
+            logger.error(f" Falha ao montar PEDIDOS-FORA-PLANILHA.json / pendentes de aviso: {e}")
         try:
-            email_enviado = enviar_email_pedidos_novos(pedidos_detalhes, self.config, logger)
+            email_enviado = enviar_email_pedidos_novos(pendentes, self.config, logger)
+            if email_enviado:
+                marcar_avisados(self.ARQUIVO_PEDIDOS_LIDOS, {p['pedido'] for p in pendentes})
         except Exception as e:
             logger.error(f" Falha ao enviar e-mail dos pedidos novos: {e}")
-        logger.info(f" {len(pedidos_detalhes)} pedido(s) novo(s) encontrado(s).")
+        logger.info(f" {len(pedidos_detalhes)} pedido(s) novo(s) lido(s); {len(pendentes)} no aviso por e-mail.")
 
-        conclusao = {'evento': 'Listagem de Pedidos', 'sucesso': erro is None, 'total': len(pedidos_detalhes),
-                     'email_enviado': email_enviado, 'portal': 'coupa',
-                     'pedidos': [p['pedido'] for p in pedidos_detalhes]}
+        conclusao = {'evento': 'Listagem de Pedidos', 'sucesso': erro is None, 'total': len(pendentes),
+                     'email_enviado': email_enviado, 'portal': 'coupa', 'semente': semente,
+                     'pedidos': [p['pedido'] for p in pendentes]}
         if erro:
             conclusao['erro'] = erro
         self.sio.emit('tarefa_concluida', conclusao)

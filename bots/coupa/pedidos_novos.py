@@ -59,14 +59,33 @@ def _gravar_json(caminho, dados):
         raise
 
 
-def registrar_lido(caminho, pedido):
+def registrar_lidos(caminho, pedidos):
     lidos = carregar_lidos(caminho)
-    for i, p in enumerate(lidos):
-        if p.get('pedido') == pedido.get('pedido'):
+    posicao = {p.get('pedido'): i for i, p in enumerate(lidos)}
+    for pedido in pedidos:
+        i = posicao.get(pedido.get('pedido'))
+        if i is None:
+            posicao[pedido.get('pedido')] = len(lidos)
+            lidos.append(pedido)
+        else:
             lidos[i] = pedido
-            break
-    else:
-        lidos.append(pedido)
+    _gravar_json(caminho, lidos)
+
+
+def registrar_lido(caminho, pedido):
+    registrar_lidos(caminho, [pedido])
+
+
+def pendentes_aviso(lidos, planilha):
+    """Lidos que ainda não foram avisados por e-mail e continuam fora da planilha (sem a chave = já avisado)."""
+    return [p for p in lidos if p.get('avisado', True) is False and str(p.get('pedido', '')).strip() not in planilha]
+
+
+def marcar_avisados(caminho, numeros):
+    lidos = carregar_lidos(caminho)
+    for p in lidos:
+        if p.get('pedido') in numeros:
+            p['avisado'] = True
     _gravar_json(caminho, lidos)
 
 

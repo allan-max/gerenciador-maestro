@@ -77,6 +77,32 @@ class ArquivosTest(unittest.TestCase):
         self.assertEqual(json.loads(self.fora.read_text(encoding='utf-8')), [])
 
 
+class AvisoTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.lidos = Path(self.tmp.name) / 'PEDIDOS-LIDOS-COUPA.json'
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_pendentes_aviso(self):
+        lidos = [{'pedido': '1', 'avisado': False}, {'pedido': '2', 'avisado': True},
+                 {'pedido': '3', 'avisado': False}, {'pedido': '4'}]
+        self.assertEqual([p['pedido'] for p in pn.pendentes_aviso(lidos, {'3'})], ['1'])
+
+    def test_marcar_avisados(self):
+        pn.registrar_lidos(str(self.lidos), [{'pedido': '1', 'avisado': False}, {'pedido': '2', 'avisado': False}])
+        pn.marcar_avisados(str(self.lidos), {'1'})
+        self.assertEqual([p['avisado'] for p in pn.carregar_lidos(str(self.lidos))], [True, False])
+
+    def test_registrar_lidos_lote(self):
+        pn.registrar_lidos(str(self.lidos), [{'pedido': '1'}, {'pedido': '2'}])
+        pn.registrar_lidos(str(self.lidos), [{'pedido': '2', 'x': 1}, {'pedido': '3'}])
+        dados = pn.carregar_lidos(str(self.lidos))
+        self.assertEqual([p['pedido'] for p in dados], ['1', '2', '3'])
+        self.assertEqual(dados[1]['x'], 1)
+
+
 PEDIDO = {'pedido': '4513771955', 'evento': '304622', 'cidade_estado': 'Barão de Cocais MG', 'frete': 'EXW',
           'total': '963,00', 'vendedor': 'MICHELI', 'itens': [{'texto': 'MOCHILA', 'prazo': '27/12/2026'}],
           'alertas': ['abrir chamado no 4513771955 por ser importado.']}
@@ -132,6 +158,11 @@ class ExtrairPedidosFonteTest(unittest.TestCase):
         for nome in ('numeros_planilha', 'registrar_lido', 'gravar_fora_planilha', 'enviar_email_pedidos_novos'):
             self.assertIn(nome, self.pedidos)
 
+    def test_primeira_execucao_so_semeia(self):
+        # Sem PEDIDOS-LIDOS-COUPA.json: grava os números sem abrir os pedidos e sem e-mail
+        for trecho in ('semente = not os.path.exists(self.ARQUIVO_PEDIDOS_LIDOS)', "'semente': True", 'registrar_lidos('):
+            self.assertIn(trecho, self.pedidos)
+
     def test_caminhos_no_banco(self):
         for trecho in ('PEDIDOS-LIDOS-COUPA.json', 'PEDIDOS-FORA-PLANILHA.json', 'pasta_banco()'):
             self.assertIn(trecho, self.principal)
@@ -176,6 +207,18 @@ class ExtrairPedidosFimTest(unittest.TestCase):
         enviar.assert_called_once()
         c = self.conclusao()
         self.assertEqual((c['evento'], c['sucesso'], c['total'], c['erro']), ('Listagem de Pedidos', False, 0, 'login caiu'))
+
+    def test_email_que_falhou_volta_na_proxima(self):
+        self.planilha.write_text(json.dumps({'PEDIDOS': []}), encoding='utf-8')
+        self.lidos.write_text(json.dumps([{'pedido': '1', 'avisado': False}, {'pedido': '2', 'avisado': True}]), encoding='utf-8')
+        with patch('bots.coupa.mixins.pedidos.enviar_email_pedidos_novos', return_value=False) as enviar:
+            self.bot.extrair_pedidos()
+        self.assertEqual([p['pedido'] for p in enviar.call_args.args[0]], ['1'])
+        self.assertFalse(pn.carregar_lidos(str(self.lidos))[0]['avisado'])
+        with patch('bots.coupa.mixins.pedidos.enviar_email_pedidos_novos', return_value=True) as enviar:
+            self.bot.extrair_pedidos()
+        self.assertEqual([p['pedido'] for p in enviar.call_args.args[0]], ['1'])
+        self.assertTrue(pn.carregar_lidos(str(self.lidos))[0]['avisado'])
 
     def test_planilha_ilegivel_aborta_sem_email(self):
         with patch('bots.coupa.mixins.pedidos.enviar_email_pedidos_novos') as enviar, patch.object(pn.time, 'sleep'):
