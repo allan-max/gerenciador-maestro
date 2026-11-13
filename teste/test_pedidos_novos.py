@@ -137,6 +137,14 @@ class ExtrairPedidosFonteTest(unittest.TestCase):
             self.assertIn(trecho, self.principal)
 
 
+class GerenciadorTest(unittest.TestCase):
+    def test_gerenciador_encaminha_extrair_pedidos(self):
+        import re
+        fonte = (RAIZ / 'gerenciador.py').read_text(encoding='utf-8')
+        listas = re.findall(r"elif modo in \[([^\]]*)\]:", fonte)
+        self.assertTrue(any("'extrair_pedidos'" in l and "'extrair'" in l and "'responder'" in l for l in listas))
+
+
 class ExtrairPedidosFimTest(unittest.TestCase):
     """Sem navegador: o login falha logo no início e só o fim da extração roda."""
 

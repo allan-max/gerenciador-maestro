@@ -1403,7 +1403,7 @@ WshShell.SendKeys "~"
             threading.Thread(target=forcar_troca, args=(portal,), daemon=True).start()
 
         # ?? INICIA TAREFAS NORMAIS ??
-        elif modo in ['extrair', 'verificar', 'responder']:
+        elif modo in ['extrair', 'verificar', 'responder', 'extrair_pedidos']:
             bot_alvo = bot_coupa if portal == 'coupa' else bot_vale
             if modo == 'responder' and bot_alvo is None:
                 bot_alvo = bot_coupa or bot_vale
