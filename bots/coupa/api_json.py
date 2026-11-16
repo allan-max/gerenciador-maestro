@@ -231,6 +231,14 @@ def ids_em_ordem(dados):
     return ids or [str(i) for i in ((dados or {}).get('lines') or {})]
 
 
+def tem_anexo_comprador(atributos):
+    """Arquivo que o comprador anexou na linha: vem em details (type AttachmentFile, com file_url).
+    'attachments' é o campo editável do fornecedor e fica vazio (evento 310675, 16/11/2026)."""
+    detalhes = _valor(atributos, 'details')
+    return any(isinstance(d, dict) and (d.get('type') == 'AttachmentFile' or d.get('file_url') or d.get('file_file_name'))
+               for d in (detalhes if isinstance(detalhes, list) else []))
+
+
 def itens_de_lots(paginas, filtrar_desc=lambda t: t):
     """(itens, tem_anexo) a partir das páginas do lots_with_lines."""
     itens, tem_anexo = [], False
@@ -240,7 +248,7 @@ def itens_de_lots(paginas, filtrar_desc=lambda t: t):
             atributos = (linhas.get(id_linha) or {}).get('attributes')
             if not isinstance(atributos, dict):
                 continue
-            if _valor(atributos, 'attachments'):
+            if tem_anexo_comprador(atributos) or _valor(atributos, 'attachments'):
                 tem_anexo = True
             itens.append(item_da_linha(atributos, len(itens) + 1, filtrar_desc))
     return itens, tem_anexo
@@ -252,6 +260,20 @@ def item_completo(item):
     return bool(local) and local != 'N/A' and any(_valido(item.get(c) or '') for c in ('descricao', 'texto_item', 'texto_compra'))
 
 
+_RESPONSE_ID_NO_HTML = re.compile(r'(?:quote_)?response_id=(\d+)')
+
+
+def response_id_da_pagina(driver):
+    """response_id escrito na página de edição. O rascunho que já existia abre como edit?supplier_id=0,
+    sem o id na URL (evento 310675, 16/11/2026); a página traz quote_response_id=N nos links."""
+    try:
+        conteudo = str(driver.execute_script("return document.documentElement.innerHTML") or '')
+    except Exception:
+        return None
+    m = _RESPONSE_ID_NO_HTML.search(conteudo)
+    return m.group(1) if m else None
+
+
 def ler_itens(driver, evento, filtrar_desc=lambda t: t):
     """(itens, tem_anexo) do rascunho de resposta aberto no navegador, ou None se a API não servir.
 
@@ -260,13 +282,16 @@ def ler_itens(driver, evento, filtrar_desc=lambda t: t):
         endereco = str(driver.execute_script("return location.href") or '')
     except Exception:
         return None
+    if not endereco.startswith(ORIGEM):
+        return None
     resposta = re.search(r'[?&]response_id=(\d+)', endereco)
-    if not endereco.startswith(ORIGEM) or not resposta:
+    resposta = resposta.group(1) if resposta else response_id_da_pagina(driver)
+    if not resposta:
         return None
 
     paginas = []
     for pagina in range(1, MAX_PAGINAS_ITENS + 1):
-        dados = buscar_json(driver, URL_ITENS.format(evento=evento, resposta=resposta.group(1), pagina=pagina), TIMEOUT_ITENS_S)
+        dados = buscar_json(driver, URL_ITENS.format(evento=evento, resposta=resposta, pagina=pagina), TIMEOUT_ITENS_S)
         if dados is None or not isinstance(dados.get('lines'), dict):
             return None
         paginas.append(dados)
@@ -373,6 +398,12 @@ def criar_rascunho(driver, evento, reaproveitar=True):
         logger.info("    Rascunho pela API: tela de termos não respondeu.")
         return None
     existente = _resposta_existente(r.get('url'), evento) or _resposta_existente(r.get('corpo'), evento)
+    if not existente and f'/external_responses/{evento}/edit' in str(r.get('url') or ''):
+        # rascunho que já existia: os termos redirecionam para edit?supplier_id=0, sem o id na URL
+        m = _RESPONSE_ID_NO_HTML.search(r.get('corpo') or '')
+        existente = m.group(1) if m else None
+        if not existente:
+            return None
     if existente and reaproveitar:
         logger.info(f"    Rascunho pela API: resposta {existente} já existia.")
         return URL_EDITAR.format(evento=evento, resposta=existente)

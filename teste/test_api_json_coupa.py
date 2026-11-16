@@ -73,8 +73,10 @@ class Navegador:
         self.abertas.append(url)
         self.current_url = url
 
+    html = ''
+
     def execute_script(self, script):
-        return self.current_url
+        return self.html if 'innerHTML' in script else self.current_url
 
     def execute_async_script(self, script, url, ms, metodo='GET', corpo=None, cabecalhos=None):
         self.pedidos.append(url)
@@ -203,6 +205,22 @@ class ItensDoEvento(unittest.TestCase):
             self.assertIsNone(api_json.ler_itens(nav, '307802'))
             self.assertEqual(nav.pedidos, [])
 
+    def test_anexo_do_comprador_vem_em_details(self):
+        # 310675 (16/11): o .docx do comprador veio em details; attachments (do fornecedor) veio vazio
+        arquivo = {'value': [{'id': 93959655, 'type': 'AttachmentFile', 'file_file_name': 'BINOCULO.docx',
+                              'file_url': 'https://vale.coupahost.com/attachment/attachment_file/file/93959655/BINOCULO.docx'}],
+                   'setting': 'show'}
+        nav = Navegador([lots({'7018945': atributos(details=arquivo)})], url=URL_EDICAO)
+        self.assertTrue(api_json.ler_itens(nav, '307802')[1])
+        nav = Navegador([lots({'1': atributos(details={'value': [], 'setting': 'show'})})], url=URL_EDICAO)
+        self.assertFalse(api_json.ler_itens(nav, '307802')[1])
+
+    def test_rascunho_existente_sem_id_na_url_le_o_id_da_pagina(self):
+        nav = Navegador([lots({'1': atributos()})], url='https://vale.coupahost.com/quotes/external_responses/310675/edit?supplier_id=0')
+        nav.html = '<a href="/quotes/responses_lots/lots_with_lines?quote_request_id=310675&quote_response_id=5119918">'
+        self.assertIsNotNone(api_json.ler_itens(nav, '310675'))
+        self.assertIn('quote_response_id=5119918', nav.pedidos[0])
+
     def test_sessao_expirada_nos_itens_devolve_none(self):
         self.assertIsNone(api_json.ler_itens(Navegador([{'status': 401, 'url': 'x', 'corpo': ''}], url=URL_EDICAO), '307802'))
 
@@ -288,6 +306,15 @@ class RascunhoSemCliques(unittest.TestCase):
         self.assertEqual(len(nav.detalhes), 1)
         nav = Navegador([http(tela_termos(resposta_existente='555')), http('{}'), http('<html>', url=EDITADO)], url=URL_TERMOS)
         self.assertEqual(api_json.criar_rascunho(nav, '308191', reaproveitar=False), EDITADO)
+
+    def test_termos_redirecionam_para_edicao_sem_id_na_url(self):
+        # 310675 (16/11): rascunho existente; /terms -> edit?supplier_id=0 e o id só aparece no HTML
+        edicao = 'https://vale.coupahost.com/quotes/external_responses/308191/edit?supplier_id=0'
+        nav = Navegador([http('<a href="...lots_with_lines?quote_response_id=5119918">', url=edicao)], url=URL_TERMOS)
+        self.assertTrue(api_json.criar_rascunho(nav, '308191').endswith('response_id=5119918'))
+        self.assertEqual(len(nav.detalhes), 1)
+        nav = Navegador([http('<html>sem id</html>', url=edicao)], url=URL_TERMOS)
+        self.assertIsNone(api_json.criar_rascunho(nav, '308191'))
 
     def test_ja_na_edicao_nao_faz_pedido(self):
         nav = Navegador([], url=URL_EDICAO)
