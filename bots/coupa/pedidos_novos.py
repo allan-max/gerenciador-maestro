@@ -95,6 +95,35 @@ def gravar_fora_planilha(caminho, lidos, planilha):
     return fora
 
 
+ONDE = ('planilha', 'banco do robô', 'planilha e banco do robô', 'novo')
+
+
+def onde_esta(numero, planilha, lidos):
+    """Onde o pedido visto no portal já estava: na planilha (PEDIDOS.json), no banco do robô (lidos), nos dois ou em nenhum."""
+    n = str(numero).strip()
+    na_planilha, no_banco = n in planilha, n in lidos
+    if na_planilha and no_banco:
+        return 'planilha e banco do robô'
+    return 'planilha' if na_planilha else 'banco do robô' if no_banco else 'novo'
+
+
+def resumo_pagina(cliente, pagina, linhas):
+    if not linhas:
+        return f"{cliente} · página {pagina}: nenhum pedido"
+    return f"{cliente} · página {pagina}: " + ", ".join(f"{l['pedido']} ({l['onde']})" for l in linhas)
+
+
+def contar_listagem(linhas):
+    contagem = dict.fromkeys(ONDE, 0)
+    for l in linhas:
+        contagem[l['onde']] = contagem.get(l['onde'], 0) + 1
+    return contagem
+
+
+def gravar_listagem(caminho, linhas):
+    _gravar_json(caminho, linhas)
+
+
 def gerar_email_pedidos_novos(novos):
     n = len(novos)
     assunto = f"Coupa: {n} pedido(s) novo(s) fora da planilha"

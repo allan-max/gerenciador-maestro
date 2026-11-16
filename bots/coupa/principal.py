@@ -94,6 +94,8 @@ class CoupaScraper(UtilitariosMixin, Banco_dadosMixin, PlanilhasMixin, Autentica
         self.ARQUIVO_PLANILHA_PEDIDOS = os.path.join(ambiente.pasta_banco(), "PEDIDOS.json")
         self.ARQUIVO_PEDIDOS_LIDOS = os.path.join(ambiente.pasta_banco(), "PEDIDOS-LIDOS-COUPA.json")
         self.ARQUIVO_PEDIDOS_FORA_PLANILHA = os.path.join(ambiente.pasta_banco(), "PEDIDOS-FORA-PLANILHA.json")
+        # Todos os pedidos vistos na última varredura: cliente, página e onde já estavam
+        self.ARQUIVO_PEDIDOS_LISTAGEM = os.path.join(ambiente.pasta_banco(), "PEDIDOS-LISTAGEM-COUPA.json")
         self.ARQUIVO_MARCAS_BLOQUEADAS = os.path.join(self.PASTA_DATABASE, "marcas_bloqueadas.xlsx")
         self.ARQUIVO_PLANILHA_CONTROLE = self.config.get("caminho_excel", r"\\SERVIDOR2\Publico\PLANILHA DE CONTROLE VALE - ESTAGIARIOS (copia 1).xlsx")
         self.solicitacao_parada = False

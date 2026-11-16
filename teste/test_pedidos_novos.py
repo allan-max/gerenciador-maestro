@@ -143,6 +143,37 @@ class EmailTest(unittest.TestCase):
         enviar.assert_not_called()
 
 
+class ListagemTest(unittest.TestCase):
+    """Cada pedido visto no portal: em que página está e se já estava na planilha ou no banco do robô."""
+
+    def test_onde_esta(self):
+        planilha, lidos = {'1', '3'}, {'2', '3'}
+        self.assertEqual([pn.onde_esta(n, planilha, lidos) for n in ('1', '2', '3', '4')],
+                         ['planilha', 'banco do robô', 'planilha e banco do robô', 'novo'])
+
+    def test_onde_esta_normaliza_espacos(self):
+        self.assertEqual(pn.onde_esta(' 1 ', {'1'}, set()), 'planilha')
+
+    def test_resumo_pagina(self):
+        linhas = [{'pedido': '10', 'onde': 'planilha'}, {'pedido': '11', 'onde': 'novo'}]
+        self.assertEqual(pn.resumo_pagina('Vale', 3, linhas), 'Vale · página 3: 10 (planilha), 11 (novo)')
+
+    def test_resumo_pagina_vazia(self):
+        self.assertEqual(pn.resumo_pagina('Vale', 2, []), 'Vale · página 2: nenhum pedido')
+
+    def test_contagem(self):
+        linhas = [{'onde': 'planilha'}, {'onde': 'novo'}, {'onde': 'novo'}, {'onde': 'banco do robô'}]
+        self.assertEqual(pn.contar_listagem(linhas),
+                         {'planilha': 1, 'banco do robô': 1, 'planilha e banco do robô': 0, 'novo': 2})
+
+    def test_gravar_listagem(self):
+        with tempfile.TemporaryDirectory() as d:
+            caminho = os.path.join(d, 'PEDIDOS-LISTAGEM-COUPA.json')
+            linhas = [{'cliente': 'Vale', 'pagina': 1, 'pedido': '10', 'onde': 'novo'}]
+            pn.gravar_listagem(caminho, linhas)
+            self.assertEqual(json.loads(Path(caminho).read_text(encoding='utf-8')), linhas)
+
+
 class ExtrairPedidosFonteTest(unittest.TestCase):
     """O fluxo Selenium não roda aqui: confere no fonte que ele não baixa PDF nem grava na planilha."""
 
@@ -163,8 +194,18 @@ class ExtrairPedidosFonteTest(unittest.TestCase):
         for trecho in ('semente = not os.path.exists(self.ARQUIVO_PEDIDOS_LIDOS)', "'semente': True", 'registrar_lidos('):
             self.assertIn(trecho, self.pedidos)
 
+    def test_sem_limite_de_paginas(self):
+        # Varre todas as páginas de cada cliente: só para na última página ou no PARAR
+        self.assertNotIn('paginas_sem_novo', self.pedidos)
+        self.assertIn('onde_esta(', self.pedidos)
+        self.assertIn('resumo_pagina(', self.pedidos)
+
+    def test_para_se_a_pagina_nao_avancou(self):
+        # Sem o limite, um "próxima" que não troca a página faria o robô reler a mesma página para sempre
+        self.assertIn('if numeros_pagina == numeros_anteriores:', self.pedidos)
+
     def test_caminhos_no_banco(self):
-        for trecho in ('PEDIDOS-LIDOS-COUPA.json', 'PEDIDOS-FORA-PLANILHA.json', 'pasta_banco()'):
+        for trecho in ('PEDIDOS-LIDOS-COUPA.json', 'PEDIDOS-FORA-PLANILHA.json', 'PEDIDOS-LISTAGEM-COUPA.json', 'pasta_banco()'):
             self.assertIn(trecho, self.principal)
 
 
@@ -189,6 +230,8 @@ class ExtrairPedidosFimTest(unittest.TestCase):
         self.bot = type('Bot', (PedidosMixin,), {})()
         self.bot.ARQUIVO_PLANILHA_PEDIDOS, self.bot.ARQUIVO_PEDIDOS_LIDOS = str(self.planilha), str(self.lidos)
         self.bot.ARQUIVO_PEDIDOS_FORA_PLANILHA = str(self.fora)
+        self.listagem = d / 'PEDIDOS-LISTAGEM-COUPA.json'
+        self.bot.ARQUIVO_PEDIDOS_LISTAGEM = str(self.listagem)
         self.bot.BASE_SUPPLIER_URL, self.bot.config, self.bot.sio = 'https://x', {}, MagicMock()
         self.bot.garantir_logado = MagicMock(side_effect=RuntimeError('login caiu'))
 
@@ -219,6 +262,16 @@ class ExtrairPedidosFimTest(unittest.TestCase):
             self.bot.extrair_pedidos()
         self.assertEqual([p['pedido'] for p in enviar.call_args.args[0]], ['1'])
         self.assertTrue(pn.carregar_lidos(str(self.lidos))[0]['avisado'])
+
+    def test_conclusao_leva_contagem_e_grava_listagem(self):
+        self.planilha.write_text(json.dumps({'PEDIDOS': []}), encoding='utf-8')
+        self.lidos.write_text(json.dumps([]), encoding='utf-8')
+        with patch('bots.coupa.mixins.pedidos.enviar_email_pedidos_novos', return_value=False):
+            self.bot.extrair_pedidos()
+        c = self.conclusao()
+        self.assertEqual(c['contagem'], {'planilha': 0, 'banco do robô': 0, 'planilha e banco do robô': 0, 'novo': 0})
+        self.assertEqual(c['novos_lidos'], [])
+        self.assertEqual(json.loads(self.listagem.read_text(encoding='utf-8')), [])
 
     def test_planilha_ilegivel_aborta_sem_email(self):
         with patch('bots.coupa.mixins.pedidos.enviar_email_pedidos_novos') as enviar, patch.object(pn.time, 'sleep'):

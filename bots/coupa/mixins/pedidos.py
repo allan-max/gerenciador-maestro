@@ -38,9 +38,9 @@ from docx.shared import Pt, RGBColor, Cm
 
 import base64
 
-from bots.coupa.pedidos_novos import (carregar_lidos, enviar_email_pedidos_novos, gravar_fora_planilha,
-                                      marcar_avisados, numeros_planilha, pendentes_aviso, registrar_lido,
-                                      registrar_lidos)
+from bots.coupa.pedidos_novos import (carregar_lidos, contar_listagem, enviar_email_pedidos_novos,
+                                      gravar_fora_planilha, gravar_listagem, marcar_avisados, numeros_planilha,
+                                      onde_esta, pendentes_aviso, registrar_lido, registrar_lidos, resumo_pagina)
 
 logger = logging.getLogger("CoupaApp")
 logger.setLevel(logging.INFO)
@@ -58,12 +58,14 @@ class PedidosMixin:
         self.solicitacao_parada = False
 
         pedidos_detalhes = []
-        
+        listagem = []   # todo pedido visto: cliente, página e onde já estava (planilha / banco do robô / novo)
+
         # Já conhecidos = lidos antes pelo robô + os que estão na planilha (PEDIDOS.json, só leitura).
         # Sem conseguir ler a planilha todo pedido pareceria novo: aborta sem varrer nem mandar e-mail.
         try:
-            pedidos_existentes = {str(p.get('pedido', '')).strip() for p in carregar_lidos(self.ARQUIVO_PEDIDOS_LIDOS)}
-            pedidos_existentes |= numeros_planilha(self.ARQUIVO_PLANILHA_PEDIDOS)
+            no_banco = {str(p.get('pedido', '')).strip() for p in carregar_lidos(self.ARQUIVO_PEDIDOS_LIDOS)}
+            na_planilha = numeros_planilha(self.ARQUIVO_PLANILHA_PEDIDOS)
+            pedidos_existentes = no_banco | na_planilha
         except Exception as e:
             logger.error(f" Não foi possível carregar os pedidos já conhecidos: {e}")
             self.sio.emit('tarefa_concluida', {'evento': 'Listagem de Pedidos', 'sucesso': False, 'erro': str(e), 'portal': 'coupa'})
@@ -118,8 +120,9 @@ class PedidosMixin:
                 except Exception as e:
                     logger.warning(f" Erro ao tentar selecionar o cliente: {e}")
                 
+                # Sem limite de páginas: só para na última página do cliente, no PARAR ou se a página não avançar
                 pagina_atual = 1
-                paginas_sem_novo = 0
+                numeros_anteriores = None
                 
                 while not self.solicitacao_parada:
                     logger.info(f" Aguardando tabela de pedidos carregar (Pagina {pagina_atual} - Cliente {cliente})...")
@@ -159,25 +162,31 @@ class PedidosMixin:
                         logger.error(f" Erro ao ler tabela de pedidos: {e}")
                     
                     logger.info(f" Total de pedidos encontrados nesta página: {len(pedidos_list)}")
+                    numeros_pagina = [p['num'] for p in pedidos_list]
+                    if numeros_pagina == numeros_anteriores:
+                        aviso = f"{cliente} · página {pagina_atual} igual à anterior: a paginação não avançou, indo para o próximo cliente."
+                        logger.warning(f" {aviso}")
+                        self.sio.emit('relatar_progresso_coupa', {'mensagem': aviso})
+                        break
+                    numeros_anteriores = numeros_pagina
                 
-                    # Filtra pedidos novos
-                    pedidos_novos_na_pagina = []
-                    for p in pedidos_list:
-                        if p['num'] not in pedidos_existentes:
-                            pedidos_novos_na_pagina.append(p)
-                            
-                    if not pedidos_novos_na_pagina:
-                        paginas_sem_novo += 1
-                        logger.info(f" Nenhum pedido novo nesta página. ({paginas_sem_novo}/3)")
-                    else:
-                        paginas_sem_novo = 0
+                    linhas_pagina = [{'cliente': cliente, 'pagina': pagina_atual, 'pedido': p['num'],
+                                      'onde': onde_esta(p['num'], na_planilha, no_banco)} for p in pedidos_list]
+                    listagem.extend(linhas_pagina)
+                    resumo = resumo_pagina(cliente, pagina_atual, linhas_pagina)
+                    logger.info(f" {resumo}")
+                    self.sio.emit('relatar_progresso_coupa', {'mensagem': resumo})
+
+                    pedidos_novos_na_pagina = [p for p in pedidos_list if p['num'] not in pedidos_existentes]
                 
                     if semente:
                         agora = datetime.now().strftime('%d/%m/%Y %H:%M')
                         registrar_lidos(self.ARQUIVO_PEDIDOS_LIDOS, [
-                            {'pedido': p['num'], 'avisado': True, 'semente': True, 'lido_em': agora}
+                            {'pedido': p['num'], 'avisado': True, 'semente': True, 'lido_em': agora,
+                             'cliente': cliente, 'pagina': pagina_atual}
                             for p in pedidos_novos_na_pagina])
                         pedidos_existentes.update(p['num'] for p in pedidos_novos_na_pagina)
+                        no_banco.update(p['num'] for p in pedidos_novos_na_pagina)
                         pedidos_novos_na_pagina = []
 
                     for p in pedidos_novos_na_pagina:
@@ -326,11 +335,14 @@ class PedidosMixin:
                                 'evento': evento_num,
                                 'vendedor': vendedor_encontrado,
                                 'itens': itens,
+                                'cliente': cliente,
+                                'pagina': pagina_atual,
                                 'lido_em': datetime.now().strftime('%d/%m/%Y %H:%M'),
                                 'avisado': False,
                             }
                             pedidos_detalhes.append(novo_pedido)
                             pedidos_existentes.add(num)
+                            no_banco.add(num)
                             # Só no arquivo do robô: a planilha (PEDIDOS.json) não é tocada
                             registrar_lido(self.ARQUIVO_PEDIDOS_LIDOS, novo_pedido)
                         
@@ -344,10 +356,6 @@ class PedidosMixin:
                                 self.driver.switch_to.window(self.driver.window_handles[0])
                                 time.sleep(1)
                 
-                    if paginas_sem_novo >= 3:
-                        logger.info(f" ⏭️ 3 páginas vazias alcançadas para {cliente}. Avançando empresa...")
-                        break
-                        
                     # Mudar de pagina
                     try:
                         self.driver.switch_to.default_content()
@@ -358,8 +366,15 @@ class PedidosMixin:
                         btn_next = self.driver.find_elements(By.CSS_SELECTOR, 'a.next_page')
                         if btn_next and 'disabled' not in btn_next[0].get_attribute('class'):
                             logger.info(' Clicando para avancar para a proxima pagina...')
+                            antigos = self.driver.find_elements(By.XPATH, "//a[contains(@href, 'supplier_order_headers')]")
                             self.driver.execute_script('arguments[0].click();', btn_next[0])
-                            time.sleep(5)
+                            # Espera a tabela trocar antes de ler: lida cedo demais, a página velha pareceria repetida
+                            if antigos:
+                                try:
+                                    WebDriverWait(self.driver, 20).until(EC.staleness_of(antigos[0]))
+                                except Exception:
+                                    logger.warning(' A tabela não trocou em 20 s depois do clique em próxima página.')
+                            time.sleep(2)
                             pagina_atual += 1
                         else:
                             logger.info(' Ultima pagina alcancada ou botao avancar indisponivel.')
@@ -376,6 +391,12 @@ class PedidosMixin:
         # Também depois de parada ou erro: o que já foi lido está em PEDIDOS-LIDOS-COUPA.json e não seria
         # visto de novo na próxima vez, então o aviso sai agora
         # O aviso leva os novos desta vez e os de antes cujo e-mail falhou (avisado False), se ainda fora da planilha
+        try:
+            gravar_listagem(self.ARQUIVO_PEDIDOS_LISTAGEM, listagem)
+        except Exception as e:
+            logger.error(f" Falha ao gravar PEDIDOS-LISTAGEM-COUPA.json: {e}")
+        contagem = contar_listagem(listagem)
+        logger.info(" Pedidos vistos no portal: " + ", ".join(f"{v} {k}" for k, v in contagem.items()))
         email_enviado = False
         pendentes = []
         try:
@@ -394,7 +415,10 @@ class PedidosMixin:
 
         conclusao = {'evento': 'Listagem de Pedidos', 'sucesso': erro is None, 'total': len(pendentes),
                      'email_enviado': email_enviado, 'portal': 'coupa', 'semente': semente,
-                     'pedidos': [p['pedido'] for p in pendentes]}
+                     'pedidos': [p['pedido'] for p in pendentes],
+                     'contagem': contagem,
+                     'novos_lidos': [{'pedido': l['pedido'], 'cliente': l['cliente'], 'pagina': l['pagina']}
+                                     for l in listagem if l['onde'] == 'novo']}
         if erro:
             conclusao['erro'] = erro
         self.sio.emit('tarefa_concluida', conclusao)
