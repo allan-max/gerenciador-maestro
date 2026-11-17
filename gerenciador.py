@@ -168,6 +168,7 @@ else:
 import eventos
 import seguranca
 import processos_robos
+import ariba_api
 import reinicio
 import ponte_dav
 TROCA = {}   # o que o processo anterior deixou ao reiniciar pelo atualizador (reinicio.py); vazio na partida normal
@@ -1239,110 +1240,56 @@ def comando_para_robo(dados):
             sio.emit('sincronizar_estado_me', {'status': 'ocioso'})
 
     elif portal == 'ariba':
+        # O AribaSourcing sobe sozinho (tarefa agendada) e recebe os comandos pela API: ver ariba_api.py
         if modo == 'ligar_robo':
             try:
-                # vai para o VBScript que digita na janela: só números (botões de empresa do portal)
+                # só números (botões de empresa do portal): 1 = ALIANÇA, 2 = VENTURA, 3 = UNIÃO
                 prioridades_str = seguranca.prioridades_ariba(dados.get('prioridades'))
             except ValueError as e:
                 sio.emit('relatar_progresso_ariba', {'mensagem': f'Comando recusado: {e}'})
                 sio.emit('sincronizar_estado_ariba', {'status': 'desligado'})
                 return
 
-            if ariba_esta_rodando():
-                sio.emit('relatar_progresso_ariba', {'mensagem': '⚠️ O robô SAP Ariba já está rodando.'})
-                sio.emit('sincronizar_estado_ariba', {'status': 'ocioso'})
-                return
             marcar_inicio('ariba')
             eventos.registrar('ariba', 'ciclo', 'info', f'Robô SAP Ariba iniciado (prioridades: {prioridades_str})')
             sio.emit('sincronizar_estado_ariba', {'status': 'logando'})
-            sio.emit('relatar_progresso_ariba', {'mensagem': '?? Comando recebido! Preparando o Ariba...'})
+            sio.emit('relatar_progresso_ariba', {'mensagem': 'Comando recebido! Enviando ao AribaSourcing...'})
 
             def run_ariba():
-                global bot_ariba, rodando_monitor_ariba
+                global rodando_monitor_ariba
                 try:
-                    sio.emit('relatar_progresso_ariba', {'mensagem': 'Limpando processos antigos...'})
-                    os.system("taskkill /F /IM AribaSourcing.exe >nul 2>&1")
-                    os.system('wmic process where "name=\'dotnet.exe\' and commandline like \'%AribaSourcing%\'" call terminate >nul 2>&1')
-                    time.sleep(1) 
+                    if not ariba_api.garantir_no_ar(CONFIG_GLOBAL):
+                        raise ariba_api.ErroAriba('o AribaSourcing não está no ar e a tarefa agendada não subiu')
 
-                    rodando_monitor_ariba = True
-                    threading.Thread(target=monitorar_log_ariba, daemon=True).start()
+                    if not rodando_monitor_ariba:
+                        rodando_monitor_ariba = True
+                        threading.Thread(target=monitorar_log_ariba, daemon=True).start()
 
-                    sio.emit('relatar_progresso_ariba', {'mensagem': 'Abrindo terminal e iniciando .NET...'})
-                    env_win = os.environ.copy()
-                    env_win["NODE_SKIP_PLATFORM_CHECK"] = "1"
-
-                    # Abre o processo
-                    comando = 'cmd.exe /c "title ROBO_ARIBA & dotnet run --no-build"'
-                    caminho_ariba_local = CONFIG_GLOBAL.get("caminho_ariba", r"C:\Users\Administrator\Desktop\AribaSourcing")
-                    bot_ariba = subprocess.Popen(
-                        comando, 
-                        cwd=caminho_ariba_local, 
-                        creationflags=subprocess.CREATE_NEW_CONSOLE, 
-                        env=env_win
-                    )
-
-                    sio.emit('relatar_progresso_ariba', {'mensagem': 'Digitando os dados da empresa...'})
-
-                    prioridades_escapado = prioridades_str.replace("{", "{{").replace("}", "}}")
-
-                    # ?? Fantasma Rpido: Sem travas de segurana que bloqueiam a digitao!
-                    vbs_code = f"""
-Set WshShell = WScript.CreateObject("WScript.Shell")
-
-' D uma pausa de 4 segundos para o .NET carregar a tela de digitao
-WScript.Sleep 4000
-
-' Tenta "puxar" a janela pelo PID e Ttulo s por garantia, mas NO ABORTA se o Windows esconder
-On Error Resume Next
-WshShell.AppActivate({bot_ariba.pid})
-WshShell.AppActivate("ROBO_ARIBA")
-WshShell.AppActivate("Administrador: ROBO_ARIBA")
-On Error GoTo 0
-
-WScript.Sleep 500
-
-' Digita os dados assumindo que a janela recm-criada  a que est na frente (Comportamento Original Rpido)
-WshShell.SendKeys "{prioridades_escapado}"
-WScript.Sleep 500
-WshShell.SendKeys "~"
-WScript.Sleep 1500
-WshShell.SendKeys "~"
-"""
-                    vbs_path = os.path.join(tempfile.gettempdir(), "digitador_ariba.vbs")
-                    with open(vbs_path, "w", encoding="utf-8") as f: 
-                        f.write(vbs_code)
-
-                    vbs_proc = subprocess.Popen(["wscript.exe", vbs_path])
-                    vbs_proc.wait()
-
-                    try:
-                        os.unlink(vbs_path)
-                    except:
-                        pass
-
+                    # Com o robô já rodando, o mesmo comando só troca a prioridade (vale no próximo ciclo)
+                    mensagem = ariba_api.iniciar(CONFIG_GLOBAL, prioridades_str)
+                    sio.emit('relatar_progresso_ariba', {'mensagem': mensagem})
                     sio.emit('sincronizar_estado_ariba', {'status': 'ocioso'})
-                    bot_ariba.wait()
                 except Exception as e:
-                    logger.error(f"Erro na execuo do Ariba: {e}")
-                    eventos.registrar('ariba', 'ciclo', 'erro', f'Erro na execução do SAP Ariba: {e}')
+                    logger.error(f"Erro ao iniciar o Ariba: {e}")
+                    eventos.registrar('ariba', 'ciclo', 'erro', f'Erro ao iniciar o SAP Ariba: {e}')
                     sio.emit('relatar_progresso_ariba', {'mensagem': f'Erro ao iniciar: {e}'})
-                finally:
-                    rodando_monitor_ariba = False
-                    bot_ariba = None
-                    sio.emit('sincronizar_estado_ariba', {'status': 'desligado'})
+                    if not ariba_esta_rodando():
+                        rodando_monitor_ariba = False
+                        sio.emit('sincronizar_estado_ariba', {'status': 'desligado'})
 
             threading.Thread(target=run_ariba, daemon=True).start()
 
         elif modo == 'desligar_robo':
-            rodando_monitor_ariba = False
-            sio.emit('relatar_progresso_ariba', {'mensagem': '?? Encerrando o mdulo SAP Ariba...'})
-            if bot_ariba: 
-                os.system(f"taskkill /F /T /PID {bot_ariba.pid}")
-                bot_ariba = None
-            else: 
-                os.system("taskkill /F /IM AribaSourcing.exe >nul 2>&1")
-            processos_robos.matar(processos_ariba())   # aberto fora do gerenciador
+            sio.emit('relatar_progresso_ariba', {'mensagem': 'Encerrando o módulo SAP Ariba...'})
+            try:
+                mensagem = ariba_api.parar(CONFIG_GLOBAL)
+                rodando_monitor_ariba = False
+                sio.emit('relatar_progresso_ariba', {'mensagem': mensagem})
+                sio.emit('sincronizar_estado_ariba', {'status': 'desligado'})
+            except Exception as e:
+                logger.error(f"Erro ao parar o Ariba: {e}")
+                sio.emit('relatar_progresso_ariba', {'mensagem': f'Erro ao encerrar: {e}'})
+
 
     elif portal in ['coupa', 'vale']:
         if modo_resposta_ativo and modo in MODOS_BLOQUEADOS_NO_MODO_RESPOSTA:
@@ -1936,13 +1883,9 @@ def _checar(nome, funcao):
         return False
 
 
-def processos_ariba():
-    pasta = CONFIG_GLOBAL.get("caminho_ariba", r"C:\Users\Administrator\Desktop\AribaSourcing")
-    return processos_robos.processos_dotnet(pasta, nomes_exe=('AribaSourcing.exe',), termos_cmd=('aribasourcing',))
-
-
 def ariba_esta_rodando():
-    return _vivo(bot_ariba) or _checar('Ariba', processos_ariba)
+    """O processo do AribaSourcing fica sempre no ar; "rodando" é estar com prioridade definida (ver ariba_api)."""
+    return _checar('Ariba', lambda: ariba_api.processando(CONFIG_GLOBAL))
 
 
 def processos_findes_antigo():
