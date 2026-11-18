@@ -1231,7 +1231,8 @@ class RespostaMixin:
                         return mLi && mLi[1] === numAlvo;
                     });
                     if (!alvo && itens.length) {
-                        alvo = itens.find(li => norm(li.innerText || li.textContent).startsWith(numAlvo)) || itens[0];
+                        // nunca "a primeira da lista": só uma opção que começa pelo código pedido
+                        alvo = itens.find(li => norm(li.innerText || li.textContent).startsWith(numAlvo)) || null;
                     }
                     if (alvo) {
                         alvo.scrollIntoView({ block: 'nearest' });
@@ -1250,9 +1251,16 @@ class RespostaMixin:
                         setattr(inp_origem, '_origem_nao_encontrada', True)
                 except Exception:
                     pass
-                inp_origem.send_keys(Keys.ARROW_DOWN)
-                time.sleep(0.4)
-                inp_origem.send_keys(Keys.ENTER)
+                if owns_id:
+                    # Lista existe mas não tem a origem pedida: deixa em branco (o erro aparece), não chuta
+                    logger.warning(f"      ⚠️ Origem '{origem_atual}' não encontrada na lista do portal; campo deixado em branco.")
+                    inp_origem.send_keys(Keys.CONTROL, "a")
+                    inp_origem.send_keys(Keys.BACKSPACE)
+                    inp_origem.send_keys(Keys.ESCAPE)
+                else:
+                    inp_origem.send_keys(Keys.ARROW_DOWN)
+                    time.sleep(0.4)
+                    inp_origem.send_keys(Keys.ENTER)
             else:
                 try:
                     setattr(inp_origem, '_origem_nao_encontrada', False)
@@ -1300,26 +1308,46 @@ class RespostaMixin:
             except Exception:
                 pass
         inp_ncm.send_keys(ncm_formatado)
-        time.sleep(1.5)
+        ncm_limpo = re.sub(r'\D', '', ncm_formatado)
+
+        def _procurar_opcao():
+            """A lista do Coupa demora a filtrar: antes disso mostra as primeiras NCMs do cadastro
+            (ex.: '0000.00.09 - Oman'). Só serve uma opção cujo número bate com o NCM pedido."""
+            owns = inp_ncm.get_attribute("aria-owns") or ""
+            if not owns:
+                return None, False
+            for li in self.driver.find_elements(By.CSS_SELECTOR, f"#{owns} li.ComboBox__resultItem, #{owns} li"):
+                txt_li = (getattr(li, 'text', '') or '').strip()
+                if txt_li and (ncm_formatado in txt_li or (ncm_limpo and re.sub(r'\D', '', txt_li).startswith(ncm_limpo))):
+                    return li, True
+            return None, True
+
         selecionou_ncm = False
         tinha_owns = False
-        try:
-            owns_id = inp_ncm.get_attribute("aria-owns") or ""
-            if owns_id:
-                tinha_owns = True
-                opcoes_ncm = self.driver.find_elements(By.CSS_SELECTOR, f"#{owns_id} li.ComboBox__resultItem, #{owns_id} li")
-                ncm_limpo = re.sub(r'\D', '', ncm_formatado)
-                for li in opcoes_ncm:
-                    txt_li = (getattr(li, 'text', '') or '').strip()
-                    if not txt_li:
-                        continue
-                    txt_limpo = re.sub(r'\D', '', txt_li)
-                    if ncm_formatado in txt_li or (ncm_limpo and txt_limpo.startswith(ncm_limpo)):
-                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'nearest'}); arguments[0].click();", li)
-                        selecionou_ncm = True
-                        break
-        except Exception:
-            selecionou_ncm = False
+        inicio = time.time()
+        while time.time() - inicio < 8:
+            time.sleep(0.5)
+            try:
+                opcao, tem_lista = _procurar_opcao()
+            except Exception:
+                opcao, tem_lista = None, False
+            tinha_owns = tinha_owns or tem_lista
+            if opcao is not None:
+                try:
+                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'nearest'}); arguments[0].click();", opcao)
+                    selecionou_ncm = True
+                except Exception:
+                    selecionou_ncm = False
+                break
+            if not tem_lista:
+                break   # campo sem lista (layout antigo / teste): não há o que esperar
+
+        # Confere o que ficou no campo: precisa conter o NCM pedido
+        if selecionou_ncm:
+            time.sleep(0.5)
+            valor = re.sub(r'\D', '', self._obter_valor_input(inp_ncm))
+            if valor and not valor.startswith(ncm_limpo):
+                selecionou_ncm = False
 
         try:
             if tinha_owns and not selecionou_ncm:
@@ -1329,7 +1357,18 @@ class RespostaMixin:
         except Exception:
             pass
 
-        if not selecionou_ncm:
+        if not selecionou_ncm and tinha_owns:
+            # Nunca escolhe "a primeira da lista": um NCM errado gravado é pior que o campo vazio,
+            # porque o portal aceita e ninguém fica sabendo. Limpa e deixa o erro aparecer.
+            logger.warning(f"      ⚠️ NCM {ncm_formatado} não encontrado na lista do portal; campo deixado em branco.")
+            try:
+                inp_ncm.send_keys(Keys.CONTROL, "a")
+                inp_ncm.send_keys(Keys.BACKSPACE)
+                inp_ncm.send_keys(Keys.ESCAPE)
+            except Exception:
+                pass
+        elif not selecionou_ncm:
+            # Sem lista (não é ComboBox): mantém o comportamento antigo de confirmar o texto digitado
             inp_ncm.send_keys(Keys.ARROW_DOWN)
             time.sleep(0.5)
             inp_ncm.send_keys(Keys.ENTER)
@@ -2629,14 +2668,30 @@ class RespostaMixin:
 
                         # Protocolo de segurança: confere TODOS os campos mapeados e refaz o que ficou vazio/errado
                         try:
-                            self._garantir_campos_item_antes_salvar(
-                                linha, idx,
+                            alvos_it = dict(
                                 preco_alvo=str(lista_precos[idx]).strip() if se_tem_preco else "",
                                 prazo_alvo=str(lista_prazos[idx]).strip() if se_tem_prazo else "",
                                 ncm_alvo=str(lista_ncms[idx]).strip() if idx < len(lista_ncms) else "",
                                 origem_alvo=str(lista_origens[idx]).strip() if idx < len(lista_origens) else "",
                                 icms_alvo=str(lista_icms[idx]).strip() if idx < len(lista_icms) else "",
                             )
+                            vazios_it = self._garantir_campos_item_antes_salvar(linha, idx, **alvos_it)
+                            # Campo que continuou vazio vira problema da resposta: o vendedor vê no card e no e-mail
+                            # (antes só ia para o log, e um NCM inexistente passava calado).
+                            for m_vz in self._gerar_motivos_curtos_item(
+                                campos_finais=vazios_it or [],
+                                campos_inspecionados={},
+                                preco_alvo=alvos_it['preco_alvo'], prazo_alvo=alvos_it['prazo_alvo'],
+                                ncm_alvo=alvos_it['ncm_alvo'], origem_alvo=alvos_it['origem_alvo'],
+                                icms_alvo=alvos_it['icms_alvo'],
+                            ) if vazios_it else []:
+                                detalhe = m_vz
+                                if m_vz == "NCM não existe" and alvos_it['ncm_alvo']:
+                                    detalhe = f"NCM {self._formatar_ncm(alvos_it['ncm_alvo'])} não existe no portal"
+                                motivo_it = f"Item {idx+1}: {m_vz}" if total_linhas > 1 else m_vz
+                                if motivo_it not in motivos_curtos_evento:
+                                    motivos_curtos_evento.append(motivo_it)
+                                falhas.append(f"item {idx+1} ({detalhe})")
                         except Exception as e_conf:
                             logger.warning(f"      ⚠️ Falha na conferência dos campos do Item {idx+1}: {e_conf}")
 

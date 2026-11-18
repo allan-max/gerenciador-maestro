@@ -1005,6 +1005,72 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
             'Deve sincronizar o _valueTracker do React/Coupa para garantir que o prazo não seja apagado ao salvar'
         )
 
+    def test_ncm_e_origem_fora_da_lista_nao_viram_a_primeira_opcao(self):
+        import re
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys
+        from test_fase0 import LOGGER, Relogio, carregar
+
+        raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
+        ns = carregar(raiz / 'bots/coupa/mixins/resposta.py', {'RespostaMixin'}, re=re, time=Relogio(), By=By, Keys=Keys)
+        clicadas = []
+
+        class Opcao:
+            def __init__(self, text):
+                self.text = text
+
+        class Combo:
+            def __init__(self, owns):
+                self.owns, self.valor, self.teclas = owns, '', []
+            def clear(self):
+                self.valor = ''
+            def send_keys(self, *v):
+                self.teclas.extend(v)
+                txt = ''.join(x for x in v if isinstance(x, str) and len(x) > 1 or (isinstance(x, str) and x.isdigit()))
+                if txt and txt.replace('.', '').isdigit():
+                    self.valor = txt
+            def get_attribute(self, a):
+                return {'aria-owns': self.owns, 'value': self.valor}.get(a, '')
+
+        class Driver:
+            def __init__(self, opcoes):
+                self.opcoes = opcoes
+            def execute_script(self, s, *a):
+                if 'click()' in s and a and isinstance(a[0], Opcao):
+                    clicadas.append(a[0].text)
+                    return True
+                if 'ownsId' in s:
+                    return False   # JS da origem não acha opção que comece pelo código
+                return None
+            def find_elements(self, by, value):
+                return list(self.opcoes) if '_results' in value else []
+
+        bot = type('Bot', (ns['RespostaMixin'],), {})()
+        with patch.object(LOGGER, 'handle'):
+            # A lista ainda não filtrou (ou o NCM não existe): só aparecem as primeiras NCMs do cadastro
+            bot.driver = Driver([Opcao('0000.00.09 - Oman (0000.00.09)'), Opcao('0101.21.00 (0101.21.00)')])
+            ncm = Combo('custom_field_8_19_results')
+            self.assertFalse(bot._preencher_ncm_combobox(ncm, '99999999'))
+            self.assertEqual(clicadas, [], 'não pode clicar numa NCM que não é a pedida')
+            self.assertNotIn(Keys.ENTER, ncm.teclas, 'não pode confirmar a primeira opção com Enter')
+            self.assertIn(Keys.ESCAPE, ncm.teclas)
+            self.assertTrue(getattr(ncm, '_ncm_nao_encontrado'))
+
+            # NCM que existe: escolhe a opção certa
+            bot.driver = Driver([Opcao('8536.69.90 (8536.69.90)')])
+            ncm_ok = Combo('custom_field_8_19_results')
+            self.assertTrue(bot._preencher_ncm_combobox(ncm_ok, '85366990'))
+            self.assertEqual(clicadas, ['8536.69.90 (8536.69.90)'])
+
+            # Origem que não está na lista: não chuta a primeira
+            del clicadas[:]
+            bot.driver = Driver([Opcao('1 - Estrangeira - Importação direta')])
+            origem = Combo('custom_field_9_20_results')
+            bot._selecionar_origem_dropdown(None, origem, '0')
+            self.assertEqual(clicadas, [])
+            self.assertNotIn(Keys.ENTER, origem.teclas)
+            self.assertTrue(getattr(origem, '_origem_nao_encontrada'))
+
     def test_anexo_topo_espera_portal_confirmar_upload_e_avisa_quando_nao_confirma(self):
         import os
         import re
