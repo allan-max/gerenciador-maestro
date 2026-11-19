@@ -166,21 +166,25 @@ class PlanilhasMixin:
             from bots.itens_dell import evento_tem_dell, adicionar_mensagem_dell, EVENTOS_POR_WORD_DELL
             from bots.itens_hardware import evento_tem_hardware, adicionar_mensagem_hardware, lotes_hardware, chave_semelhanca
             from bots.itens_eletroportateis import evento_tem_eletro, adicionar_mensagem_eletro, lotes_eletro
+            from bots.itens_ar_condicionado import evento_tem_ar, adicionar_mensagem_ar, lotes_ar
         except ImportError:
             try:
                 from itens_dell import evento_tem_dell, adicionar_mensagem_dell, EVENTOS_POR_WORD_DELL
                 from itens_hardware import evento_tem_hardware, adicionar_mensagem_hardware, lotes_hardware, chave_semelhanca
                 from itens_eletroportateis import evento_tem_eletro, adicionar_mensagem_eletro, lotes_eletro
+                from itens_ar_condicionado import evento_tem_ar, adicionar_mensagem_ar, lotes_ar
             except ImportError:
                 from ..itens_dell import evento_tem_dell, adicionar_mensagem_dell, EVENTOS_POR_WORD_DELL
                 from ..itens_hardware import evento_tem_hardware, adicionar_mensagem_hardware, lotes_hardware, chave_semelhanca
                 from ..itens_eletroportateis import evento_tem_eletro, adicionar_mensagem_eletro, lotes_eletro
+                from ..itens_ar_condicionado import evento_tem_ar, adicionar_mensagem_ar, lotes_ar
 
         bloqs = []
         complexos = []
         dells = []
         hardwares = []
         eletros = []
+        ares = []
         agrupados_por_data = {}
 
         for d in self.dados_processados_lote:
@@ -209,6 +213,11 @@ class PlanilhasMixin:
             # Itens da marca DELL: Words próprios, 3 eventos por arquivo, com a orientação Dell no final
             if evento_tem_dell(d):
                 dells.append(d)
+                continue
+
+            # Ar-condicionado: Words próprios, no máximo 3 eventos, distribuidores/fabricantes e regra de compra no final
+            if evento_tem_ar(d):
+                ares.append(d)
                 continue
 
             # Eletroportáteis (cafeteira, air fryer, liquidificador...): Words próprios, no máximo 3 eventos,
@@ -257,6 +266,11 @@ class PlanilhasMixin:
             lote_dell = dells[i:i + EVENTOS_POR_WORD_DELL]
             self.salvar_doc(lote_dell, self.PASTA_RELATORIOS, "DELL_Eventos", mensagem_final=lambda doc: adicionar_mensagem_dell(doc, getattr(self, 'config', None)))
             validos_para_excel.extend(lote_dell)
+
+        # Ar-condicionado: no máximo 3 eventos por arquivo, mesma capacidade junta, fornecedores no final
+        for lote_ar in lotes_ar(ares):
+            self.salvar_doc(lote_ar, self.PASTA_RELATORIOS, "AR_CONDICIONADO_Eventos", mensagem_final=adicionar_mensagem_ar)
+            validos_para_excel.extend(lote_ar)
 
         # Eletroportáteis: no máximo 3 eventos por arquivo, produtos parecidos juntos, orientação de compra no final
         for lote_eletro in lotes_eletro(eletros):
