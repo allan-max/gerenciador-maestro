@@ -371,7 +371,7 @@ class PlanilhasMixin:
                         p_titulo.add_run(f" {item['titulo']}")
                         
                         p_desc = doc.add_paragraph()
-                        p_desc.add_run("DESCRIÇãO:\n").bold = True
+                        p_desc.add_run("DESCRIÇÃO:\n").bold = True
                         p_desc.add_run(f"{item['descricao']}")
                     else:
                         p_titulo.add_run(f"ITEM {item['item_num']}: ").bold = True

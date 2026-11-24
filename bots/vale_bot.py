@@ -37,7 +37,8 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import NoAlertPresentException
-from bots.termos_participacao import aceitar_termos, termos_pendentes
+from bots.termos_participacao import aceitar_termos, termos_pendentes, ler_termos
+from bots import aviso_termos
 from selenium.webdriver.common.action_chains import ActionChains
 
 from docx import Document
@@ -786,6 +787,7 @@ class ValeScraper(RespostaMixin):
                         if sem_desc: self.relatorio_email_stats['sem_descricao'].append(t['num'])
                         if falt_info: self.relatorio_email_stats['faltando_info'].append(t['num'])
                         if not res.get('itens'): self.relatorio_email_stats['eventos_sem_itens'].append(t['num'])
+                    aviso_termos.concluir(self, t['num'], res)   # situação do evento no e-mail de termos
 
                     self.driver.close()
                     self.driver.switch_to.window(self.driver.window_handles[0])
@@ -820,6 +822,7 @@ class ValeScraper(RespostaMixin):
             logger.info("✅ Extração concluída!")
             self.enviar_relatorio_email()
             motivo = getattr(self, 'motivo_abandono', None)   # abandonado (Oops/login) não é sucesso
+            aviso_termos.enviar(self, "Vale Base Metals")   # eventos com "Aceita os Termos e condições?"
             self.sio.emit('tarefa_concluida', {'evento': 'Lote de Extração', 'sucesso': not motivo, **({'erro': motivo} if motivo else {})})
 
         except Exception as e:
@@ -827,6 +830,7 @@ class ValeScraper(RespostaMixin):
             if hasattr(self, 'relatorio_email_stats'):
                 self.relatorio_email_stats['erro_critico_bot'] = str(e)
                 self.enviar_relatorio_email()
+            aviso_termos.enviar(self, "Vale Base Metals")   # eventos com "Aceita os Termos e condições?"
             self.sio.emit('tarefa_concluida', {'evento': 'Lote de Extração Vale', 'sucesso': False, 'erro': str(e)})
 
     def enviar_relatorio_email(self):
@@ -1251,6 +1255,7 @@ class ValeScraper(RespostaMixin):
                 logger.warning("   ⚠️ Evento encerrado."); self.driver.switch_to.default_content(); return "ENCERRADO"
 
             req = "N/A"
+            titulo_h1 = ""
             try: 
                 titulo_h1 = self.driver.find_element(By.CSS_SELECTOR, "h1.sourcing-wrapper-title").text
                 if "NEGOCIAÇÃO" in titulo_h1.upper(): 
@@ -1260,6 +1265,9 @@ class ValeScraper(RespostaMixin):
                     req = match_req.group(1)
                     self.req = req
             except: pass
+
+            # Termos e condições: anota o evento para o e-mail de termos (mesmo que o robô consiga aceitar)
+            aviso_termos.anotar(self, num, ler_termos(self.driver), titulo_h1, is_negotiation)
 
             vencimento = self.parsear_data_vencimento(venc_tabela) or "N/A"
             venc_inicial = self.capturar_end_time_elemento()

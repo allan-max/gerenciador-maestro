@@ -31,7 +31,8 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import NoAlertPresentException, NoSuchElementException
-from bots.termos_participacao import aceitar_termos
+from bots.termos_participacao import aceitar_termos, ler_termos
+from bots import aviso_termos
 from selenium.webdriver.common.action_chains import ActionChains
 
 from docx import Document
@@ -378,14 +379,18 @@ class ExtracaoMixin:
                 logger.warning("    Evento encerrado."); self.driver.switch_to.default_content(); return "ENCERRADO"
 
             req = "N/A"
+            titulo_h1 = ""
             try: 
                 titulo_h1 = self.driver.find_element(By.CSS_SELECTOR, "h1.sourcing-wrapper-title").text
-                if "NEGOCIAÇãO" in titulo_h1.upper(): 
+                if "NEGOCIA" in titulo_h1.upper():   # NEGOCIAÇÃO (sem depender do acento)
                     is_negotiation = True
                 match_req = re.search(r'(?i)req[^\d]*(\d+)', titulo_h1)
                 if match_req:
                     req = match_req.group(1)
             except: pass
+
+            # Termos e condições: anota o evento para o e-mail de termos (mesmo que o robô consiga aceitar)
+            aviso_termos.anotar(self, num, ler_termos(self.driver), titulo_h1, is_negotiation)
 
             vencimento = venc_tabela if venc_tabela else "N/A"
             frete = "EXW"
@@ -807,7 +812,7 @@ class ExtracaoMixin:
                         url = linha_painel['url']
 
                         desc = str(linha_painel.get('descricao') or '').upper()
-                        is_neg = "EQUALIZAÇãO" in desc or "RODADA" in desc
+                        is_neg = "EQUALIZA" in desc or "RODADA" in desc or "NEGOCIA" in desc   # sem depender do acento
 
                         data_venc_tabela = linha_painel.get('venc_tabela') or ""
 
@@ -889,6 +894,7 @@ class ExtracaoMixin:
                         if sem_desc: self.relatorio_email_stats['sem_descricao'].append(t['num'])
                         if falt_info: self.relatorio_email_stats['faltando_info'].append(t['num'])
                         if not res.get('itens'): self.relatorio_email_stats['eventos_sem_itens'].append(t['num'])
+                    aviso_termos.concluir(self, t['num'], res)   # situação do evento no e-mail de termos
                 # Gera os ficheiros Word para a página que acabou de ser lida
                 if self.dados_processados_lote:
                     self.gerar_word()
@@ -905,6 +911,7 @@ class ExtracaoMixin:
             logger.info("Paragem/Extração concluída! Ficheiros Word e Excel guardados com sucesso.")
             self.enviar_relatorio_email()
             motivo = getattr(self, 'motivo_abandono', None)   # abandonado (Oops/login) não é sucesso
+            aviso_termos.enviar(self, "Coupa")   # eventos com "Aceita os Termos e condições?"
             self.sio.emit('tarefa_concluida', {'evento': 'Lote de Extração', 'sucesso': not motivo, **({'erro': motivo} if motivo else {})})
 
         except Exception as e:
@@ -912,5 +919,6 @@ class ExtracaoMixin:
             if hasattr(self, 'relatorio_email_stats'):
                 self.relatorio_email_stats['erro_critico_bot'] = str(e)
                 self.enviar_relatorio_email()
+            aviso_termos.enviar(self, "Coupa")   # eventos com "Aceita os Termos e condições?"
             self.sio.emit('tarefa_concluida', {'evento': 'Lote de Extração', 'sucesso': False, 'erro': str(e)})
 
