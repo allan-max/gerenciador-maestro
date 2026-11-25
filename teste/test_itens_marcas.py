@@ -15,6 +15,48 @@ from test_fornecedores_ti import _resposta_ia
 
 INTELBRAS = M._POR_NOME["Intelbras"]
 LOGITECH = M._POR_NOME["Logitech"]
+FURUKAWA = M._POR_NOME["Furukawa"]
+LIMPEZA = M._POR_NOME["Limpeza"]
+
+
+class LimpezaTest(unittest.TestCase):
+    def test_reconhece_materiais_de_limpeza(self):
+        for d in ["VASSOURA DE PELO 40CM", "RODO DE BORRACHA 60CM", "DETERGENTE NEUTRO 500ML", "SABÃO EM PÓ 1KG",
+                  "SABAO EM BARRA", "COPO DESCARTÁVEL 200ML", "COPO PLASTICO DESCARTAVEL 180ML", "AGUA SANITARIA 2L",
+                  "PAPEL HIGIÊNICO FOLHA DUPLA", "SACO PARA LIXO 100L", "ESPONJA DUPLA FACE", "PANO DE CHÃO"]:
+            self.assertTrue(M.item_da_marca({'descricao': d}, "Limpeza"), d)
+
+    def test_nao_puxa_itens_industriais(self):
+        for d in ["RODOVIA BR 381", "CLORO GAS CILINDRO", "ALCOOL ISOPROPILICO", "BALDE PARA TINTA",
+                  "LUVA NITRILICA", "VALVULA ESFERA"]:
+            self.assertFalse(M.item_da_marca({'descricao': d}, "Limpeza"), d)
+
+    def test_lista(self):
+        self.assertEqual(LIMPEZA["titulo"], "Principais fornecedores que trabalham com materiais de limpeza")
+        self.assertEqual(LIMPEZA["linhas"], ["ATACADO SÃO PAULO", "CESCONETTO", "ATACADO REAL", "FX DISTRIBUIDORA",
+                                             "INFOPEL", "LUBE", "BARTOFIL", "ASSAÍ ATACADISTA"])
+        ev = lambda n, d: {"numero_evento": n, "itens": [{"descricao": d}]}
+        lista = M.marcas_no_final([ev("1", "DETERGENTE 500ML"), ev("2", "PARAFUSO"), ev("3", "CABO FURUKAWA")])
+        self.assertEqual([e["numero_evento"] for e in lista], ["2", "3", "1"])
+        self.assertEqual([M.mensagem_depois_do_evento(lista, i) for i in range(3)], [None, "Furukawa", "Limpeza"])
+
+
+class FurukawaTest(unittest.TestCase):
+    def test_furukawa_e_sohoplus(self):
+        for d in ["CABO UTP CAT6 FURUKAWA 305M", "PATCH CORD SOHOPLUS 1,5M", "Patch panel Soho Plus 24 portas"]:
+            self.assertTrue(M.item_da_marca({'descricao': d}, "Furukawa"), d)
+        self.assertTrue(M.item_da_marca({'dados_ia': {'marca': 'Furukawa Electric'}}, "Furukawa"))
+        self.assertFalse(M.item_da_marca({'descricao': 'CABO UTP CAT6 GENERICO'}, "Furukawa"))
+        self.assertEqual(M.marca_do_evento({'itens': [{'descricao': 'PATCH CORD SOHOPLUS'}]}), "Furukawa")
+
+    def test_lista_e_ordem_no_word(self):
+        self.assertEqual(FURUKAWA["titulo"], "Principais fornecedores que trabalham com a marca FURUKAWA/SOHOPLUS")
+        self.assertEqual(FURUKAWA["linhas"], ["Telcabos", "Router 66", "Klint Lantele", "Oderço", "Hayamax",
+                                              "All nations", "Viksul", "Dimensional"])
+        ev = lambda n, d: {"numero_evento": n, "itens": [{"descricao": d}]}
+        lista = M.marcas_no_final([ev("1", "CABO FURUKAWA CAT6"), ev("2", "PARAFUSO"), ev("3", "MOUSE LOGITECH M90")])
+        self.assertEqual([e["numero_evento"] for e in lista], ["2", "3", "1"])   # Furukawa depois de Logitech
+        self.assertEqual(M.mensagem_depois_do_evento(lista, 2), "Furukawa")
 
 
 class DeteccaoTest(unittest.TestCase):

@@ -18,6 +18,31 @@ MARCAS = [
         "linhas": ["Agis", "Mazer", "Pauta", "SND", "Fagundez", "GMI", "Port", "Scansource", "Ingrammicro",
                    "Martins", "Gazin", "Fujioka", "Golden", "Allnations", "Gibson", "COLEÇAO"],
     },
+    {
+        "nome": "Furukawa",
+        # SOHOPlus é a linha de cabeamento da Furukawa: as duas marcas usam a mesma lista
+        "regex": re.compile(r'\bfurukawa\b|\bsoho ?plus\b', re.IGNORECASE),
+        "titulo": "Principais fornecedores que trabalham com a marca FURUKAWA/SOHOPLUS",
+        "linhas": ["Telcabos", "Router 66", "Klint Lantele", "Oderço", "Hayamax", "All nations", "Viksul",
+                   "Dimensional"],
+    },
+    {
+        # Categoria, não marca: reconhecida pelo produto. Termos industriais ambíguos (cloro, álcool, balde, luva)
+        # ficam de fora para não puxar reagente/EPI/peça da Vale para cá.
+        "nome": "Limpeza",
+        "regex": re.compile(
+            r'\bvassouras?\b|\brodos?\b|\bdetergentes?\b|\bsab[aã]o\b|\bsabonetes?\b|\bdesinfetantes?\b'
+            r'|\b[aá]gua sanit[aá]ria\b|\balvejantes?\b|\blimpa[ -]?vidros?\b|\blimpador(es)? multiuso\b'
+            r'|\blustra[ -]?m[oó]veis\b|\bpalha de a[cç]o\b|\besponjas?\b|\bflanelas?\b'
+            r'|\bpanos? (de ch[aã]o|de limpeza|multiuso)\b|\bsacos? (de|para) lixo\b|\bp[aá] de lixo\b'
+            r'|\bpapel higi[eê]nico\b|\bpapel toalha\b|\bguardanapos?\b'
+            r'|\b(copos?|pratos?|talher(es)?|garfos?|colher(es)?)\b[^.;]{0,25}\bdescart[aá]v(el|eis)\b'
+            r'|\bdescart[aá]v(el|eis)\b[^.;]{0,25}\b(copos?|pratos?)\b',
+            re.IGNORECASE),
+        "titulo": "Principais fornecedores que trabalham com materiais de limpeza",
+        "linhas": ["ATACADO SÃO PAULO", "CESCONETTO", "ATACADO REAL", "FX DISTRIBUIDORA", "INFOPEL", "LUBE",
+                   "BARTOFIL", "ASSAÍ ATACADISTA"],
+    },
 ]
 _POR_NOME = {m["nome"]: m for m in MARCAS}
 
