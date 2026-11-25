@@ -1017,6 +1017,32 @@ class ValeScraper(RespostaMixin):
         frete = str(frete_pagina or "").strip().upper()
         return frete if frete and frete.lower() not in ('nenhum', 'none', 'n/a') else padrao
 
+    def _texto_por_rotulo(self, l, *rotulos):
+        """Texto de um campo da linha pelo rótulo; '' se não houver ou for 'Nenhum'.
+        Layout de nov/2026: <div class="s-fieldLabel">Item Text</div><p class="s-textField">...</p>.
+        Layout antigo: <dt>Item Text</dt><dd>...</dd>."""
+        for rotulo in rotulos:
+            try:
+                p = l.find_element(By.XPATH, f".//div[contains(@class, 's-fieldLabel') and normalize-space()='{rotulo}']/following-sibling::p")
+                txt = (p.text or "").strip()
+                if self._texto_valido(txt): return txt
+            except: pass
+            try:
+                dt = l.find_element(By.XPATH, f".//dt[contains(text(), '{rotulo}')]")
+                txt = (dt.find_element(By.XPATH, "following-sibling::dd").text or "").strip()
+                if self._texto_valido(txt): return txt
+            except: pass
+        return ""
+
+    def _rotulo_nao_descritivo(self, p):
+        """True se o p.s-textField é de um campo rotulado que não descreve o item (fabricante, NCM, data...)."""
+        try:
+            rotulos = p.find_elements(By.XPATH, "preceding-sibling::div[contains(@class, 's-fieldLabel')]")
+            nome = (rotulos[-1].text or "").strip().lower() if rotulos else ""
+        except Exception:
+            return False
+        return nome in ("manufacturer name", "fabricante", "ncm", "necessário até", "short text service", "descrição do item")
+
     def _ler_campos_linha(self, l):
         """Uma leitura (sem cliques) de título, descrição, quantidade, local de entrega e textos extras da linha."""
         tit = "Item"; desc = ""; qtd = "0"; loc = "N/A"
@@ -1024,34 +1050,18 @@ class ValeScraper(RespostaMixin):
         # 1. Título e Descrição
         try: tit = l.find_element(By.CSS_SELECTOR, "div.s-description p.s-textField").text.strip()
         except: pass
-        try: 
+        try:
             d = l.find_elements(By.CSS_SELECTOR, "p.s-textField")
-            if len(d) > 1: desc = self._filter_desc(d[1].text)
+            # Layout de nov/2026: o 2º p.s-textField passou a ser "Manufacturer Name" (quase sempre vazio);
+            # p com rótulo que não é descrição não serve
+            if len(d) > 1 and not self._rotulo_nao_descritivo(d[1]): desc = self._filter_desc(d[1].text)
         except: pass
-            
-        # Nova verificação: Texto de compra do material
-        if not desc.strip() or desc.strip().lower() == "nenhum":
-            try:
-                dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra')]")
-                dd = dt.find_element(By.XPATH, "following-sibling::dd")
-                desc = self._filter_desc(dd.text)
-            except: pass
-            
-        # Nova verificação: Item Text
-        if not desc.strip() or desc.strip().lower() == "nenhum":
-            try:
-                dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Item Text')]")
-                dd = dt.find_element(By.XPATH, "following-sibling::dd")
-                desc = self._filter_desc(dd.text)
-            except: pass
 
-        # Nova verificação: Material Purchase Text
-        if not desc.strip() or desc.strip().lower() == "nenhum":
-            try:
-                dt = l.find_element(By.XPATH, ".//dt[contains(text(), 'Material Purchase Text')]")
-                dd = dt.find_element(By.XPATH, "following-sibling::dd")
-                desc = self._filter_desc(dd.text)
-            except: pass
+        # Textos da Vale pelo rótulo: Texto de compra (PT), depois Item Text, depois Material Purchase Text
+        for rotulos in (("Texto de compra",), ("Item Text", "Texto do item"), ("Material Purchase Text",)):
+            if self._texto_valido(desc): break
+            achado = self._texto_por_rotulo(l, *rotulos)
+            if achado: desc = self._filter_desc(achado)
             
         # 2. Quantidade (BLINDADO CONTRA PREÇOS "BRL")
         try: 
@@ -1090,23 +1100,12 @@ class ValeScraper(RespostaMixin):
             except: pass
             
         # Novas extrações solicitadas
-        texto_item_extra = ""
-        try:
-            dt_ti = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto do item') or contains(text(), 'Item Text')]")
-            dd_ti = dt_ti.find_element(By.XPATH, "following-sibling::dd")
-            txt_ti = dd_ti.text.strip()
-            if txt_ti.lower() not in ['nenhum', 'none', 'n/a', '']:
-                texto_item_extra = txt_ti
-        except: pass
+        texto_item_extra = self._texto_por_rotulo(l, "Texto do item", "Item Text")
 
         texto_compra_extra = ""
-        try:
-            dt_tc = l.find_element(By.XPATH, ".//dt[contains(text(), 'Texto de compra') or contains(text(), 'Material Purchase Text')]")
-            dd_tc = dt_tc.find_element(By.XPATH, "following-sibling::dd")
-            txt_tc = self._filter_desc(dd_tc.text)
-            if txt_tc.lower() not in ['nenhum', 'none', 'n/a', '']:
-                texto_compra_extra = txt_tc
-        except: pass
+        txt_tc = self._filter_desc(self._texto_por_rotulo(l, "Texto de compra", "Material Purchase Text"))
+        if self._texto_valido(txt_tc):
+            texto_compra_extra = txt_tc
         return {"tit": tit, "desc": desc, "qtd": qtd, "loc": loc, "texto_item": texto_item_extra, "texto_compra": texto_compra_extra, "frete": self._ler_frete_linha(l)}
 
     def _extrair_itens_linhas(self, linhas):

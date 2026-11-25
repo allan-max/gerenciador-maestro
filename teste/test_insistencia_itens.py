@@ -17,7 +17,7 @@ ROBOS = (
     ('vale', ('bots/vale_bot.py',)),
 )
 METODOS = {'_extrair_itens_linhas', '_ler_campos_linha', '_ler_frete_linha', '_texto_valido', '_filter_desc', 'parse_local',
-           '_frete_do_evento', '_localidade_com_frete'}
+           '_frete_do_evento', '_localidade_com_frete', '_texto_por_rotulo', '_rotulo_nao_descritivo'}
 SELETOR_BOTAO = "img.s-expandLines, div.s-expandSidebar"
 
 
