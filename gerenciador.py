@@ -171,6 +171,7 @@ import processos_robos
 import ariba_api
 import reinicio
 import ponte_dav
+import ponte_cotabot
 TROCA = {}   # o que o processo anterior deixou ao reiniciar pelo atualizador (reinicio.py); vazio na partida normal
 if __name__ == '__main__':
     eventos.ativar()   # só o gerenciador de verdade grava eventos; testes importam sem gravar
@@ -846,6 +847,7 @@ def validar_login(dados):
             plan_acc = bool(usuarios[email].get('planilha_access', False)) or is_adm
             busca_acc = bool(usuarios[email].get('busca_outros_access', False)) or is_adm
             emails_acc = bool(usuarios[email].get('emails_access', False)) or is_adm  # Central de E-mails; não libera portais
+            cotabot_acc = bool(usuarios[email].get('cotabot_access', False)) or is_adm  # Cotabot (robô que cota); não libera portais
             sio.emit('resultado_login', {
                 'sucesso': True, 
                 'user': email, 
@@ -856,6 +858,7 @@ def validar_login(dados):
                 'hasPortaisAccess': port_acc,
                 'hasBuscaOutrosAccess': busca_acc,
                 'hasEmailsAccess': emails_acc,
+                'hasCotabotAccess': cotabot_acc,
                 'vendedor': usuarios[email].get('vendedor', ''),
                 'nome': usuarios[email].get('nome', ''),
                 'setor': usuarios[email].get('setor', ''),  # financeiro cai direto na tela do Financeiro
@@ -2049,7 +2052,7 @@ def salvar_config_admin(dados):
 # ==================== PAINEL ADMIN: CONTAS E PRIVILEGIOS ====================
 CAMPOS_PUBLICOS_USUARIO = (
     'verificado', 'admin', 'dev', 'dashboard_access', 
-    'planilha_access', 'portais_access', 'busca_outros_access', 'emails_access', 'bloqueado', 'vendedor', 'nome', 'setor'
+    'planilha_access', 'portais_access', 'busca_outros_access', 'emails_access', 'cotabot_access', 'bloqueado', 'vendedor', 'nome', 'setor'
 )
 
 @sio.on('admin_listar_usuarios')
@@ -2073,7 +2076,8 @@ def admin_alterar_acesso_dashboard(dados):
     acesso = bool(dados.get('acesso'))
     campo = dados.get('campo') or 'dashboard_access' # <-- NOVO: aceita dashboard_access, planilha_access ou portais_access
 
-    if campo not in ('dashboard_access', 'planilha_access', 'portais_access', 'busca_outros_access', 'emails_access'):
+    if campo not in ('dashboard_access', 'planilha_access', 'portais_access', 'busca_outros_access', 'emails_access',
+                     'cotabot_access'):
         sio.emit('admin_resposta_acesso', {'sucesso': False, 'erro': 'Permissão inválida.', 'clientId': client_id})
         return
 
@@ -2099,6 +2103,7 @@ def admin_alterar_acesso_dashboard(dados):
             'planilha_access': bool(usuarios[email].get('planilha_access', False)),
             'busca_outros_access': bool(usuarios[email].get('busca_outros_access', False)),
             'emails_access': bool(usuarios[email].get('emails_access', False)),
+            'cotabot_access': bool(usuarios[email].get('cotabot_access', False)),
             'clientId': client_id
         })
     except Exception as e:
@@ -2207,6 +2212,16 @@ def gerar_dav(dados):
     # Planilha Base -> DAV pelo Cotafrete (ponte_dav.py). Thread à parte: a
     # espera pelo HSE não segura o socket nem a fila dos robôs.
     ponte_dav.iniciar(dados or {}, sio.emit)
+
+@sio.on('cotabot_cotar')
+def cotabot_cotar(dados):
+    # Itens -> Cotabot na VM (ponte_cotabot.py). Thread à parte: a cotação leva
+    # minutos por item e não pode segurar o socket nem a fila dos robôs.
+    ponte_cotabot.iniciar(dados or {}, sio.emit)
+
+@sio.on('cotabot_uso_pedir')
+def cotabot_uso_pedir(dados=None):
+    ponte_cotabot.ler_uso(sio.emit)
 
 @sio.on('comando_imprimir')
 def comando_imprimir(dados):

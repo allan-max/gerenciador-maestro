@@ -22,6 +22,13 @@ anteriores, e os testes (`python -m pytest -q` ou `python -m unittest discover -
 Se o Cotafrete passar a ouvir só em `127.0.0.1` (`setx /M COTAFRETE_HOST 127.0.0.1`), a rede local fecha e o portal
 mostra "Cotafrete fora do alcance".
 
+## Variáveis do Cotabot na VM (`ponte_cotabot.py`)
+
+| Variável | Para quê | Sem ela |
+|---|---|---|
+| `COTABOT_TOKEN` | token da API do Cotabot (VM); igual ao `COTABOT_TOKEN` do `.env` do Cotabot | a tela do Cotabot mostra "Gerenciador sem COTABOT_TOKEN" e não cota |
+| `COTABOT_URL` | endereço do Cotabot na rede local (padrão `http://192.168.1.250:8765`) | usa o padrão |
+
 Senhas e chaves ficam só no `.env` e no `CONFIG.json` do servidor, nunca no código: o repositório é público.
 O atualizador automático (`scripts/atualizador.py`) preserva esses arquivos.
 
