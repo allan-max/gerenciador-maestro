@@ -10,8 +10,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import seguranca
+from nucleo import seguranca
 from test_fase0 import carregar
+from fonte_vale_base_metais import FONTE_VALE_BASE_METAIS
 
 RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
 GERENCIADOR = RAIZ / 'gerenciador.py'
@@ -298,7 +299,7 @@ class LinhasTest(unittest.TestCase):
         manager = Manager(linhas)
         ns = carregar(GERENCIADOR, {'_achar_linha', '_conferir_edicao', 'comando_apagar_linha', 'comando_editar_linha'}, sio=sio)
         modulo = SimpleNamespace(planilha_manager=manager)
-        patcher = patch.dict(sys.modules, {'planilha_manager': modulo})
+        patcher = patch.dict(sys.modules, {'nucleo.planilha_manager': modulo})
         patcher.start()
         self.addCleanup(patcher.stop)
         return ns, sio, manager
@@ -357,7 +358,7 @@ class ContratoComPortalTest(unittest.TestCase):
 
 class TravaJsonlTest(unittest.TestCase):
     def test_linha_acrescentada_espera_a_regravacao_terminar(self):
-        import ambiente
+        from nucleo import ambiente
         with tempfile.TemporaryDirectory() as tmp:
             arq = os.path.join(tmp, 'eventos.jsonl')
             Path(arq).write_text('{"titulo": "1"}\n', encoding='utf-8')
@@ -372,7 +373,7 @@ class TravaJsonlTest(unittest.TestCase):
             self.assertEqual([json.loads(l)['titulo'] for l in Path(arq).read_text(encoding='utf-8').splitlines()], ['1', '2'])
 
     def test_robos_e_gerenciador_usam_a_trava_ao_gravar_o_jsonl(self):
-        for arquivo in ('bots/vale_bot.py', 'bots/coupa/mixins/planilhas.py', 'bots/coupa/mixins/banco_dados.py'):
+        for arquivo in (str(FONTE_VALE_BASE_METAIS), 'bots/vale/mixins/planilhas.py', 'bots/vale/mixins/banco_dados.py'):
             texto = (RAIZ / arquivo).read_text(encoding='utf-8')
             self.assertNotIn("open(self.ARQUIVO_JSONL, 'a'", texto, arquivo)
         self.assertIn('with ambiente.TRAVA_JSONL:', GERENCIADOR.read_text(encoding='utf-8'))

@@ -9,12 +9,13 @@ import unittest
 from pathlib import Path
 
 from selenium.webdriver.common.by import By
+from fonte_vale_base_metais import FONTE_VALE_BASE_METAIS
 
 RAIZ = Path(__file__).resolve().parent.parent
 LOGGER = logging.getLogger('teste-insistencia')
 ROBOS = (
-    ('coupa', ('bots/coupa/mixins/extracao.py', 'bots/coupa/mixins/utilitarios.py', 'bots/coupa/mixins/planilhas.py')),
-    ('vale', ('bots/vale_bot.py',)),
+    ('coupa', ('bots/vale/mixins/extracao.py', 'bots/vale/mixins/utilitarios.py', 'bots/vale/mixins/planilhas.py')),
+    ('vale', (str(FONTE_VALE_BASE_METAIS),)),
 )
 METODOS = {'_extrair_itens_linhas', '_ler_campos_linha', '_ler_frete_linha', '_texto_valido', '_filter_desc', 'parse_local',
            '_frete_do_evento', '_localidade_com_frete', '_texto_por_rotulo', '_rotulo_nao_descritivo'}
@@ -268,7 +269,7 @@ class FreteTest(unittest.TestCase):
                 self.assertEqual(robo._localidade_com_frete(' ITABIRA - MG ', 'N/A'), 'ITABIRA - MG')
 
     def test_planilha_continua_com_9_colunas_e_localidade_na_quinta(self):
-        for arquivo in ('bots/coupa/mixins/planilhas.py', 'bots/vale_bot.py'):
+        for arquivo in ('bots/vale/mixins/planilhas.py', str(FONTE_VALE_BASE_METAIS)):
             with self.subTest(arquivo):
                 fonte = (RAIZ / arquivo).read_text(encoding='utf-8')
                 vals = next(l for l in fonte.splitlines() if l.strip().startswith("vals = [ev['numero_evento']"))

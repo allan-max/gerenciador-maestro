@@ -5,6 +5,12 @@ import os
 PASTA_GERENCIADOR = os.path.dirname(os.path.abspath(__file__))
 PASTA_LOGS = os.path.join(PASTA_GERENCIADOR, 'logs')
 os.makedirs(PASTA_LOGS, exist_ok=True)
+# .env e JSON do servidor ficam em dados/ (caminhos relativos: o gerenciador roda com a pasta dele como diretório atual)
+ARQ_ENV = os.path.join(PASTA_GERENCIADOR, 'dados', '.env')
+DADOS_MIGRADOS = ([], [])
+if __name__ == '__main__':   # só o gerenciador de verdade move os arquivos antigos da raiz para dados/
+    from nucleo.ambiente import migrar_dados
+    DADOS_MIGRADOS = migrar_dados(PASTA_GERENCIADOR)
 
 # Se executado sem console (ex: pythonw ou como serviço em segundo plano),
 # redireciona stdout e stderr para o arquivo de log para capturar todos os prints e erros
@@ -57,7 +63,7 @@ from logging.handlers import RotatingFileHandler
 # Ler só o segredo aqui preserva a ordem das outras opções e não ativa o modo de teste local por acidente.
 ROBO_SECRET = os.getenv("ROBO_SECRET")
 if ROBO_SECRET is None:
-    ROBO_SECRET = dotenv_values(encoding='utf-8-sig').get("ROBO_SECRET") or ""
+    ROBO_SECRET = dotenv_values(ARQ_ENV, encoding='utf-8-sig').get("ROBO_SECRET") or ""
 if __name__ == '__main__' and len(ROBO_SECRET) < 32:
     raise SystemExit("Configure ROBO_SECRET com pelo menos 32 caracteres, igual ao segredo do servidor Maestro.")
 
@@ -91,6 +97,11 @@ logging.basicConfig(
     handlers=log_handlers,
 )
 logger = logging.getLogger(__name__)
+if DADOS_MIGRADOS[0]:
+    logger.info(f"Arquivos de dados movidos da raiz para dados/: {', '.join(DADOS_MIGRADOS[0])}")
+if DADOS_MIGRADOS[1]:
+    logger.warning(f"Arquivos na raiz e em dados/ com conteúdo diferente (vale o de dados/; confira e apague o da raiz): "
+                   f"{', '.join(DADOS_MIGRADOS[1])}")
 
 
 def sem_acento(texto):
@@ -109,7 +120,11 @@ def classificar_resposta(valor):
 
 
 def carregar_config():
-    path = 'CONFIG.json'
+    path = os.path.join('dados', 'CONFIG.json')
+    if not os.path.exists(path) and os.path.exists('CONFIG.json'):
+        # ainda não migrou (ex.: testes que o atualizador roda antes do reinício importam este arquivo):
+        # usa o da raiz; criar um padrão em dados/ aqui faria o padrão vencer o real na migração
+        path = 'CONFIG.json'
     if not os.path.exists(path):
         default_config = {
             "SMTP_USER": os.environ.get("SMTP_USER", ""),
@@ -126,6 +141,7 @@ def carregar_config():
             "emails_relatorio": os.environ.get("EMAILS_RELATORIO", "")
         }
         default_config = com_padroes(default_config)
+        os.makedirs('dados', exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(default_config, f, indent=4, ensure_ascii=False)
         return default_config
@@ -149,7 +165,7 @@ def com_padroes(config):
 CONFIG_GLOBAL = carregar_config()
 
 # MODO DE TESTE LOCAL: ambiente.py decide (antes só "http://localhost:8000"; o testar_local.bat usa 127.0.0.1 e caía na produção)
-import ambiente
+from nucleo import ambiente
 if ambiente.modo_teste():
     os.makedirs(ambiente.pasta_banco(), exist_ok=True)
     candidato_excel = os.path.join(ambiente.RAIZ, "teste", "teste.xlsx")
@@ -165,19 +181,19 @@ else:
     CONFIG_GLOBAL["caminho_banco_dados"] = r"\\SERVIDOR2\Publico\ALLAN\database\Banco-de-dados"
     CONFIG_GLOBAL["caminho_backups"] = r"\\SERVIDOR2\Publico\ALLAN\database\backups_excel"
 
-import eventos
-import seguranca
-import processos_robos
-import ariba_api
-import reinicio
-import ponte_dav
-import ponte_cotabot
+from nucleo import eventos
+from nucleo import seguranca
+from nucleo import processos_robos
+from nucleo import ariba_api
+from nucleo import reinicio
+from nucleo import ponte_dav
+from nucleo import ponte_cotabot
 TROCA = {}   # o que o processo anterior deixou ao reiniciar pelo atualizador (reinicio.py); vazio na partida normal
 if __name__ == '__main__':
     eventos.ativar()   # só o gerenciador de verdade grava eventos; testes importam sem gravar
     TROCA = reinicio.ler_troca(PASTA_GERENCIADOR)
     # Dois gerenciadores na mesma base brigam pelos JSONs (13-14/10: 790 gravações recusadas)
-    from instancia_unica import JaRodando, instancia_unica
+    from nucleo.instancia_unica import JaRodando, instancia_unica
     try:
         for _tentativa in range(15 if TROCA else 1):   # reinício: o processo anterior ainda está soltando a trava
             try:
@@ -199,11 +215,11 @@ if __name__ == '__main__':
         sys.exit(3)
     eventos.limpar()
 
-from planilha_manager import planilha_manager
+from nucleo.planilha_manager import planilha_manager
 planilha_manager.iniciar(CONFIG_GLOBAL["caminho_excel"])
 
 def salvar_config(novas_config):
-    with open('CONFIG.json', 'w', encoding='utf-8') as f:
+    with open(os.path.join('dados', 'CONFIG.json'), 'w', encoding='utf-8') as f:
         json.dump(novas_config, f, indent=4, ensure_ascii=False)
 
 
@@ -358,7 +374,7 @@ Sistema Maestro
     except Exception as e:
         print(f"[MAESTRO] Erro ao enviar e-mail de aviso de limpeza: {e}")
 
-load_dotenv(encoding='utf-8-sig')
+load_dotenv(ARQ_ENV, encoding='utf-8-sig')
 URL_DO_SERVIDOR = os.getenv("URL_SERVIDOR", "https://maestro.ventura.inf.br")
 sio = socketio.Client()
 
@@ -402,13 +418,13 @@ coordenadas_clique = {'x': 0, 'y': 0}
 # 1. FUNO PARA SALVAR NO MESMO FORMATO
 def salvar_usuarios(usuarios):
     # temporário + os.replace: fechar a janela no meio da gravação não deixa o banco de contas pela metade
-    f = tempfile.NamedTemporaryFile('w', encoding='utf-8', dir='.', prefix='banco_usuarios-', suffix='.tmp', delete=False)
+    f = tempfile.NamedTemporaryFile('w', encoding='utf-8', dir='dados', prefix='banco_usuarios-', suffix='.tmp', delete=False)
     try:
         with f:
             json.dump(usuarios, f, indent=4, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(f.name, 'banco_usuarios.json')
+        os.replace(f.name, os.path.join('dados', 'banco_usuarios.json'))
     except BaseException:
         try: os.unlink(f.name)
         except OSError: pass
@@ -735,13 +751,13 @@ def _linha_do_robo(portal, linha):
     _registrar_evento_linha_log(portal, linha)
 
 def monitorar_log_coupa():
-    import log_robos
+    from nucleo import log_robos
     log_robos.acompanhar(log_robos.caminho_log('log-coupa.txt'),
                          lambda linha: _linha_do_robo('coupa', linha),
                          lambda: rodando_monitor_coupa)
 
 def monitorar_log_vale():
-    import log_robos
+    from nucleo import log_robos
     log_robos.acompanhar(log_robos.caminho_log('log-vale.txt'),
                          lambda linha: _linha_do_robo('vale', linha),
                          lambda: rodando_monitor_vale)
@@ -800,7 +816,7 @@ def monitorar_pasta_me():
         time.sleep(3) # Atualiza a cada 3 segundos
 
 def carregar_usuarios():
-    path = 'banco_usuarios.json'
+    path = os.path.join('dados', 'banco_usuarios.json')
     if not os.path.exists(path): return {}
     with open(path, 'r', encoding='utf-8-sig') as f: return json.load(f)
 
@@ -1326,7 +1342,7 @@ def comando_para_robo(dados):
                 except Exception: pass
             portal_atual = portal
             if portal == 'coupa':
-                from bots.coupa import CoupaScraper
+                from bots.vale import CoupaScraper
                 bot_coupa = CoupaScraper(SioDoRobo(sio), aguardando_clique, coordenadas_clique)
                 rodando_monitor_coupa = True
                 threading.Thread(target=monitorar_log_coupa, daemon=True).start()
@@ -1334,7 +1350,7 @@ def comando_para_robo(dados):
                 bot_coupa.thread_login = th_login
                 th_login.start()
             else:
-                from bots.vale_bot import ValeScraper
+                from bots.vale_base_metais import ValeScraper
                 bot_vale = ValeScraper(SioDoRobo(sio), aguardando_clique, coordenadas_clique)
                 rodando_monitor_vale = True
                 threading.Thread(target=monitorar_log_vale, daemon=True).start()
@@ -1362,13 +1378,13 @@ def comando_para_robo(dados):
                 sio.emit('relatar_progresso', {'mensagem': f"🚀 Ligando o robô {portal.upper()} automaticamente para responder o evento {dados.get('evento', '')}..."})
                 portal_atual = portal
                 if portal == 'coupa':
-                    from bots.coupa import CoupaScraper
+                    from bots.vale import CoupaScraper
                     bot_coupa = CoupaScraper(SioDoRobo(sio), aguardando_clique, coordenadas_clique)
                     bot_alvo = bot_coupa
                     rodando_monitor_coupa = True
                     threading.Thread(target=monitorar_log_coupa, daemon=True).start()
                 else:
-                    from bots.vale_bot import ValeScraper
+                    from bots.vale_base_metais import ValeScraper
                     bot_vale = ValeScraper(SioDoRobo(sio), aguardando_clique, coordenadas_clique)
                     bot_alvo = bot_vale
                     rodando_monitor_vale = True
@@ -1434,7 +1450,7 @@ def comando_para_robo(dados):
                                         print_login = bot.driver.get_screenshot_as_png()
                                     except Exception:
                                         pass
-                                from bots.relatorio_email import enviar_email_erro_resposta
+                                from bots.avisos.relatorio_email import enviar_email_erro_resposta
                                 enviar_email_erro_resposta(
                                     nome_bot=f"{portal.capitalize()} Bot",
                                     evento=str(dados.get('evento', '')),
@@ -1915,7 +1931,7 @@ def me_esta_rodando():
 
 def chrome_do_robo_aberto(portal):
     """Coupa/Vale rodam dentro do gerenciador; o que fica fora é o Chrome com o perfil do robô."""
-    import navegador
+    from nucleo import navegador
     return _checar(f'Chrome {portal}', lambda: processos_robos.processos_com_termo(
         navegador.perfil(portal), nomes={'chrome.exe'}))
 
@@ -2038,7 +2054,7 @@ def salvar_config_admin(dados):
         return
     # parte do que está no disco (não do CONFIG_GLOBAL, que tem caminhos de execução calculados no início)
     try:
-        with open('CONFIG.json', 'r', encoding='utf-8-sig') as f:
+        with open(os.path.join('dados', 'CONFIG.json'), 'r', encoding='utf-8-sig') as f:
             no_disco = json.load(f)
     except (OSError, ValueError):
         no_disco = {}
@@ -2359,10 +2375,10 @@ def comando_carregar_planilha_json(dados):
     email_excluir = str(dados.get('email_excluir') or '').strip()
     contas_vend = None
     if email_vendedor or email_excluir:
-        import donos_vendedor
+        from nucleo import donos_vendedor
         contas_vend = donos_vendedor.contas_vendedoras(carregar_usuarios())
     try:
-        from planilha_manager import planilha_manager
+        from nucleo.planilha_manager import planilha_manager
         planilha_manager.iniciar()
 
         cotacoes = planilha_manager.cotacoes.get("COTAÇÃO", [])
@@ -2436,7 +2452,7 @@ def comando_carregar_planilha_json(dados):
         onde_encontrar = {}
         if dados.get('tela') == 'minhas_cotacoes' or dados.get('apenas_meu_vendedor'):
             try:
-                from bots.fornecedores_ti import mapa_onde_encontrar
+                from bots.itens.fornecedores_ti import mapa_onde_encontrar
                 onde_encontrar = mapa_onde_encontrar(cotacoes, set(portais_robo))
             except Exception:
                 logger.exception("ONDE ENCONTRAR? não calculado para a planilha")
@@ -2474,7 +2490,7 @@ def comando_ler_excel_dashboard(dados):
             try: data_fim = datetime.strptime(filtros['dataFim'], '%Y-%m-%d').replace(hour=23, minute=59, second=59)
             except: pass
 
-        from planilha_manager import planilha_manager, data_vencimento
+        from nucleo.planilha_manager import planilha_manager, data_vencimento
         planilha_manager.iniciar()
 
         hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -2590,7 +2606,7 @@ def comando_registrar_vendedor_cotacao(dados):
 
     sucesso_save = False
     try:
-        from planilha_manager import planilha_manager
+        from nucleo.planilha_manager import planilha_manager
         planilha_manager.iniciar()
         with planilha_manager.lock:
             encontradas_set = set()
@@ -2713,7 +2729,7 @@ def comando_registrar_cotacao_manual(dados):
 
     caminho_excel = CONFIG_GLOBAL.get("caminho_excel", r"\\SERVIDOR2\Publico\PLANILHA DE CONTROLE VALE - ESTAGIARIOS (copia 1).xlsx")
     try:
-        from planilha_manager import planilha_manager
+        from nucleo.planilha_manager import planilha_manager
         planilha_manager.iniciar(caminho_excel)
         linhas = []
         for cota in cotacoes:
@@ -2754,7 +2770,7 @@ def comando_registrar_pedido_manual(dados):
         return
 
     try:
-        from planilha_manager import planilha_manager
+        from nucleo.planilha_manager import planilha_manager
         # Iniciar no gerenciador pode ser bom, embora teoricamente j deva estar
         caminho_excel = CONFIG_GLOBAL.get("caminho_excel", r"\\SERVIDOR2\Publico\PLANILHA DE CONTROLE VALE - ESTAGIARIOS (copia 1).xlsx")
         planilha_manager.iniciar(caminho_excel)
@@ -2771,7 +2787,7 @@ def comando_registrar_pedido_manual(dados):
 @sio.on('obter_fila_extracao')
 def obter_fila_extracao(dados):
     client_id = dados.get('clientId')
-    path_fila = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fila_extracao.json")
+    path_fila = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dados", "fila_extracao.json")
     fila = []
     if os.path.exists(path_fila):
         with open(path_fila, 'r', encoding='utf-8') as f:
@@ -2783,7 +2799,7 @@ def obter_fila_extracao(dados):
 def iniciar_extracao_fila(dados):
     try:
         client_id = dados.get('clientId')
-        path_fila = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fila_extracao.json")
+        path_fila = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dados", "fila_extracao.json")
         fila = []
         if os.path.exists(path_fila):
             with open(path_fila, 'r', encoding='utf-8') as f:
@@ -2836,7 +2852,7 @@ def processar_fila_extracao(fila, client_id):
                 executar_fluxo('vale')
 
         # Ler a planilha e marcar como extrado
-        from planilha_manager import planilha_manager
+        from nucleo.planilha_manager import planilha_manager
         planilha_manager.iniciar()
         with planilha_manager.lock:
             cotacoes_lista = planilha_manager.cotacoes.get("COTAÇÃO", [])
@@ -2879,7 +2895,7 @@ def loop_metricas_servidor():
     while True:
         try:
             if winserver is None:
-                import winserver   # tenta de novo a cada ciclo: basta instalar/copiar o que faltou
+                from nucleo import winserver   # tenta de novo a cada ciclo: basta instalar/copiar o que faltou
             m = winserver.coletar_metricas()
             _erro_metrica_servidor = None
             _ultima_metrica_servidor = m
@@ -3021,7 +3037,7 @@ def comando_apagar_linha(dados):
     chave = dados.get('chave')
 
     try:
-        from planilha_manager import planilha_manager
+        from nucleo.planilha_manager import planilha_manager
         planilha_manager.iniciar()
 
         with planilha_manager.lock:
@@ -3047,11 +3063,11 @@ def comando_editar_linha(dados):
     novos_dados = dados.get('novos_dados', {})
 
     try:
-        from planilha_manager import planilha_manager
+        from nucleo.planilha_manager import planilha_manager
         if 'identidade' in dados:
             if tipo != 'cotacoes' or novos_dados != {'RESPOSTA': 'RESPONDIDO'}:
                 raise ValueError('Alteração de resposta inválida.')
-            from resposta_cotacao import marcar_respondida
+            from nucleo.resposta_cotacao import marcar_respondida
             marcar_respondida(planilha_manager, dados['identidade'])
             sio.emit('resposta_acao_linha', {'sucesso': True, 'mensagem': 'Resposta salva no JSON.', 'clientId': client_id, 'audit_id': audit_id})
             return
@@ -3090,7 +3106,7 @@ def rotina_backup(manual=False, por=None):
 def _fazer_backup(manual, por):
     detalhe = {'manual': manual, 'por': por}
     try:
-        from planilha_manager import planilha_manager
+        from nucleo.planilha_manager import planilha_manager
         caminho_backup_dir = CONFIG_GLOBAL.get("caminho_backups", "backups")
         if not os.path.exists(caminho_backup_dir):
             try: os.makedirs(caminho_backup_dir, exist_ok=True)

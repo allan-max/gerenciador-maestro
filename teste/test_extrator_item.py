@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
-from bots.extrator_item import (
+from bots.itens.extrator_item import (
     extrair_por_banco_dados,
     extrair_por_regex,
     extrair_por_claude_structured,
@@ -75,7 +75,7 @@ class TestExtratorItemHibrido(unittest.TestCase):
         self.assertEqual(res["marca"], "")
         self.assertEqual(res["modelo"], "1571517503")
 
-    @patch("bots.extrator_item.requests.post")
+    @patch("bots.itens.extrator_item.requests.post")
     def test_nivel3_claude_structured_outputs_acionado_apenas_quando_necessario(self, mock_post):
         mock_resp = MagicMock()
         mock_resp.status_code = 200

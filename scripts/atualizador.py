@@ -23,12 +23,14 @@ from email.mime.text import MIMEText
 
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, RAIZ)
-import ambiente        # noqa: E402
-import eventos         # noqa: E402
-import instancia_unica  # noqa: E402
-import reinicio        # noqa: E402
+from nucleo import ambiente        # noqa: E402
+from nucleo import eventos         # noqa: E402
+from nucleo import instancia_unica  # noqa: E402
+from nucleo import reinicio        # noqa: E402
 
-DADOS = ('CONFIG.json', '.env', 'banco_usuarios.json', 'banco_ips_bloqueados.json')   # do servidor: produção vence
+_NOMES_DADOS = ('CONFIG.json', '.env', 'banco_usuarios.json', 'banco_ips_bloqueados.json')
+# do servidor: produção vence. Em dados/ (atual) e na raiz (antes de o gerenciador migrar: ambiente.migrar_dados)
+DADOS = tuple(f'dados/{n}' for n in _NOMES_DADOS) + _NOMES_DADOS
 DADOS_PORTAL = ('.env', 'dados/prints_respostas.json', 'dados/erros_respostas.json')
 PORTAL_PM2 = 'Site-Maestro'
 ESTADO_VALIDO_S = 120           # gerenciador.estado mais velho que isso = gerenciador não está rodando

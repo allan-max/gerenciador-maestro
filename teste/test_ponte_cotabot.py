@@ -8,10 +8,11 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import ponte_cotabot  # noqa: E402
+from nucleo import ponte_cotabot  # noqa: E402
 
 DADOS = {"pedido": "p1", "evento": "310170", "vendedor": "allan", "sites": "",
-         "itens": [{"descricao": "Geladeira 400L", "quantidade": 2}, {"descricao": "  "}]}
+         "itens": [{"descricao": "Geladeira 400L", "quantidade": 2, "sites": ["Martins", " Martins ", "google", ""],
+                    "regras": ["Conferir frete."]}, {"descricao": "  "}]}
 
 
 class Resp:
@@ -86,6 +87,9 @@ class PonteCotabotTest(unittest.TestCase):
         self.assertEqual(post[1], "http://vm:8765/api/cotar")
         self.assertEqual(post[2]["headers"]["Authorization"], "Bearer " + "t" * 40)
         self.assertEqual(len(post[2]["json"]["itens"]), 1)   # item sem descrição sai
+        item = post[2]["json"]["itens"][0]
+        self.assertEqual(item["sites"], ["Martins", "google"])   # sem repetição nem vazio
+        self.assertEqual(item["regras"], ["Conferir frete."])
         estados = [d["estado"] for n, d in self.emitidos if n == "cotabot_status"]
         self.assertEqual(estados, ["enviando", "fila", "cotando"])
         self.assertEqual(self.emitidos[-1][0], "cotabot_pronto")

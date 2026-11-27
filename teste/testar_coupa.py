@@ -8,9 +8,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault('MAESTRO_TESTE', '1')   # teste local nunca grava na base de produção
 
 try:
-    from bots.coupa import CoupaScraper
+    from bots.vale import CoupaScraper
 except ImportError:
-    from bots.coupa import CoupaScraper
+    from bots.vale import CoupaScraper
 
 class SioMock:
     """Mock da classe socketio.Client para testar o bot offline e imprimir os eventos no terminal."""

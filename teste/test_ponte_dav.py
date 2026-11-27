@@ -9,7 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import ponte_dav  # noqa: E402
+from nucleo import ponte_dav  # noqa: E402
 
 PLANILHA = {"name": "base.xlsx", "data": base64.b64encode(b"xlsx").decode("ascii")}
 DADOS = {"evento": "301015", "portal": "coupa", "vendedor": "allan", "planilha": PLANILHA}

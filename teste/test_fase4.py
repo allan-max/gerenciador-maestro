@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from test_fase0 import LOGGER, Relogio, carregar
+from fonte_vale_base_metais import FONTE_VALE_BASE_METAIS
 
 RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
 GER = RAIZ / 'gerenciador.py'
@@ -197,7 +198,7 @@ class ComandoParaRoboTest(unittest.TestCase):
 
 class OopsTest(unittest.TestCase):
     def test_pausa_a_cada_3_e_abandona_depois_de_3_pausas(self):
-        for caminho, classe in ((RAIZ / 'bots/coupa/mixins/extracao.py', 'ExtracaoMixin'), (RAIZ / 'bots/vale_bot.py', 'ValeScraper')):
+        for caminho, classe in ((RAIZ / 'bots/vale/mixins/extracao.py', 'ExtracaoMixin'), (FONTE_VALE_BASE_METAIS, 'ValeScraper')):
             with self.subTest(caminho.name):
                 relogio = Relogio()
                 const = carregar(caminho, {'OOPS_POR_PAUSA', 'PAUSA_OOPS_S', 'MAX_PAUSAS_OOPS'})
@@ -212,7 +213,7 @@ class OopsTest(unittest.TestCase):
                 self.assertIn('ciclo abandonado', bot.motivo_abandono)
 
     def test_lote_abandonado_nao_e_sucesso(self):
-        for arquivo in ('bots/coupa/mixins/extracao.py', 'bots/vale_bot.py'):
+        for arquivo in ('bots/vale/mixins/extracao.py', str(FONTE_VALE_BASE_METAIS)):
             fonte = (RAIZ / arquivo).read_text(encoding='utf-8')
             self.assertIn("'sucesso': not motivo", fonte, arquivo)
 

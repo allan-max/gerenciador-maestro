@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 # Carrega a classe sem executar o singleton que acessa o compartilhamento real.
 RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
-tree = ast.parse((RAIZ / 'planilha_manager.py').read_text(encoding='utf-8'))
+tree = ast.parse((RAIZ / 'nucleo' / 'planilha_manager.py').read_text(encoding='utf-8'))
 namespace = dict(json=json, logging=logging, os=os, tempfile=tempfile,
                  threading=threading, datetime=datetime, logger=logging.getLogger('teste-persistencia'))
 definicoes = [n for n in tree.body if not (isinstance(n, ast.Assign) and any(
@@ -56,8 +56,19 @@ class PersistenciaTest(unittest.TestCase):
         self.assertEqual(len(novo.cotacoes['COTAÇÃO']), 2)
         self.assertEqual(novo.pedidos, {'PEDIDOS': [{'PEDIDO': '456'}]})
 
+    def test_extras_viram_campos_a_mais_da_linha(self):
+        aviso = 'Vencimento alterado, vencimento antigo: 01/12/2026 Vencimento NOVO: 05/12/2026'
+        self.assertTrue(self.manager.adicionar_linhas('COTAÇÃO', [['789', '05/12/2026', 'A'], ['790', '05/12/2026', 'B']],
+                                                      extras=[{'VENCIMENTO ALTERADO': aviso}, {}]))
+        novo = self.novo_manager()
+        novo.iniciar()
+        linhas = {r['COTAÇÃO']: r for r in novo.cotacoes['COTAÇÃO']}
+        self.assertEqual(linhas['789']['VENCIMENTO ALTERADO'], aviso)
+        self.assertEqual(linhas['789']['VENCIMENTO'], '05/12/2026')
+        self.assertNotIn('VENCIMENTO ALTERADO', linhas['790'])
+
     def test_resposta_da_tela_e_inclusao_do_bot_preservam_ambas_alteracoes(self):
-        from resposta_cotacao import marcar_respondida
+        from nucleo.resposta_cotacao import marcar_respondida
         identidade = {'COTAÇÃO': '123', 'VENCIMENTO': '01/01/2020', 'ITEM': 'Item original',
                       'VENDEDOR': 'GUSTAVO', 'LOCALIDADE': 'Vitória'}
         self.manager.cotacoes['COTAÇÃO'][0].update(identidade)

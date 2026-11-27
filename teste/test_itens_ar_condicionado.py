@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 from docx import Document
 
-from bots import itens_ar_condicionado as A
-from bots.classificador_tecnologia import _CACHE_CLASSIFICACAO_TI
+from bots.word import itens_ar_condicionado as A
+from bots.itens.classificador_tecnologia import _CACHE_CLASSIFICACAO_TI
 from test_fornecedores_ti import _resposta_ia
 
 
@@ -66,7 +66,7 @@ class WordArTest(unittest.TestCase):
         enviados = []
         bot.atualizar_excel = lambda dados: enviados.extend(d["numero_evento"] for d in dados) or False
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-test"}), \
-                patch("bots.classificador_tecnologia.requests.post", return_value=_resposta_ia(pertence=False)):
+                patch("bots.itens.classificador_tecnologia.requests.post", return_value=_resposta_ia(pertence=False)):
             bot.gerar_word()
         return {a: Document(os.path.join(self.pasta, a)) for a in os.listdir(self.pasta) if a.endswith(".docx")}, enviados
 
@@ -89,11 +89,11 @@ class WordArTest(unittest.TestCase):
         self.assertEqual(sorted(enviados), ["7001", "7002", "7003", "7004", "7005"])   # também vão para a planilha
 
     def test_coupa(self):
-        from bots.coupa import CoupaScraper
+        from bots.vale import CoupaScraper
         self._conferir(*self._rodar(CoupaScraper))
 
     def test_vale(self):
-        from bots.vale_bot import ValeScraper
+        from bots.vale_base_metais import ValeScraper
         self._conferir(*self._rodar(ValeScraper))
 
 

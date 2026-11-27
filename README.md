@@ -19,22 +19,49 @@ Ele se conecta por Socket.IO ao portal web ([`allan-max/portaismaestro`](https:/
 ## Estrutura
 
 ```
-gerenciador.py        Processo principal: conexão com o portal, fila e piloto automático
-bots/                 Robôs e regras de negócio
-  coupa/              Robô do Coupa (principal.py + mixins por etapa)
-  vale_bot.py         Robô da Vale Base Metals
-ambiente.py           Produção x teste local e onde ficam as bases
-planilha_manager.py   Leitura e gravação das planilhas JSON
-ponte_dav.py          Ponte com o Cotafrete para gerar o DAV
-seguranca.py          Senhas e validação do que chega do navegador
-eventos.py            Eventos em logs/eventos.jsonl para o dashboard
-instancia_unica.py    Garante um gerenciador por vez
-reinicio.py           Reinício suave pedido pelo atualizador
-scripts/              Atualizador automático e scripts de manutenção
-teste/                Testes automatizados (unittest)
-docs/                 Documentação e planos
-*.bat                 Iniciar, parar e ver o log no Windows
+gerenciador.py            Processo principal: conexão com o portal, fila e piloto automático
+iniciar_gerenciador.bat   Sobe o gerenciador em segundo plano
+parar_gerenciador.bat     Encerra o gerenciador
+ver_log.bat               Acompanha o log ao vivo
+
+nucleo/                   Módulos de apoio (importar como `from nucleo import x`)
+  ambiente.py             Produção x teste local e onde ficam as bases
+  planilha_manager.py     Leitura e gravação das planilhas JSON
+  resposta_cotacao.py     Marca cotação respondida
+  trava_arquivo.py        Trava entre processos e máquinas para gravar as bases
+  eventos.py              Eventos em logs/eventos.jsonl para o dashboard
+  log_robos.py            Logs dos robôs Coupa e Vale
+  instancia_unica.py      Garante um gerenciador por vez
+  reinicio.py             Reinício suave pedido pelo atualizador
+  processos_robos.py      Detecta robô externo já rodando
+  navegador.py            Chrome de cada robô com perfil próprio
+  otp_email.py            Lê o código da Vale no e-mail
+  seguranca.py            Senhas e validação do que chega do navegador
+  donos_vendedor.py       Dono da cotação pelo nome do vendedor
+  ponte_dav.py            Ponte com o Cotafrete para gerar o DAV
+  ponte_cotabot.py        Ponte com o Cotabot na VM
+  ariba_api.py            Comandos para o robô do Ariba
+  winserver.py            Métricas do servidor (CPU/RAM/GPU)
+dados/                    .env e JSON do servidor (CONFIG.json, banco_usuarios.json...); fora do git
+bots/                     Robôs e regras de negócio
+  vale/                   Robô do Coupa da Vale (CoupaScraper: principal.py + mixins por etapa)
+  vale_base_metais/       Robô da Vale Base Metals (ValeScraper: principal.py + mixins por etapa, como o Coupa;
+                          a resposta herda a do Coupa em mixins/resposta.py)
+  itens/                  Entender o item: marca/modelo, tecnologia, onde cotar (fornecedores_ti.json), vendedor, validação
+  word/                   Seções dos Words por tipo: Dell, hardware, eletroportáteis, ar-condicionado, marcas
+  avisos/                 E-mails e avisos: relatório, erros, termos, vencimento alterado
+  portal/                 Telas comuns do portal: termos de participação, transmissão do captcha
+scripts/                  Atualizador automático e scripts de manutenção
+teste/                    Testes automatizados (unittest)
+docs/                     Documentação e planos
 ```
+
+Segredos e JSON do servidor ficam em `dados/`: `.env`, `CONFIG.json`, `banco_usuarios.json`, `banco_ips_bloqueados.json`
+e `fila_extracao.json`. Instalação antiga com esses arquivos na raiz: o gerenciador os move para `dados/` ao iniciar
+(`nucleo/ambiente.py`, `migrar_dados`). Se a raiz e `dados/` tiverem versões diferentes, vale a de `dados/` e o log avisa.
+
+Na raiz, fora do git, ficam os arquivos de controle do gerenciador e do atualizador (`gerenciador.estado`,
+`gerenciador.instancia`) e as pastas `logs/`, `base_teste/` e `perfis_chrome/`. Não mova esses.
 
 ## Requisitos
 
@@ -51,7 +78,7 @@ pip install "python-socketio[client]" selenium openpyxl python-docx pandas pytho
 
 ## Como rodar
 
-1. Crie o `.env` na pasta do gerenciador (veja a seção Configuração).
+1. Crie o `.env` em `dados\.env` (veja a seção Configuração).
 2. Execute `iniciar_gerenciador.bat`. Ele localiza o Python e sobe o gerenciador em segundo plano.
 3. Use `ver_log.bat` para acompanhar e `parar_gerenciador.bat` para encerrar.
 
@@ -63,7 +90,7 @@ Com `URL_SERVIDOR` apontando para `localhost`/`127.0.0.1` ou com `MAESTRO_TESTE=
 
 ## Configuração
 
-Senhas e chaves ficam só no `.env` e no `CONFIG.json` do servidor, nunca no código: o repositório é público. Os dois arquivos estão no `.gitignore`.
+Senhas e chaves ficam só no `dados\.env` e no `dados\CONFIG.json` do servidor, nunca no código: o repositório é público. Os dois arquivos estão no `.gitignore`.
 
 | Variável | Uso |
 |---|---|

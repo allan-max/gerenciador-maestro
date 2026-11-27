@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 from unittest.mock import patch, MagicMock
-from bots.relatorio_email import gerar_conteudo_relatorio, enviar_email_relatorio
+from bots.avisos.relatorio_email import gerar_conteudo_relatorio, enviar_email_relatorio
 
 
 class TestRelatorioEmail(unittest.TestCase):
@@ -143,10 +143,10 @@ class TestRelatorioEmail(unittest.TestCase):
         self.assertEqual(args[1], ['gestor@empresa.com.br', 'equipe@empresa.com.br'])
         server_inst.quit.assert_called_once()
 
-    @patch('bots.relatorio_email.enviar_email_relatorio')
+    @patch('bots.avisos.relatorio_email.enviar_email_relatorio')
     def test_integracao_metodo_vale_bot(self, mock_enviar):
         """Garante que o método enviar_relatorio_email do ValeScraper delega corretamente."""
-        from bots.vale_bot import ValeScraper
+        from bots.vale_base_metais import ValeScraper
         instancia = ValeScraper.__new__(ValeScraper)
         instancia.relatorio_email_stats = {'eventos_sem_itens': ['123']}
         instancia.config = {'emails_relatorio': 'teste@teste.com'}
@@ -157,10 +157,10 @@ class TestRelatorioEmail(unittest.TestCase):
         self.assertEqual(kwargs['nome_bot'], 'Vale Bot')
         self.assertEqual(kwargs['stats'], {'eventos_sem_itens': ['123']})
 
-    @patch('bots.relatorio_email.enviar_email_relatorio')
+    @patch('bots.avisos.relatorio_email.enviar_email_relatorio')
     def test_integracao_metodo_coupa_bot(self, mock_enviar):
         """Garante que o método enviar_relatorio_email do CoupaScraper delega corretamente."""
-        from bots.coupa import CoupaScraper
+        from bots.vale import CoupaScraper
         instancia = CoupaScraper.__new__(CoupaScraper)
         instancia.relatorio_email_stats = {'eventos_sem_itens': ['456']}
         instancia.config = {'emails_relatorio': 'teste@teste.com'}

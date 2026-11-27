@@ -7,7 +7,7 @@ import urllib.parse
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from bots.termos_participacao import aceitar_termos, termos_pendentes
+from bots.portal.termos_participacao import aceitar_termos, termos_pendentes
 
 
 def _termo(data_id, marcado=False, desabilitado=False):

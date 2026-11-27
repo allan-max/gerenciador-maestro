@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""vale_bot: datas de vencimento sem ambiguidade de dia/mês e textos do Word sem acentuação quebrada."""
+"""Robô da Vale (bots/vale_base_metais): datas de vencimento sem ambiguidade de dia/mês e textos do Word sem acentuação quebrada."""
 import os
 import re
 import sys
@@ -8,10 +8,11 @@ import unittest
 os.environ.setdefault('MAESTRO_TESTE', '1')
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from bots.vale_bot import ValeScraper
+from bots.vale_base_metais import ValeScraper
+from fonte_vale_base_metais import FONTE_VALE_BASE_METAIS
 
 parse = ValeScraper.parsear_data_vencimento
-ARQUIVO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'bots', 'vale_bot.py'))
+ARQUIVO = str(FONTE_VALE_BASE_METAIS)
 
 
 class TestDataVencimento(unittest.TestCase):

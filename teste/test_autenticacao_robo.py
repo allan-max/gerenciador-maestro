@@ -19,7 +19,7 @@ class AutenticacaoRoboTest(unittest.TestCase):
             file.write_text('\ufeffROBO_SECRET=' + 'a' * 64 + '\nURL_SERVIDOR=http://localhost:8000\n', encoding='utf-8')
             environment = {}
             namespace = {'os': SimpleNamespace(getenv=environment.get),
-                         'dotenv_values': lambda **kwargs: dotenv_values(file, **kwargs)}
+                         'ARQ_ENV': file, 'dotenv_values': lambda caminho, **kwargs: dotenv_values(caminho, **kwargs)}
             exec(code, namespace)
             self.assertEqual(namespace['ROBO_SECRET'], 'a' * 64)
             self.assertEqual(environment, {})

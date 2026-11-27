@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import psutil
 
-import processos_robos as pr
+from nucleo import processos_robos as pr
 
 PASTA = r"C:\Robos\ComprasGOV\ComprasGOV"
 

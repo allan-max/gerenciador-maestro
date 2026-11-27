@@ -16,7 +16,7 @@ from unittest.mock import patch
 from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException
 from selenium.webdriver.common.by import By
 
-import ambiente
+from nucleo import ambiente
 from test_fase0 import LOGGER, Relogio, carregar
 from test_planilha_persistencia import Manager, namespace as ns_manager
 
@@ -78,7 +78,7 @@ class BaseTemporaria(unittest.TestCase):
         self.cota = self.dir / 'COTAÇÕES.json'
         (self.dir / 'PEDIDOS.json').write_text(json.dumps({'PEDIDOS': []}), encoding='utf-8')
         self.cota.write_text(json.dumps({'COTAÇÃO': self.LINHAS}, ensure_ascii=False), encoding='utf-8')
-        eventos = patch('eventos.registrar')   # o evento da tela Atividade não é o assunto aqui
+        eventos = patch('nucleo.eventos.registrar')   # o evento da tela Atividade não é o assunto aqui
         eventos.start()
         self.addCleanup(eventos.stop)
         self.manager = self.novo_manager()
@@ -135,7 +135,7 @@ class RascunhoTest(BaseTemporaria):
         self.assertEqual([r['RESPOSTA'] for r in json.loads(self.cota.read_text(encoding='utf-8'))['COTAÇÃO']], ['RASCUNHO', 'RESPONDIDO'])
 
     def test_anexo_com_nome_malicioso_fica_na_pasta_temporaria(self):
-        gravar = carregar(RAIZ / 'bots/coupa/mixins/resposta.py', {'_gravar_anexo'}, 'RespostaMixin', os=os, re=re, base64=base64)['_gravar_anexo']
+        gravar = carregar(RAIZ / 'bots/vale/mixins/resposta.py', {'_gravar_anexo'}, 'RespostaMixin', os=os, re=re, base64=base64)['_gravar_anexo']
         dado = base64.b64encode(b'pdf').decode()
         for nome in ('..\\..\\evil.pdf', '../evil.pdf', '..', '', 'pedido:12?.pdf'):
             with self.subTest(nome):
@@ -200,7 +200,7 @@ class VerificacaoTest(BaseTemporaria):
 
     def rodar(self, paginas, db=('100', '101', '102', '103', '104', '105'), portal=None, config=None):
         relatorios = self.dir / 'relatorios'
-        ns = carregar(RAIZ / 'bots/coupa/mixins/verificacao.py', {'JANELA_NAO_RESPONDIDO_DIAS', 'VerificacaoMixin'},
+        ns = carregar(RAIZ / 'bots/vale/mixins/verificacao.py', {'JANELA_NAO_RESPONDIDO_DIAS', 'VerificacaoMixin'},
                       time=Relogio(), By=By, NoSuchElementException=NoSuchElementException, StaleElementReferenceException=StaleElementReferenceException, csv=csv, datetime=datetime, timedelta=timedelta,
                       WebDriverWait=lambda d, t: SimpleNamespace(until=lambda c: d.tabela_ok() or (_ for _ in ()).throw(TimeoutError('tabela'))),
                       EC=SimpleNamespace(presence_of_element_located=lambda x: x), PASTA_RELATORIOS=relatorios)
@@ -212,7 +212,7 @@ class VerificacaoTest(BaseTemporaria):
                             sio=SimpleNamespace(emit=lambda e, d: emitidos.append((e, d))))
         modulo = SimpleNamespace(planilha_manager=self.manager,
                                  **{k: ns_manager[k] for k in ('status_atual', 'data_vencimento', 'RASCUNHO', 'NAO_RESPONDIDO')})
-        with patch.dict(sys.modules, planilha_manager=modulo), patch.object(LOGGER, 'handle'), \
+        with patch.dict(sys.modules, {'nucleo.planilha_manager': modulo}), patch.object(LOGGER, 'handle'), \
                 patch.object(ambiente, 'ler_config', return_value=config or {}):
             bot.fase_verificacao()
         return bot, emitidos, jsonl, relatorios

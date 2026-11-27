@@ -11,8 +11,8 @@ from urllib.parse import urlparse
 
 from docx import Document
 
-from bots import fornecedores_ti as F
-from bots.classificador_tecnologia import _CACHE_CLASSIFICACAO_TI
+from bots.itens import fornecedores_ti as F
+from bots.itens.classificador_tecnologia import _CACHE_CLASSIFICACAO_TI
 
 NOMES_OFICIAIS = [
     "Agis", "Mazer", "Pauta", "SND", "Fagundez", "GMI", "ScanSource", "Ingram Micro", "Martins", "Gazin",
@@ -196,7 +196,7 @@ class TestWordRobo(unittest.TestCase):
         bot.encontrar_vendedor_similar = lambda it, d: None
         bot.atualizar_excel = lambda dados: False  # não grava banco/JSONL no teste
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-test"}), \
-                patch("bots.classificador_tecnologia.requests.post", return_value=_resposta_ia()) as post:
+                patch("bots.itens.classificador_tecnologia.requests.post", return_value=_resposta_ia()) as post:
             bot.gerar_word()
         arquivos = [a for a in os.listdir(self.pasta) if a.endswith(".docx")]
         self.assertEqual(len(arquivos), 1)
@@ -230,11 +230,11 @@ class TestWordRobo(unittest.TestCase):
         self.assertEqual(len(rels), len({r.target_ref for r in rels}), "relação de link duplicada")
 
     def test_word_coupa(self):
-        from bots.coupa import CoupaScraper
+        from bots.vale import CoupaScraper
         self._conferir(*self._rodar(CoupaScraper))
 
     def test_word_vale_base_metais(self):
-        from bots.vale_bot import ValeScraper
+        from bots.vale_base_metais import ValeScraper
         self._conferir(*self._rodar(ValeScraper))
 
 

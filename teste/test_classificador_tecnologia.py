@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 from docx import Document
 
-from bots.classificador_tecnologia import (
+from bots.itens.classificador_tecnologia import (
     FORNECEDORES_TECNOLOGIA,
     pre_identificar_suspeito_ti,
     analisar_item_tecnologia,
@@ -70,7 +70,7 @@ class TestClassificadorTecnologia(unittest.TestCase):
             )
         )
 
-    @patch("bots.classificador_tecnologia.requests.post")
+    @patch("bots.itens.classificador_tecnologia.requests.post")
     def test_fluxo_completo_por_item_individual_e_renderizacao_word(self, mock_post):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -123,7 +123,7 @@ class TestClassificadorTecnologia(unittest.TestCase):
             self.assertEqual(nomes[:2], ["Agis", "Ingram Micro"])
             self.assertTrue(3 <= len(nomes) <= 5)
 
-    @patch("bots.classificador_tecnologia.requests.post")
+    @patch("bots.itens.classificador_tecnologia.requests.post")
     def test_ia_descarta_item_suspeito_que_nao_eh_informatica(self, mock_post):
         mock_resp = MagicMock()
         mock_resp.status_code = 200

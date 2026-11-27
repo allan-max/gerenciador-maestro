@@ -5,7 +5,7 @@ de eventos sem mudança (1466 só no dia 07/11), inclusive vencidos, e cada um v
 import unittest
 from datetime import date
 
-from bots.coupa.mixins.extracao import data_da_lista, vencimento_reabriu
+from bots.vale.mixins.extracao import data_da_lista, vencimento_reabriu
 
 HOJE = date(2026, 11, 11)
 

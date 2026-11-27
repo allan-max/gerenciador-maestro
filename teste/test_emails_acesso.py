@@ -3,7 +3,7 @@ import json
 import os
 import unittest
 
-import seguranca
+from nucleo import seguranca
 from test_fase0 import carregar
 from test_seguranca import GERENCIADOR, SioFalso
 

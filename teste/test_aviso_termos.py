@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from bots import aviso_termos as A
-from bots.termos_participacao import aceitar_termos, ler_termos, termos_pendentes
+from bots.avisos import aviso_termos as A
+from bots.portal.termos_participacao import aceitar_termos, ler_termos, termos_pendentes
 
 # Como o portal mostra (mapeado em 24/11/2026, /quotes/external_responses/312674/event_info), sem os rádios marcados
 TELA_REAL = '''
@@ -129,13 +129,13 @@ class AvisoTest(unittest.TestCase):
     def test_envia_para_vendas7_e_emails_do_config_e_limpa_a_lista(self):
         r = Robo()
         A.anotar(r, "312674", self.TERMOS, "T", True); A.concluir(r, "312674", {"itens": []})
-        with patch("bots.relatorio_email._conectar_e_enviar_smtp", return_value=True) as smtp:
+        with patch("bots.avisos.relatorio_email._conectar_e_enviar_smtp", return_value=True) as smtp:
             self.assertTrue(A.enviar(r, "Coupa"))
         remetente, _senha, destinatarios, msg, _bot, _log = smtp.call_args[0]
         self.assertEqual(destinatarios, ["compras@teste.com", A.DESTINATARIO_FIXO])
         self.assertIn("Termos e condições", msg["Subject"])
         self.assertEqual(r.eventos_com_termos, {})
-        with patch("bots.relatorio_email._conectar_e_enviar_smtp") as smtp:
+        with patch("bots.avisos.relatorio_email._conectar_e_enviar_smtp") as smtp:
             self.assertFalse(A.enviar(r, "Coupa"))   # lista vazia: não manda nada
             smtp.assert_not_called()
 
@@ -143,7 +143,7 @@ class AvisoTest(unittest.TestCase):
         r = Robo(); r.config = {}
         A.anotar(r, "1", self.TERMOS)
         with patch.dict(os.environ, {"SMTP_USER": "", "SMTP_PASSWORD": ""}), \
-                patch("bots.relatorio_email._conectar_e_enviar_smtp") as smtp:
+                patch("bots.avisos.relatorio_email._conectar_e_enviar_smtp") as smtp:
             self.assertFalse(A.enviar(r, "Coupa"))
             smtp.assert_not_called()
 

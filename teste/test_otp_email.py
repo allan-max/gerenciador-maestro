@@ -8,7 +8,7 @@ from email.header import Header
 from email.utils import format_datetime
 from unittest.mock import patch
 
-import otp_email
+from nucleo import otp_email
 
 PEDIDO = datetime(2026, 10, 20, 10, 58, tzinfo=timezone(timedelta(hours=-3)))
 ASSUNTO_OTP = 'Seu código de verificação de login da Coupa'

@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 from docx import Document
 
-from bots import itens_hardware as H
-from bots.classificador_tecnologia import _CACHE_CLASSIFICACAO_TI
+from bots.word import itens_hardware as H
+from bots.itens.classificador_tecnologia import _CACHE_CLASSIFICACAO_TI
 from test_fornecedores_ti import _resposta_ia
 
 
@@ -76,7 +76,7 @@ class WordHardwareTest(unittest.TestCase):
         enviados = []
         bot.atualizar_excel = lambda lista: enviados.extend(d["numero_evento"] for d in lista) or False
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-test"}), \
-                patch("bots.classificador_tecnologia.requests.post", return_value=_resposta_ia()):
+                patch("bots.itens.classificador_tecnologia.requests.post", return_value=_resposta_ia()):
             bot.gerar_word()
         return {a: Document(os.path.join(self.pasta, a)) for a in os.listdir(self.pasta) if a.endswith(".docx")}, enviados
 
@@ -101,11 +101,11 @@ class WordHardwareTest(unittest.TestCase):
         self.assertEqual(sorted(enviados), ["2001", "2002", "2003", "2004", "2005", "2006"])
 
     def test_coupa(self):
-        from bots.coupa import CoupaScraper
+        from bots.vale import CoupaScraper
         self._conferir(*self._rodar(CoupaScraper))
 
     def test_vale(self):
-        from bots.vale_bot import ValeScraper
+        from bots.vale_base_metais import ValeScraper
         self._conferir(*self._rodar(ValeScraper))
 
 

@@ -16,6 +16,8 @@ teste.xlsx
 gerenciador.instancia
 gerenciador.estado
 gerenciador.estado.tmp
+fila_extracao.json
+banco_usuarios-*.tmp
 
 # Bases do modo teste e relatórios gerados (docs/melhorias-bots)
 base_teste/

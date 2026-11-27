@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from bots.coupa import pedidos_novos as pn
+from bots.vale import pedidos_novos as pn
 
 LOG = logging.getLogger('test_pedidos_novos')
 RAIZ = Path(__file__).resolve().parent.parent
@@ -178,8 +178,8 @@ class ExtrairPedidosFonteTest(unittest.TestCase):
     """O fluxo Selenium não roda aqui: confere no fonte que ele não baixa PDF nem grava na planilha."""
 
     def setUp(self):
-        self.pedidos = (RAIZ / 'bots' / 'coupa' / 'mixins' / 'pedidos.py').read_text(encoding='utf-8')
-        self.principal = (RAIZ / 'bots' / 'coupa' / 'principal.py').read_text(encoding='utf-8')
+        self.pedidos = (RAIZ / 'bots' / 'vale' / 'mixins' / 'pedidos.py').read_text(encoding='utf-8')
+        self.principal = (RAIZ / 'bots' / 'vale' / 'principal.py').read_text(encoding='utf-8')
 
     def test_nao_baixa_pdf_nem_grava_planilha(self):
         for proibido in ('print_page', 'PEDIDOS\\', 'caminho_pdf', 'atualizar_pedidos_excel', 'salvar_pedido_database'):
@@ -223,7 +223,7 @@ class ExtrairPedidosFimTest(unittest.TestCase):
     def setUp(self):
         from types import SimpleNamespace
         from unittest.mock import MagicMock
-        from bots.coupa.mixins.pedidos import PedidosMixin
+        from bots.vale.mixins.pedidos import PedidosMixin
         self.tmp = tempfile.TemporaryDirectory()
         d = Path(self.tmp.name)
         self.planilha, self.lidos, self.fora = d / 'PEDIDOS.json', d / 'PEDIDOS-LIDOS-COUPA.json', d / 'PEDIDOS-FORA-PLANILHA.json'
@@ -244,7 +244,7 @@ class ExtrairPedidosFimTest(unittest.TestCase):
     def test_erro_no_meio_ainda_grava_fora_planilha(self):
         self.planilha.write_text(json.dumps({'PEDIDOS': [{'PEDIDO': '2'}]}), encoding='utf-8')
         self.lidos.write_text(json.dumps([{'pedido': '1'}, {'pedido': '2'}]), encoding='utf-8')
-        with patch('bots.coupa.mixins.pedidos.enviar_email_pedidos_novos', return_value=False) as enviar:
+        with patch('bots.vale.mixins.pedidos.enviar_email_pedidos_novos', return_value=False) as enviar:
             self.assertEqual(self.bot.extrair_pedidos(), [])
         self.assertEqual(json.loads(self.fora.read_text(encoding='utf-8')), [{'pedido': '1'}])
         enviar.assert_called_once()
@@ -254,11 +254,11 @@ class ExtrairPedidosFimTest(unittest.TestCase):
     def test_email_que_falhou_volta_na_proxima(self):
         self.planilha.write_text(json.dumps({'PEDIDOS': []}), encoding='utf-8')
         self.lidos.write_text(json.dumps([{'pedido': '1', 'avisado': False}, {'pedido': '2', 'avisado': True}]), encoding='utf-8')
-        with patch('bots.coupa.mixins.pedidos.enviar_email_pedidos_novos', return_value=False) as enviar:
+        with patch('bots.vale.mixins.pedidos.enviar_email_pedidos_novos', return_value=False) as enviar:
             self.bot.extrair_pedidos()
         self.assertEqual([p['pedido'] for p in enviar.call_args.args[0]], ['1'])
         self.assertFalse(pn.carregar_lidos(str(self.lidos))[0]['avisado'])
-        with patch('bots.coupa.mixins.pedidos.enviar_email_pedidos_novos', return_value=True) as enviar:
+        with patch('bots.vale.mixins.pedidos.enviar_email_pedidos_novos', return_value=True) as enviar:
             self.bot.extrair_pedidos()
         self.assertEqual([p['pedido'] for p in enviar.call_args.args[0]], ['1'])
         self.assertTrue(pn.carregar_lidos(str(self.lidos))[0]['avisado'])
@@ -266,7 +266,7 @@ class ExtrairPedidosFimTest(unittest.TestCase):
     def test_conclusao_leva_contagem_e_grava_listagem(self):
         self.planilha.write_text(json.dumps({'PEDIDOS': []}), encoding='utf-8')
         self.lidos.write_text(json.dumps([]), encoding='utf-8')
-        with patch('bots.coupa.mixins.pedidos.enviar_email_pedidos_novos', return_value=False):
+        with patch('bots.vale.mixins.pedidos.enviar_email_pedidos_novos', return_value=False):
             self.bot.extrair_pedidos()
         c = self.conclusao()
         self.assertEqual(c['contagem'], {'planilha': 0, 'banco do robô': 0, 'planilha e banco do robô': 0, 'novo': 0})
@@ -274,7 +274,7 @@ class ExtrairPedidosFimTest(unittest.TestCase):
         self.assertEqual(json.loads(self.listagem.read_text(encoding='utf-8')), [])
 
     def test_planilha_ilegivel_aborta_sem_email(self):
-        with patch('bots.coupa.mixins.pedidos.enviar_email_pedidos_novos') as enviar, patch.object(pn.time, 'sleep'):
+        with patch('bots.vale.mixins.pedidos.enviar_email_pedidos_novos') as enviar, patch.object(pn.time, 'sleep'):
             self.assertEqual(self.bot.extrair_pedidos(), [])
         enviar.assert_not_called()
         self.bot.garantir_logado.assert_not_called()

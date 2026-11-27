@@ -228,7 +228,7 @@ class BackupManualTest(unittest.TestCase):
     def test_copia_os_dois_registra_e_responde(self):
         with tempfile.TemporaryDirectory() as pasta:
             ns, pm, destino = self.preparar(pasta)
-            with patch.dict(sys.modules, {'planilha_manager': pm}), patch.object(LOGGER, 'handle'):
+            with patch.dict(sys.modules, {'nucleo.planilha_manager': pm}), patch.object(LOGGER, 'handle'):
                 ns['comando_sincronizacao']({'servico': 'backup', 'clientId': 'c1', 'usuario': 'adm@x'})
             self.assertEqual(len(list(destino.iterdir())), 2)
         r = retornos(ns)[0]
@@ -241,7 +241,7 @@ class BackupManualTest(unittest.TestCase):
     def test_sem_arquivos_e_erro_e_nao_levanta(self):
         with tempfile.TemporaryDirectory() as pasta:
             ns, pm, _ = self.preparar(pasta, criar=False)
-            with patch.dict(sys.modules, {'planilha_manager': pm}), patch.object(LOGGER, 'handle'):
+            with patch.dict(sys.modules, {'nucleo.planilha_manager': pm}), patch.object(LOGGER, 'handle'):
                 self.assertIsNone(ns['rotina_backup']())          # o agendado nunca derruba o loop
                 ns['comando_sincronizacao']({'servico': 'backup'})
         self.assertFalse(retornos(ns)[0]['sucesso'])

@@ -14,7 +14,7 @@ from test_seguranca import Manager, SioFalso
 RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
 GERENCIADOR = RAIZ / 'gerenciador.py'
 # só a função: importar planilha_manager monta o gerenciador da base
-data_vencimento = carregar(RAIZ / 'planilha_manager.py', {'data_vencimento'}, re=re, date=date)['data_vencimento']
+data_vencimento = carregar(RAIZ / 'nucleo' / 'planilha_manager.py', {'data_vencimento'}, re=re, date=date)['data_vencimento']
 
 
 class DatasDoDashboardTest(unittest.TestCase):
@@ -23,7 +23,7 @@ class DatasDoDashboardTest(unittest.TestCase):
         ns = carregar(GERENCIADOR, {'comando_ler_excel_dashboard', 'classificar_resposta', 'sem_acento'},
                       sio=sio, unicodedata=__import__('unicodedata'))
         modulo = SimpleNamespace(planilha_manager=Manager(linhas), data_vencimento=data_vencimento)
-        with patch.dict(sys.modules, {'planilha_manager': modulo}):
+        with patch.dict(sys.modules, {'nucleo.planilha_manager': modulo}):
             ns['comando_ler_excel_dashboard']({'clientId': 'c', 'filtros': filtros})
         return sio.ultimo('retorno_dados_dashboard')['totais']
 

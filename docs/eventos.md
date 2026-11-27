@@ -23,7 +23,7 @@ Uma linha JSON por evento:
 
 | Onde | Evento |
 |---|---|
-| `bots/vale_bot.py` e `bots/coupa/mixins/planilhas.py` | cotação nova incluída pelo robô (`cotacao_nova`) |
+| `bots/vale_base_metais/` e `bots/vale/mixins/planilhas.py` | cotação nova incluída pelo robô (`cotacao_nova`) |
 | `gerenciador.py` (`comando_registrar_cotacao_manual`) | cotação cadastrada à mão |
 | `planilha_manager.atualizar_status_respostas` | status de resposta que **mudou de verdade** (só quando grava) |
 | `resposta_cotacao.marcar_respondida` | cotação marcada como respondida no portal |

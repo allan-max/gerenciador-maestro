@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from fonte_vale_base_metais import FONTE_VALE_BASE_METAIS
 
 RAIZ = Path(__file__).resolve().parent.parent   # raiz do gerenciador, qualquer que seja o nome da pasta
 PORTAL = RAIZ.parent / 'portaismaestro'          # o portal só existe ao lado na máquina de desenvolvimento
@@ -7,28 +8,28 @@ PORTAL = RAIZ.parent / 'portaismaestro'          # o portal só existe ao lado n
 
 class TestFpsTransmissao60(unittest.TestCase):
     def test_transmissor_60fps_cdp_direto(self):
-        conteudo = (RAIZ / 'bots' / 'transmissor_captcha.py').read_text(encoding='utf-8')
+        conteudo = (RAIZ / 'bots' / 'portal' / 'transmissor_captcha.py').read_text(encoding='utf-8')
         self.assertIn('(1.0 / 60.0)', conteudo)
         self.assertIn("Page.captureScreenshot", conteudo)
         self.assertIn("webSocketDebuggerUrl", conteudo)
         self.assertIn("Page.startScreencast", conteudo)
 
     def test_vale_bot_usa_transmissor_e_cdp(self):
-        conteudo = (RAIZ / 'bots' / 'vale_bot.py').read_text(encoding='utf-8')
+        conteudo = FONTE_VALE_BASE_METAIS.read_text(encoding='utf-8')
         self.assertIn("manter_transmissao(self", conteudo)
         self.assertIn("Input.dispatchMouseEvent", conteudo)
         self.assertIn("--remote-allow-origins=*", conteudo)
         self.assertIn("--disable-backgrounding-occluded-windows", conteudo)
 
     def test_coupa_autenticacao_usa_transmissor_e_cdp(self):
-        conteudo = (RAIZ / 'bots' / 'coupa' / 'mixins' / 'autenticacao.py').read_text(encoding='utf-8')
+        conteudo = (RAIZ / 'bots' / 'vale' / 'mixins' / 'autenticacao.py').read_text(encoding='utf-8')
         self.assertIn("manter_transmissao(self", conteudo)
         self.assertIn("Input.dispatchMouseEvent", conteudo)
         self.assertIn("--remote-allow-origins=*", conteudo)
         self.assertIn("--disable-backgrounding-occluded-windows", conteudo)
 
     def test_coupa_resposta_usa_transmissor_e_cdp(self):
-        conteudo = (RAIZ / 'bots' / 'coupa' / 'mixins' / 'resposta.py').read_text(encoding='utf-8')
+        conteudo = (RAIZ / 'bots' / 'vale' / 'mixins' / 'resposta.py').read_text(encoding='utf-8')
         self.assertIn("manter_transmissao(self", conteudo)
         self.assertIn("Input.dispatchMouseEvent", conteudo)
 

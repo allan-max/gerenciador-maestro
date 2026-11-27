@@ -8,9 +8,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import eventos
-from resposta_cotacao import CAMPOS, marcar_respondida
+from nucleo import eventos
+from nucleo.resposta_cotacao import CAMPOS, marcar_respondida
 from test_planilha_persistencia import Manager, namespace
+from fonte_vale_base_metais import FONTE_VALE_BASE_METAIS
 
 CONTRATO = {'em', 'servico', 'tipo', 'nivel', 'resumo', 'ref', 'detalhe'}
 
@@ -154,7 +155,7 @@ class LigacaoNoGerenciadorTest(unittest.TestCase):
             self.assertIn(f"eventos.registrar(portal, 'ciclo', '{nivel}'", self.fonte)
         self.assertIn("for portal in ('coupa', 'vale'):", self.fonte)
         raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
-        for arq, servico in (('bots/vale_bot.py', 'vale'), ('bots/coupa/mixins/planilhas.py', 'coupa')):
+        for arq, servico in ((str(FONTE_VALE_BASE_METAIS), 'vale'), ('bots/vale/mixins/planilhas.py', 'coupa')):
             texto = (raiz / arq).read_text(encoding='utf-8')
             self.assertLess(texto.index('planilha_manager.adicionar_linhas(self.NOME_ABA_ALVO'),
                             texto.index(f"registrar('{servico}', 'cotacao_nova'"))

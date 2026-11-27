@@ -8,7 +8,7 @@ from pathlib import Path
 RAIZ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(RAIZ))
 
-from bots import transmissor_captcha as tc  # noqa: E402
+from bots.portal import transmissor_captcha as tc  # noqa: E402
 
 
 class DriverFalso:

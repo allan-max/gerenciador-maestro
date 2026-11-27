@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""vale_bot: layout de nov/2026 da linha do item (Coupa da Vale). Os textos vêm como
+"""Robô da Vale (bots/vale_base_metais): layout de nov/2026 da linha do item (Coupa da Vale). Os textos vêm como
 <div class="s-fieldLabel">Item Text</div><p class="s-textField">...</p> (sem dt/dd) e o 2º p.s-textField
 virou "Manufacturer Name" vazio. Antes disso a DESCRIÇÃO saía em branco (eventos 62324, 62698, 62848...).
 HTML real do evento 62698 (item expandido, campos de resposta removidos), lido num Chrome headless."""
@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from selenium.webdriver.common.by import By
+from fonte_vale_base_metais import FONTE_VALE_BASE_METAIS
 
 RAIZ = Path(__file__).resolve().parent.parent
 METODOS = {'_ler_campos_linha', '_ler_frete_linha', '_texto_valido', '_filter_desc', 'parse_local',
@@ -70,9 +71,9 @@ def linha_html(item_text, compra, fabricante=''):
 
 def montar_robo():
     ns = {'logger': logging.getLogger('teste-layout-vale'), 'By': By, 're': re}
-    arvore = ast.parse((RAIZ / 'bots' / 'vale_bot.py').read_text(encoding='utf-8'))
+    arvore = ast.parse(FONTE_VALE_BASE_METAIS.read_text(encoding='utf-8'))
     nos = [n for c in arvore.body if isinstance(c, ast.ClassDef) for n in c.body if getattr(n, 'name', None) in METODOS]
-    exec(compile(ast.Module(body=nos, type_ignores=[]), 'vale_bot.py', 'exec'), ns)
+    exec(compile(ast.Module(body=nos, type_ignores=[]), str(FONTE_VALE_BASE_METAIS), 'exec'), ns)
     return type('Robo', (), {nome: ns[nome] for nome in METODOS})()
 
 

@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, patch
-from bots.relatorio_email import gerar_conteudo_email_erro_resposta, enviar_email_erro_resposta
+from bots.avisos.relatorio_email import gerar_conteudo_email_erro_resposta, enviar_email_erro_resposta
 
 
 class TestEmailErroResposta(unittest.TestCase):
@@ -37,7 +37,7 @@ class TestEmailErroResposta(unittest.TestCase):
         }
         fake_png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRFAKE"
 
-        with patch('bots.relatorio_email._conectar_e_enviar_smtp', return_value=True) as mock_smtp:
+        with patch('bots.avisos.relatorio_email._conectar_e_enviar_smtp', return_value=True) as mock_smtp:
             sucesso = enviar_email_erro_resposta(
                 nome_bot="Vale Bot",
                 evento="991020",
@@ -63,7 +63,7 @@ class TestEmailErroResposta(unittest.TestCase):
             self.assertEqual(attachments[0].get_payload(decode=True), fake_png)
 
     def test_responder_evento_envia_email_com_print_em_caso_de_excecao(self):
-        from bots.coupa.mixins.resposta import RespostaMixin
+        from bots.vale.mixins.resposta import RespostaMixin
 
         class BotTeste(RespostaMixin):
             def __init__(self):
@@ -91,7 +91,7 @@ class TestEmailErroResposta(unittest.TestCase):
                 return None
 
         bot = BotTeste()
-        with patch('bots.relatorio_email.enviar_email_erro_resposta', return_value=True) as mock_envio:
+        with patch('bots.avisos.relatorio_email.enviar_email_erro_resposta', return_value=True) as mock_envio:
             bot.responder_evento({'evento': '778899', 'precos': ['10.00']})
 
             mock_envio.assert_called_once()

@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 from docx import Document
 
-from bots import itens_marcas as M
-from bots.classificador_tecnologia import _CACHE_CLASSIFICACAO_TI
+from bots.word import itens_marcas as M
+from bots.itens.classificador_tecnologia import _CACHE_CLASSIFICACAO_TI
 from test_fornecedores_ti import _resposta_ia
 
 INTELBRAS = M._POR_NOME["Intelbras"]
@@ -121,7 +121,7 @@ class WordMarcasTest(unittest.TestCase):
         bot.encontrar_vendedor_similar = lambda it, d: None
         bot.atualizar_excel = lambda dados: False
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-test"}), \
-                patch("bots.classificador_tecnologia.requests.post", return_value=_resposta_ia(pertence=False)):
+                patch("bots.itens.classificador_tecnologia.requests.post", return_value=_resposta_ia(pertence=False)):
             bot.gerar_word()
         return {a: [p.text for p in Document(os.path.join(self.pasta, a)).paragraphs]
                 for a in os.listdir(self.pasta) if a.endswith(".docx")}
@@ -143,15 +143,15 @@ class WordMarcasTest(unittest.TestCase):
         self.assertEqual(textos.count(LOGITECH["titulo"]), 1)
 
     def test_coupa(self):
-        from bots.coupa import CoupaScraper
+        from bots.vale import CoupaScraper
         self._conferir(self._rodar(CoupaScraper))
 
     def test_vale(self):
-        from bots.vale_bot import ValeScraper
+        from bots.vale_base_metais import ValeScraper
         self._conferir(self._rodar(ValeScraper))
 
     def test_word_sem_marca_nao_tem_mensagem(self):
-        from bots.vale_bot import ValeScraper
+        from bots.vale_base_metais import ValeScraper
         bot = ValeScraper.__new__(ValeScraper)
         bot.salvar_doc([self._evento("3001", "PARAFUSO M10")], self.pasta, "X")
         textos = [p.text for p in Document(os.path.join(self.pasta, "X_3001.docx")).paragraphs]

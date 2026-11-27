@@ -2,7 +2,7 @@
 
 ## Python
 
-O gerenciador precisa do **Python 3.12 ou mais novo**. `bots/vale_bot.py` usa uma f-string que não compila em versões
+O gerenciador precisa do **Python 3.12 ou mais novo**. `bots/vale_base_metais/` usa uma f-string que não compila em versões
 anteriores, e os testes (`python -m pytest -q` ou `python -m unittest discover -p "test_*.py"`) só passam no 3.12+.
 
 ## Variáveis obrigatórias no `.env`
@@ -29,7 +29,7 @@ mostra "Cotafrete fora do alcance".
 | `COTABOT_TOKEN` | token da API do Cotabot (VM); igual ao `COTABOT_TOKEN` do `.env` do Cotabot | a tela do Cotabot mostra "Gerenciador sem COTABOT_TOKEN" e não cota |
 | `COTABOT_URL` | endereço do Cotabot na rede local (padrão `http://192.168.1.250:8765`) | usa o padrão |
 
-Senhas e chaves ficam só no `.env` e no `CONFIG.json` do servidor, nunca no código: o repositório é público.
+Senhas e chaves ficam só no `dados\.env` e no `dados\CONFIG.json` do servidor, nunca no código: o repositório é público.
 O atualizador automático (`scripts/atualizador.py`) preserva esses arquivos.
 
 ## Senhas das contas do portal (`banco_usuarios.json`)

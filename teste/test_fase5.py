@@ -8,8 +8,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import ambiente
-import log_robos
+from nucleo import ambiente
+from nucleo import log_robos
+from fonte_vale_base_metais import FONTE_VALE_BASE_METAIS
 
 RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
 
@@ -107,13 +108,13 @@ class MonitorTest(LogBase):
 
 class LigacaoTest(unittest.TestCase):
     def test_robos_e_monitor_usam_o_log_robos(self):
-        self.assertIn("log_robos.configurar(logger, 'log-vale.txt')", (RAIZ / 'bots/vale_bot.py').read_text(encoding='utf-8'))
-        self.assertIn("log_robos.configurar(logger, 'log-coupa.txt')", (RAIZ / 'bots/coupa/mixins/utilitarios.py').read_text(encoding='utf-8'))
+        self.assertIn("log_robos.configurar(logger, 'log-vale.txt')", FONTE_VALE_BASE_METAIS.read_text(encoding='utf-8'))
+        self.assertIn("log_robos.configurar(logger, 'log-coupa.txt')", (RAIZ / 'bots/vale/mixins/utilitarios.py').read_text(encoding='utf-8'))
         ger = (RAIZ / 'gerenciador.py').read_text(encoding='utf-8')
         self.assertEqual(ger.count('log_robos.acompanhar('), 2)
         for nome in ('log-coupa.txt"', 'log-vale.txt"'):
             self.assertNotIn(nome, ger)     # o caminho fixo antigo saiu; vem do log_robos.caminho_log
-        for arquivo in ('bots/vale_bot.py', 'bots/coupa/mixins/verificacao.py'):
+        for arquivo in (str(FONTE_VALE_BASE_METAIS), 'bots/vale/mixins/verificacao.py'):
             self.assertIn("'verificacao_concluida'", (RAIZ / arquivo).read_text(encoding='utf-8'))
 
 

@@ -8,12 +8,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import ambiente
-import instancia_unica
-from resposta_cotacao import marcar_respondida
+from nucleo import ambiente
+from nucleo import instancia_unica
+from nucleo.resposta_cotacao import marcar_respondida
 from scripts import recuperar_perdidas
 from test_fase0 import LOGGER, carregar
 from test_planilha_persistencia import Manager, namespace as ns_manager
+from fonte_vale_base_metais import FONTE_VALE_BASE_METAIS
 
 RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
 PROD = ambiente.BASE_PRODUCAO + r'\database\Banco-de-dados\COTAÇÕES.json'
@@ -105,8 +106,8 @@ class RecuperarPerdidasTest(unittest.TestCase):
 
 class RoboForaDoGerenciadorTest(unittest.TestCase):
     def test_robo_sozinho_na_producao_nao_inicia(self):
-        for caminho, classe in ((RAIZ / 'bots/coupa/mixins/autenticacao.py', 'AutenticacaoMixin'),
-                                (RAIZ / 'bots/vale_bot.py', 'ValeScraper')):
+        for caminho, classe in ((RAIZ / 'bots/vale/mixins/autenticacao.py', 'AutenticacaoMixin'),
+                                (FONTE_VALE_BASE_METAIS, 'ValeScraper')):
             with self.subTest(caminho.name):
                 metodo = carregar(caminho, {'iniciar_e_logar'}, classe)['iniciar_e_logar']
                 emitidos = []
@@ -122,7 +123,7 @@ class RoboForaDoGerenciadorTest(unittest.TestCase):
 
 class JsonlNaoRessuscitaTest(unittest.TestCase):
     def test_evento_removido_pelo_gerenciador_nao_volta(self):
-        ns = carregar(RAIZ / 'bots/coupa/mixins/banco_dados.py', {'carregar_banco_dados', 'atualizar_status_respondido_jsonl'},
+        ns = carregar(RAIZ / 'bots/vale/mixins/banco_dados.py', {'carregar_banco_dados', 'atualizar_status_respondido_jsonl'},
                       'Banco_dadosMixin', json=json, os=os, tempfile=tempfile, datetime=datetime, ambiente=ambiente)
         with tempfile.TemporaryDirectory() as tmp:
             arq = Path(tmp, 'eventos.jsonl')

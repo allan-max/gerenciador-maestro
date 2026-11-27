@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 from unittest.mock import patch, MagicMock
-from bots.validacao_cotacao import (
+from bots.itens.validacao_cotacao import (
     contem_expected_quantity,
     validar_item_individual,
     validar_itens_evento
@@ -118,7 +118,7 @@ class TestValidacaoCotacao(unittest.TestCase):
     def test_coupa_scraper_retenta_e_alerta_em_expected_quantity(self, mock_sleep):
         """CoupaScraper deve retentar e emitir e-mail de alerta caso Expected Quantity persista."""
         from unittest.mock import MagicMock, patch
-        from bots.coupa import CoupaScraper
+        from bots.vale import CoupaScraper
 
         scraper = CoupaScraper.__new__(CoupaScraper)
         scraper.db_eventos = {}
@@ -140,7 +140,7 @@ class TestValidacaoCotacao(unittest.TestCase):
         body_mock.text = "Visualização: Expected Quantity x Unit Price"
         scraper.driver.find_element.return_value = body_mock
 
-        with patch('bots.coupa.mixins.extracao.WebDriverWait'):
+        with patch('bots.vale.mixins.extracao.WebDriverWait'):
             res = scraper.extrair_dados_do_evento("http://coupa.test/events/301025", "301025")
 
         # Deve ser considerado não processado com sucesso ("SKIPPED")
@@ -157,7 +157,7 @@ class TestValidacaoCotacao(unittest.TestCase):
     def test_vale_scraper_retenta_e_alerta_em_expected_quantity(self, mock_sleep):
         """ValeScraper deve retentar e emitir e-mail de alerta caso Expected Quantity persista."""
         from unittest.mock import MagicMock, patch
-        from bots.vale_bot import ValeScraper
+        from bots.vale_base_metais import ValeScraper
 
         scraper = ValeScraper.__new__(ValeScraper)
         scraper.db_eventos = {}
@@ -178,7 +178,7 @@ class TestValidacaoCotacao(unittest.TestCase):
         body_mock.text = "Visualização: Expected Quantity x Unit Price"
         scraper.driver.find_element.return_value = body_mock
 
-        with patch('bots.vale_bot.WebDriverWait'):
+        with patch('bots.vale_base_metais.mixins.extracao.WebDriverWait'):
             res = scraper.extrair_dados_do_evento("http://vale.test/events/991000", "991000")
 
         self.assertEqual(res, "SKIPPED")

@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 import unittest
 from unittest.mock import MagicMock
-from bots.recomendacao_vendedor import (
+from bots.itens.recomendacao_vendedor import (
     marca_e_modelo_na_descricao,
     selecionar_alvos_comparacao_item
 )
-from bots.coupa import CoupaScraper
-from bots.vale_bot import ValeScraper
+from bots.vale import CoupaScraper
+from bots.vale_base_metais import ValeScraper
 
 
 class TestRecomendacaoVendedor(unittest.TestCase):

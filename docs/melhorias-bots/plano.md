@@ -5,7 +5,7 @@ Decisões tomadas por grilling em 17/10/2026, com base no código do `main` (`de
 ## Diagnóstico
 
 ### Como o status RESPOSTA é atualizado hoje
-- Só a etapa `verificar` atualiza. Ela lê `s-datatable-cell-num_responses` na lista (`bots/coupa/mixins/verificacao.py:87`) e chama `planilha_manager.atualizar_status_respostas` (`planilha_manager.py:203`).
+- Só a etapa `verificar` atualiza. Ela lê `s-datatable-cell-num_responses` na lista (`bots/vale/mixins/verificacao.py:87`) e chama `planilha_manager.atualizar_status_respostas` (`planilha_manager.py:203`).
 - `atualizar_status_respostas` só grava **depois do vencimento**, ou no próprio dia a partir das 14h30 (`planilha_manager.py:209, 247`). Ele grava RESPONDIDO ou NÃO RESPONDIDO e pode sobrescrever um RESPONDIDO marcado à mão no portal.
 - O Coupa verifica no máximo 40 páginas e o `except: pass` em `verificacao.py:88` transforma uma célula que não leu em 0 respostas. A última verificação viu 2.721 números de ~3.600 possíveis.
 - A Vale **nunca verifica**: o piloto não chama `verificar` (`gerenciador.py:1828-1863`) e o `verificar` exige OTP. Não aparece nenhuma vez no `log-vale.txt`.
@@ -19,8 +19,8 @@ Decisões tomadas por grilling em 17/10/2026, com base no código do `main` (`de
 ### Erros vistos nos logs
 | Problema | Evidência | Causa no código |
 |---|---|---|
-| Cotações gravadas que sumiram | 7 gravadas com sucesso em 13/10 (ex.: Vale 54328, Coupa 292832) não estão no banco. Em 13/10 houve 575× `WinError 5` e 209× `WinError 32` no `COTAÇÕES.json`. Em 14 e 16/10 houve 20 sessões com "Banco interno carregado: 0" rodando junto com a produção. | O modo teste (`bots/coupa/principal.py:75-79`) não redireciona o `COTAÇÕES.json` (`planilha_manager.py:31`). Processos fora da trava de instância gravam na base de produção. |
-| Ciclo da Vale abortado | 34× `cannot access local variable 're'` (08 a 13/10). O e-mail de relatório saía normalmente. | `import re` dentro de `gerar_word` (`bots/vale_bot.py:1678`) torna `re` local, e a linha 1709 falha. |
+| Cotações gravadas que sumiram | 7 gravadas com sucesso em 13/10 (ex.: Vale 54328, Coupa 292832) não estão no banco. Em 13/10 houve 575× `WinError 5` e 209× `WinError 32` no `COTAÇÕES.json`. Em 14 e 16/10 houve 20 sessões com "Banco interno carregado: 0" rodando junto com a produção. | O modo teste (`bots/vale/principal.py:75-79`) não redireciona o `COTAÇÕES.json` (`planilha_manager.py:31`). Processos fora da trava de instância gravam na base de produção. |
+| Ciclo da Vale abortado | 34× `cannot access local variable 're'` (08 a 13/10). O e-mail de relatório saía normalmente. | `import re` dentro de `gerar_word` (`bots/vale_base_metais/` (antes `vale_bot.py:1678`)) torna `re` local, e a linha 1709 falha. |
 | Eventos "reabertos" em loop | Coupa: 20 eventos reextraídos 527× (287782 com 72×). Total de 3.135× "Evento encerrado". Vale: 725×. | Quando a reextração devolve `SKIPPED` (encerrado), a `vencimento_tabela` do JSONL não é atualizada (`extracao.py:614-624`, `vale_bot.py:552-560`). A data continua diferente e o evento volta em todo ciclo. |
 | Rajadas de "Oops" e excesso de logins | 426× Oops (147 numa hora em 08/10). Uma sessão de 14/10 fez 80 logins. | Novo login imediato a cada Oops (`extracao.py:94-127`), sem pausa. |
 | Captcha nunca tratado | Ainda não apareceu nos logs, mas trava quando aparecer. | `inicio_captcha` é usado sem ter sido criado (`autenticacao.py:128`, `vale_bot.py:258`). O erro é engolido e o login entra em loop infinito. |

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""API JSON do Coupa (bots/coupa/api_json.py): lista de eventos e itens do evento lidos sem renderizar tela.
+"""API JSON do Coupa (bots/vale/api_json.py): lista de eventos e itens do evento lidos sem renderizar tela.
 O módulo é carregado pelo arquivo (sem importar o pacote do robô, que puxa Selenium/IA); o navegador é um
 objeto falso que devolve o que o fetch devolveria. Os JSON seguem o formato capturado no portal (10/11/2026)."""
 import importlib.util
@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent.parent
-_spec = importlib.util.spec_from_file_location('api_json_coupa', RAIZ / 'bots' / 'coupa' / 'api_json.py')
+_spec = importlib.util.spec_from_file_location('api_json_coupa', RAIZ / 'bots' / 'vale' / 'api_json.py')
 api_json = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(api_json)
 

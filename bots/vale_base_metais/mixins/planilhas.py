@@ -1,0 +1,428 @@
+# -*- coding: utf-8 -*-
+"""Word dos eventos, planilha de controle e e-mail de relatório do robô da Vale."""
+import logging
+import os
+import re
+import pandas as pd
+from datetime import datetime
+from docx import Document
+from docx.shared import Pt, RGBColor, Cm
+from nucleo import ambiente
+from bots.avisos import vencimento_alterado
+
+logger = logging.getLogger("ValeApp")
+
+
+class PlanilhasMixin:
+    def enviar_relatorio_email(self):
+        if getattr(self, 'relatorio_email_stats', None) is None:
+            return
+
+        try:
+            from bots.avisos.relatorio_email import enviar_email_relatorio
+        except ImportError:
+            from relatorio_email import enviar_email_relatorio
+
+        enviar_email_relatorio(
+            nome_bot="Vale Bot",
+            stats=self.relatorio_email_stats,
+            config=getattr(self, 'config', {}),
+            logger_inst=logger
+        )
+
+    # ============================ 6. GERAÇÃO DE WORD / EXCEL ============================
+    def gerar_word(self):
+        if not self.dados_processados_lote: return
+        logger.info("\n GERANDO DOCUMENTOS WORD (Agrupados por Data e Complexidade)...")
+        
+        # PRE-PROCESSAMENTO: Extrair IA e buscar histórico
+        for ev in self.dados_processados_lote:
+            vendedores_deste_evento = set()
+            for it in ev.get('itens', []):
+                descricoes_unicas = []
+                for k in ['descricao', 'texto_item', 'texto_compra']:
+                    v = str(it.get(k, '')).strip()
+                    if v and v.lower() not in [x.lower() for x in descricoes_unicas]:
+                        descricoes_unicas.append(v)
+                it['descricoes_unicas'] = descricoes_unicas
+                txt_completo = f"{it.get('titulo','')} {' '.join(descricoes_unicas)} {it.get('part_number','')}"
+                dados_ia = self.extrair_dados_gemini(txt_completo)
+                it['dados_ia'] = dados_ia
+                match_hist = self.encontrar_vendedor_similar(it, dados_ia)
+                if match_hist:
+                    it['historico_match'] = match_hist
+                    m = re.search(r'Ultimo Vendedor:\s*([^\(]+)', match_hist)
+                    if m: vendedores_deste_evento.add(m.group(1).strip())
+                try:
+                    from bots.itens.classificador_tecnologia import analisar_item_tecnologia
+                except ImportError:
+                    from classificador_tecnologia import analisar_item_tecnologia
+                analisar_item_tecnologia(it, txt_completo, dados_ia)
+            try:
+                from bots.itens.classificador_tecnologia import agrupar_itens_equivalentes
+            except ImportError:
+                from classificador_tecnologia import agrupar_itens_equivalentes
+            agrupar_itens_equivalentes(ev.get('itens', []))  # ONDE ENCONTRAR? sem repetir produto igual no evento
+            
+            if not hasattr(self, 'relatorio_email_stats'): self.relatorio_email_stats = {}
+            if 'vendedores_atribuidos' not in self.relatorio_email_stats: self.relatorio_email_stats['vendedores_atribuidos'] = {}
+            
+            num = ev.get('numero_evento', 'Desconhecido')
+            if vendedores_deste_evento:
+                self.relatorio_email_stats['vendedores_atribuidos'][num] = ", ".join(vendedores_deste_evento)
+            else:
+                self.relatorio_email_stats['vendedores_atribuidos'][num] = "Nenhum"
+
+        
+        marcas_bloq = []
+        try: marcas_bloq = [str(x).strip().lower() for x in pd.read_excel(self.ARQUIVO_MARCAS_BLOQUEADAS).iloc[:,0] if pd.notna(x)]
+        except: pass
+        
+        try:
+            from bots.word.itens_dell import evento_tem_dell, adicionar_mensagem_dell, EVENTOS_POR_WORD_DELL
+            from bots.word.itens_hardware import evento_tem_hardware, adicionar_mensagem_hardware, lotes_hardware, chave_semelhanca
+            from bots.word.itens_eletroportateis import evento_tem_eletro, adicionar_mensagem_eletro, lotes_eletro
+            from bots.word.itens_ar_condicionado import evento_tem_ar, adicionar_mensagem_ar, lotes_ar
+        except ImportError:
+            from itens_dell import evento_tem_dell, adicionar_mensagem_dell, EVENTOS_POR_WORD_DELL
+            from itens_hardware import evento_tem_hardware, adicionar_mensagem_hardware, lotes_hardware, chave_semelhanca
+            from itens_eletroportateis import evento_tem_eletro, adicionar_mensagem_eletro, lotes_eletro
+            from itens_ar_condicionado import evento_tem_ar, adicionar_mensagem_ar, lotes_ar
+
+        bloqs = []
+        complexos = []
+        dells = []
+        hardwares = []
+        eletros = []
+        ares = []
+        agrupados_por_data = {}
+
+        for d in self.dados_processados_lote:
+            # 1. Verifica marcas bloqueadas
+            todos_itens_bloqueados = True
+            marca_ultima = ""
+            
+            for it in d['itens']:
+                txt = f"{it.get('titulo', '')} {it.get('descricao', '')}".lower()
+                item_tem_bloqueio = False
+                for m in marcas_bloq:
+                    if m and len(m) > 1 and re.search(r'\b'+re.escape(m)+r'\b', txt): 
+                        item_tem_bloqueio = True
+                        marca_ultima = m.upper()
+                        break
+                
+                if not item_tem_bloqueio:
+                    todos_itens_bloqueados = False
+                    break
+            
+            if todos_itens_bloqueados and len(d['itens']) > 0 and marca_ultima:
+                d['marca_bloqueada'] = marca_ultima
+                bloqs.append(d)
+                continue
+
+            # Itens da marca DELL: Words próprios, 3 eventos por arquivo, com a orientação Dell no final
+            if evento_tem_dell(d):
+                dells.append(d)
+                continue
+
+            # Ar-condicionado: Words próprios, no máximo 3 eventos, distribuidores/fabricantes e regra de compra no final
+            if evento_tem_ar(d):
+                ares.append(d)
+                continue
+
+            # Eletroportáteis (cafeteira, air fryer, liquidificador...): Words próprios, no máximo 3 eventos,
+            # porque a orientação de onde orçar e a regra de compra ocupam bastante espaço
+            if evento_tem_eletro(d):
+                eletros.append(d)
+                continue
+
+            # Informática/hardware/TV/tecnologia: Words próprios, no máximo 3 eventos, marcas/modelos parecidos juntos
+            if evento_tem_hardware(d):
+                hardwares.append(d)
+                continue
+
+            # 2. Verifica complexidade (Mais de 4 itens OU mais de 120 palavras)
+            muitos_itens = len(d['itens']) > 4
+            desc_longa = False
+            for it in d['itens']:
+                # Conta as palavras separadas por espaço
+                if len(str(it['descricao']).split()) > 250:
+                    desc_longa = True
+                    break
+            
+            if muitos_itens or desc_longa:
+                complexos.append(d) # Vai ser salvo sozinho
+            else:
+                # 3. Agrupa por Data de Vencimento
+                data_venc = str(d.get('data_vencimento', 'N/A')).split(' - ')[0].strip()
+                if data_venc not in agrupados_por_data:
+                    agrupados_por_data[data_venc] = []
+                agrupados_por_data[data_venc].append(d)
+        
+        # --- SALVAR ARQUIVOS WORD ---
+        validos_para_excel = []
+        
+        # Complexos: Salva 1 por 1 em arquivos isolados
+        if complexos:
+            for c in complexos: 
+                self.salvar_doc([c], self.PASTA_RELATORIOS, "COMPLEXO")
+                
+        # Bloqueados: Agrupa e salva na pasta de bloqueio
+        if bloqs:
+            self.salvar_doc(bloqs, self.PASTA_BLOQUEADOS, "BLOQUEADO")
+
+        # Dell: 3 eventos por arquivo, orientação de onde cotar Dell no final de cada arquivo
+        dells.sort(key=chave_semelhanca)   # modelos Dell parecidos no mesmo arquivo
+        for i in range(0, len(dells), EVENTOS_POR_WORD_DELL):
+            lote_dell = dells[i:i + EVENTOS_POR_WORD_DELL]
+            self.salvar_doc(lote_dell, self.PASTA_RELATORIOS, "DELL_Eventos", mensagem_final=lambda doc: adicionar_mensagem_dell(doc, getattr(self, 'config', None)))
+            validos_para_excel.extend(lote_dell)
+
+        # Ar-condicionado: no máximo 3 eventos por arquivo, mesma capacidade junta, fornecedores no final
+        for lote_ar in lotes_ar(ares):
+            self.salvar_doc(lote_ar, self.PASTA_RELATORIOS, "AR_CONDICIONADO_Eventos", mensagem_final=adicionar_mensagem_ar)
+            validos_para_excel.extend(lote_ar)
+
+        # Eletroportáteis: no máximo 3 eventos por arquivo, produtos parecidos juntos, orientação de compra no final
+        for lote_eletro in lotes_eletro(eletros):
+            self.salvar_doc(lote_eletro, self.PASTA_RELATORIOS, "ELETROPORTATEIS_Eventos", mensagem_final=adicionar_mensagem_eletro)
+            validos_para_excel.extend(lote_eletro)
+
+        # Hardware: no máximo 3 eventos por arquivo, lista de fornecedores de hardware no final de cada arquivo
+        for lote_hw in lotes_hardware(hardwares):
+            self.salvar_doc(lote_hw, self.PASTA_RELATORIOS, "HARDWARE_Eventos", mensagem_final=adicionar_mensagem_hardware)
+            validos_para_excel.extend(lote_hw)
+
+        # Padrões: Salva agrupado por data, no máximo 5 por arquivo
+        for data, eventos in agrupados_por_data.items():
+            data_limpa = data.replace('/', '-') # Troca a / por - para o Windows não dar erro no nome do arquivo
+            
+            # Organizar também por descrição, para que eventos com a mesma descrição fiquem juntos
+            eventos.sort(key=lambda ev: ev.get('itens', [{}])[0].get('descricao', '').strip().lower() if ev.get('itens') else '')
+            
+            # Fatiar a lista de eventos de 5 em 5
+            for i in range(0, len(eventos), 5):
+                lote_5 = eventos[i:i+5]
+                self.salvar_doc(lote_5, self.PASTA_RELATORIOS, f"Vencimento_{data_limpa}_Eventos")
+                validos_para_excel.extend(lote_5)
+
+        # --- ATUALIZAR EXCEL E BANCO ---
+        todos_para_excel = validos_para_excel + complexos
+        sucesso_excel = True
+        if todos_para_excel: 
+            sucesso_excel = self.atualizar_excel(todos_para_excel)
+        
+        if sucesso_excel:
+            for d in self.dados_processados_lote:
+                try:
+                    venc_tab = d.get('vencimento_tabela', "")
+                    novo = {
+                        "titulo": d['numero_evento'], 
+                        "data": str(datetime.now().date()), 
+                        "respondido": False, "extraido": True, 
+                        "vencimento_tabela": venc_tab
+                    }
+                    ambiente.acrescentar_jsonl(self.ARQUIVO_JSONL, novo)
+                    self.db_eventos[d['numero_evento']] = novo
+                except: pass
+            
+        self.dados_processados_lote.clear()
+        logger.info("✅ Lote de Word finalizado.")
+
+    def salvar_doc(self, lista, pasta, prefixo, mensagem_final=None):
+        if not lista: return
+        try:
+            try:
+                from bots.word.itens_marcas import marcas_no_final, mensagem_depois_do_evento, adicionar_mensagem_marca
+            except ImportError:
+                from itens_marcas import marcas_no_final, mensagem_depois_do_evento, adicionar_mensagem_marca
+            lista = marcas_no_final(lista)   # Intelbras/Logitech no final do Word, produtos parecidos juntos
+            nome = f"{prefixo}_{'_'.join([x['numero_evento'] for x in lista])}.docx"
+            doc = Document()
+
+            for section in doc.sections:
+                section.top_margin = Cm(1.0)
+                section.bottom_margin = Cm(1.0)
+                section.left_margin = Cm(1.0)
+                section.right_margin = Cm(1.0)
+
+            style = doc.styles['Normal']
+            style.font.name = 'Arial'
+            style.font.size = Pt(9)
+            style.paragraph_format.space_after = Pt(0) 
+            style.paragraph_format.line_spacing = 1.0  
+
+            for i, ev in enumerate(lista):
+                if i > 0: 
+                    p_linha = doc.add_paragraph("_" * 100)
+                    p_linha.paragraph_format.space_before = Pt(10)
+                
+                if ev.get('marca_bloqueada'): 
+                    r = doc.add_paragraph().add_run(f"⚠️ BLOQUEADO: {ev['marca_bloqueada']}")
+                    r.bold = True; r.font.color.rgb = RGBColor(255,0,0)
+                
+                p_cabecalho = doc.add_paragraph()
+                texto_evento = f"BASE METAIS | REQ: {ev['req_num']} | EVENTO: {ev['numero_evento']}"
+                if ev.get('tem_anexo'):
+                    texto_evento += " *contem anexo*"
+                texto_evento += "\t"
+                p_cabecalho.add_run(texto_evento).bold = True
+                p_cabecalho.add_run("VENCIMENTO: ").bold = True
+                p_cabecalho.add_run(f"{ev['data_vencimento']}").bold = True
+                vencimento_alterado.escrever_no_word(p_cabecalho, ev)
+
+                doc.add_paragraph("RESPONDIDO POR: ______________ CONFERIDO POR: ______________ PRECIFICADO POR:_____________")
+                
+                p_frete = doc.add_paragraph()
+                p_frete.add_run("FRETE: ").bold = True
+                p_frete.add_run(f" {ev['tipo_frete']}")
+
+                for item in ev['itens']:
+                    p_titulo = doc.add_paragraph()
+                    if item['titulo'] != 'Não':
+                        p_titulo.add_run(f"ITEM {item['item_num']} (Título): ").bold = True
+                        p_titulo.add_run(f" {item['titulo']}")
+                        
+                        p_desc = doc.add_paragraph()
+                        p_desc.add_run("DESCRIÇÃO:\n").bold = True
+                        p_desc.add_run(f"{item['descricao']}")
+                    else:
+                        p_titulo.add_run(f"ITEM {item['item_num']}: ").bold = True
+                        p_titulo.add_run(f" {item['descricao']}")
+                    
+                    def _normalize(t):
+                        return str(t).strip().lower() if t else ""
+
+                    desc_norm = _normalize(item.get('descricao', ''))
+                    ti_norm = _normalize(item.get('texto_item', ''))
+                    tc_norm = _normalize(item.get('texto_compra', ''))
+
+                    if item.get('texto_item') and ti_norm != desc_norm:
+                        p_texto_item = doc.add_paragraph()
+                        p_texto_item.add_run("TEXTO DO ITEM:\n").bold = True
+                        p_texto_item.add_run(f"{item['texto_item']}")
+                        
+                    if item.get('texto_compra') and tc_norm != desc_norm and tc_norm != ti_norm:
+                        p_texto_compra = doc.add_paragraph()
+                        p_texto_compra.add_run("TEXTO DE COMPRA DO MATERIAL:\n").bold = True
+                        p_texto_compra.add_run(f"{item['texto_compra']}")
+                    p_qtd = doc.add_paragraph()
+                    p_qtd.add_run("QTD: ").bold = True
+                    # Frete do item só aparece na linha quando difere do cabeçalho (FRETE: do evento)
+                    frete_item = str(item.get('frete') or '').strip().upper()
+                    sufixo_frete = f" - FRETE: {frete_item}" if frete_item and frete_item != str(ev.get('tipo_frete', '')).strip().upper() else ""
+                    p_qtd.add_run(f" {item['quantidade']} - LOCAL: {item['local_entrega']}{sufixo_frete}")
+                    
+                    doc.add_paragraph("VALOR DE VENDA: R$ __________________ CUSTO UNIT: R$__________________")
+                    
+                    if item.get('historico_match'):
+                        p_hist = doc.add_paragraph()
+                        p_hist.add_run(item['historico_match']).bold = True
+                    if item.get('onde_encontrar'):
+                        try:
+                            from bots.itens.classificador_tecnologia import adicionar_paragrafo_onde_encontrar
+                        except ImportError:
+                            from classificador_tecnologia import adicionar_paragrafo_onde_encontrar
+                        adicionar_paragrafo_onde_encontrar(doc, item)
+
+                marca = mensagem_depois_do_evento(lista, i)
+                if marca:
+                    adicionar_mensagem_marca(doc, marca)   # onde cotar a marca, logo depois dos eventos dela
+
+            if mensagem_final:
+                mensagem_final(doc)   # ex.: orientação "Itens Dell" no final do arquivo
+
+            doc.save(os.path.join(pasta, nome))
+            logger.info(f"   Doc Salvo Compactado: {nome}")
+        except Exception as e: 
+            logger.error(f"Erro no Word: {e}")
+
+    def _localidade_com_frete(self, loc, frete):
+        """Coluna LOCALIDADE da planilha: 'Cidade - UF (CIF)'. O frete entra na mesma coluna para manter as 9 colunas."""
+        loc = str(loc or "").strip()
+        frete = str(frete or "").strip().upper()
+        if not frete or frete.lower() in ('nenhum', 'none', 'n/a'):
+            return loc
+        return f"{loc} ({frete})" if loc else frete
+
+    def atualizar_excel(self, dados):
+        if not dados: return
+        
+        try:
+            self.sio.emit('relatar_progresso_vale', {'mensagem': "Gravando dados no Banco de Dados JSON..."})
+            logger.info("Gravando dados JSON da Vale...")
+            
+            from nucleo.planilha_manager import planilha_manager
+            
+            linhas_inserir = []
+            extras_linhas = []   # campos a mais da linha do JSON (ex.: VENCIMENTO ALTERADO)
+            cnt = 0
+            for ev in dados:
+                d_agg, q_agg, mo_agg, ma_agg = [], [], [], []
+                pref = len(ev['itens']) > 1
+                for it in ev['itens']:
+                    p = f"(Item {it['item_num']}) " if pref else ""
+                    q_agg.append(f"{p}{it['quantidade']}")
+                
+                    # CHAMA A IA PARA LER O TEXTO DA VALE
+                    descricoes_unicas = []
+                    for k in ['descricao', 'texto_item', 'texto_compra']:
+                        v = str(it.get(k, '')).strip()
+                        if v and v.lower() not in [x.lower() for x in descricoes_unicas]:
+                            descricoes_unicas.append(v)
+                    txt_completo = f"{it.get('titulo','')} {' '.join(descricoes_unicas)} {it.get('part_number','')}"
+                    dados_ia = it.get('dados_ia')
+                    if not dados_ia:
+                        logger.info(f"   - Analisando item {it['item_num']} com IA...")
+                        dados_ia = getattr(self, 'extrair_dados_gemini')(txt_completo)
+                        it['dados_ia'] = dados_ia
+                
+                    ma = dados_ia.get("marca")
+                    mo_extraido = dados_ia.get("modelo")
+                    pn_extraido = dados_ia.get("part_number")
+                    mo = pn_extraido if pn_extraido else mo_extraido
+                
+                    if mo: mo_agg.append(f"{p}{mo}")
+                    if ma: ma_agg.append(f"{p}{ma}")
+                
+                    # Escolhe a descricao
+                    melhor_desc = str(it.get('descricao', '')).strip()
+                    if mo or ma:
+                        for d in descricoes_unicas:
+                            d_low = d.lower()
+                            if ((mo and str(mo).lower() in d_low) or (ma and str(ma).lower() in d_low)):
+                                melhor_desc = d
+                                break
+                            
+                    d_agg.append(f"{p}{melhor_desc[:150000]}")
+                
+                # O vendedor recomendado e inserido apenas no Word e no email; nao deve ser salvo no banco
+                vendedor_str = ""
+                raw_venc = str(ev.get('data_vencimento', '')).split(' - ')[0].strip()
+                data_venc_salvar = "" if raw_venc in ['N/A', 'None', ''] else raw_venc
+
+                vals = [ev['numero_evento'], data_venc_salvar, "\n".join(d_agg), "\n".join(q_agg), self._localidade_com_frete(ev['itens'][0]['local_entrega'], ev.get('tipo_frete', '')), vendedor_str, "\n".join(mo_agg), "\n".join(ma_agg), ""]
+                linhas_inserir.append(vals)
+                extras_linhas.append(vencimento_alterado.extras_json(ev))
+            
+                cnt += 1
+        
+            if not planilha_manager.adicionar_linhas(self.NOME_ABA_ALVO, linhas_inserir, extras=extras_linhas):
+                raise RuntimeError("Falha ao salvar cotacoes; consulte logs/gerenciador.log.")
+            if linhas_inserir:
+                from nucleo.eventos import registrar
+                numeros = [str(l[0]) for l in linhas_inserir]
+                registrar('vale', 'cotacao_nova', 'ok', f"{len(numeros)} cotação(ões) nova(s) da Vale",
+                          ref=numeros[0], detalhe={'cotacoes': numeros[:20]})
+        
+            logger.info(f"JSON salvo com sucesso (+{cnt} linhas).")
+            self.sio.emit('relatar_progresso_vale', {'mensagem': f"Banco de Dados atualizado com sucesso (+{cnt} novas cotações)."})
+            return True
+            
+        except Exception as e:
+            logger.error(f"ERRO AO SALVAR JSON: {e}")
+            if hasattr(self, 'relatorio_email_stats') and 'erros_planilha' in self.relatorio_email_stats:
+                for ev in dados:
+                    if ev['numero_evento'] not in self.relatorio_email_stats['erros_planilha']:
+                        self.relatorio_email_stats['erros_planilha'].append(ev['numero_evento'])
+            return False

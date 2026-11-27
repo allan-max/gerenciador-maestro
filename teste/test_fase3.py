@@ -13,13 +13,14 @@ from unittest.mock import patch
 
 from selenium.webdriver.common.by import By
 
-import ambiente
+from nucleo import ambiente
 from test_fase0 import LOGGER, Relogio, carregar
 from test_fase2 import FUT_REAL, PAS_REAL, BaseTemporaria
 from test_planilha_persistencia import namespace as ns_manager
+from fonte_vale_base_metais import FONTE_VALE_BASE_METAIS
 
 RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
-ARQ_VALE = RAIZ / 'bots/vale_bot.py'
+ARQ_VALE = FONTE_VALE_BASE_METAIS
 METODOS = {'verificar_eventos', '_esperar_otp', '_otp_do_email', '_pendentes_vale', '_ler_lista_vale', '_relatorio_nao_encontradas_vale'}
 CONSTANTES = {'VALE_URL_VERIFICACAO_PADRAO', 'OTP_TIMEOUT_S', 'OTP_EMAIL_INTERVALO_S', 'JANELA_NAO_RESPONDIDO_DIAS'}
 
@@ -118,8 +119,9 @@ class VerificacaoValeTest(BaseTemporaria):
                 raise email
             return email
         caixa = SimpleNamespace(buscar_codigo=buscar_codigo)
-        with patch.dict(sys.modules, planilha_manager=modulo, otp_email=caixa), patch.object(LOGGER, 'handle') as log, \
-                patch('eventos.registrar') as registrar, \
+        with patch.dict(sys.modules, {'nucleo.planilha_manager': modulo, 'nucleo.otp_email': caixa}), \
+                patch('nucleo.otp_email', caixa, create=True), patch.object(LOGGER, 'handle') as log, \
+                patch('nucleo.eventos.registrar') as registrar, \
                 patch.object(ambiente, 'ler_config', return_value=config or {}):
             bot.verificar_eventos()
         self.avisos = [c.args[0].getMessage() for c in log.call_args_list if c.args[0].levelname == 'WARNING']

@@ -1,0 +1,425 @@
+# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
+"""
+Módulo Especialista: Coupa Enterprise (Trabalhador do Maestro)
+Autor: Allan Simão
+"""
+import os
+import re
+import time
+import json
+import logging
+import shutil
+import tempfile
+import sys
+import threading
+import random
+import traceback
+from datetime import datetime
+from typing import List, Dict, Set, Optional, Any
+from google import genai
+from groq import Groq
+
+import pandas as pd
+from openpyxl import load_workbook, Workbook
+from openpyxl.styles import Alignment, Border, Side, PatternFill
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait, Select
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.common.exceptions import NoAlertPresentException, NoSuchElementException
+from selenium.webdriver.common.action_chains import ActionChains
+
+from docx import Document
+from docx.shared import Pt, RGBColor, Cm
+
+import base64
+
+from bots.vale.pedidos_novos import (carregar_lidos, contar_listagem, enviar_email_pedidos_novos,
+                                      gravar_fora_planilha, gravar_listagem, marcar_avisados, numeros_planilha,
+                                      onde_esta, pendentes_aviso, registrar_lido, registrar_lidos, resumo_pagina)
+
+logger = logging.getLogger("CoupaApp")
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
+
+if not logger.handlers:
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+
+class PedidosMixin:
+    def extrair_pedidos(self):
+        logger.info("\n--- INICIANDO EXTRAÇÃO DE PEDIDOS (ORDERS) ---")
+        self.solicitacao_parada = False
+
+        pedidos_detalhes = []
+        listagem = []   # todo pedido visto: cliente, página e onde já estava (planilha / banco do robô / novo)
+
+        # Já conhecidos = lidos antes pelo robô + os que estão na planilha (PEDIDOS.json, só leitura).
+        # Sem conseguir ler a planilha todo pedido pareceria novo: aborta sem varrer nem mandar e-mail.
+        try:
+            no_banco = {str(p.get('pedido', '')).strip() for p in carregar_lidos(self.ARQUIVO_PEDIDOS_LIDOS)}
+            na_planilha = numeros_planilha(self.ARQUIVO_PLANILHA_PEDIDOS)
+            pedidos_existentes = no_banco | na_planilha
+        except Exception as e:
+            logger.error(f" Não foi possível carregar os pedidos já conhecidos: {e}")
+            self.sio.emit('tarefa_concluida', {'evento': 'Listagem de Pedidos', 'sucesso': False, 'erro': str(e), 'portal': 'coupa'})
+            return []
+        logger.info(f" {len(pedidos_existentes)} pedidos já conhecidos (lidos + planilha).")
+        # Primeira execução (sem PEDIDOS-LIDOS-COUPA.json): só anota os números do histórico, sem abrir nem
+        # avisar; senão abriria centenas de pedidos antigos e mandaria um e-mail com todos
+        semente = not os.path.exists(self.ARQUIVO_PEDIDOS_LIDOS)
+        if semente:
+            logger.info(" Primeira execução: registrando o histórico de pedidos sem abrir nem enviar e-mail.")
+
+        clientes_alvo = ["Vale", "Vale Base Metals"]
+
+        try:
+            url_orders = f"{self.BASE_SUPPLIER_URL}/orders/"
+            self.garantir_logado(url_orders)
+            
+            try:
+                nav_link = self.wait.until(EC.element_to_be_clickable((By.XPATH, "//a[@data-testid='main_nav_order']")))
+                self.driver.execute_script("arguments[0].click();", nav_link)
+                logger.info(" Clicou no link da navbar 'Pedidos'.")
+                time.sleep(4)
+            except Exception:
+                logger.info(" Link da navbar não encontrado ou falhou, navegando direto via URL...")
+                self.driver.get(url_orders)
+                time.sleep(4)
+            
+            self.garantir_logado(url_orders)
+            
+            for cliente in clientes_alvo:
+                if self.solicitacao_parada: break
+                
+                logger.info(f" Selecionando o cliente '{cliente}' no filtro...")
+                try:
+                    combo_input = self.driver.find_elements(By.CSS_SELECTOR, "input.s-inputCustomerList")
+                    if combo_input:
+                        combo_el = combo_input[0]
+                        valor_atual = combo_el.get_attribute("value")
+                        if not valor_atual or cliente.lower() not in str(valor_atual).lower():
+                            logger.info(f" Digitando '{cliente}' no combobox...")
+                            combo_el.clear()
+                            time.sleep(1)
+                            combo_el.send_keys(cliente)
+                            time.sleep(2)
+                            combo_el.send_keys(Keys.ENTER)
+                            time.sleep(4)
+                            logger.info(f" Filtro de cliente '{cliente}' aplicado com sucesso.")
+                        else:
+                            logger.info(f" Cliente '{cliente}' já estava selecionado.")
+                    else:
+                        logger.warning(" Combobox de clientes nao encontrado na pagina.")
+                except Exception as e:
+                    logger.warning(f" Erro ao tentar selecionar o cliente: {e}")
+                
+                # Sem limite de páginas: só para na última página do cliente, no PARAR ou se a página não avançar
+                pagina_atual = 1
+                numeros_anteriores = None
+                
+                while not self.solicitacao_parada:
+                    logger.info(f" Aguardando tabela de pedidos carregar (Pagina {pagina_atual} - Cliente {cliente})...")
+                    try:
+                        self.wait.until(EC.presence_of_element_located((By.ID, "connect_order_header_tbody")))
+                    except Exception:
+                        try:
+                            iframe = self.driver.find_element(By.TAG_NAME, "iframe")
+                            self.driver.switch_to.frame(iframe)
+                            self.wait.until(EC.presence_of_element_located((By.ID, "connect_order_header_tbody")))
+                            logger.info(" Tabela de pedidos encontrada dentro do iframe.")
+                        except Exception:
+                            logger.warning(" Tabela de pedidos (connect_order_header_tbody) nao carregou a tempo ou esta vazia.")
+                    
+                    pedidos_list = []
+                
+                    try:
+                        try:
+                            self.wait.until(EC.presence_of_element_located((By.XPATH, "//a[contains(@href, 'supplier_order_headers')]")))
+                        except Exception:
+                            pass
+                        links = self.driver.find_elements(By.XPATH, "//td[contains(@class, 's-datatable-cell-id')]//a[contains(@href, 'supplier_order_headers')]")
+                        if not links:
+                            links = self.driver.find_elements(By.XPATH, "//a[contains(@href, 'supplier_order_headers')]")
+                        for a_tag in links:
+                            if self.solicitacao_parada:
+                                break
+                            num_pedido = a_tag.text.strip()
+                            href = a_tag.get_attribute("href")
+                            if num_pedido and href:
+                                existe = False
+                                for p in pedidos_list:
+                                    if p['num'] == num_pedido: existe = True
+                                if not existe:
+                                    pedidos_list.append({'num': num_pedido, 'url': href})
+                    except Exception as e:
+                        logger.error(f" Erro ao ler tabela de pedidos: {e}")
+                    
+                    logger.info(f" Total de pedidos encontrados nesta página: {len(pedidos_list)}")
+                    numeros_pagina = [p['num'] for p in pedidos_list]
+                    if numeros_pagina == numeros_anteriores:
+                        aviso = f"{cliente} · página {pagina_atual} igual à anterior: a paginação não avançou, indo para o próximo cliente."
+                        logger.warning(f" {aviso}")
+                        self.sio.emit('relatar_progresso_coupa', {'mensagem': aviso})
+                        break
+                    numeros_anteriores = numeros_pagina
+                
+                    linhas_pagina = [{'cliente': cliente, 'pagina': pagina_atual, 'pedido': p['num'],
+                                      'onde': onde_esta(p['num'], na_planilha, no_banco)} for p in pedidos_list]
+                    listagem.extend(linhas_pagina)
+                    resumo = resumo_pagina(cliente, pagina_atual, linhas_pagina)
+                    logger.info(f" {resumo}")
+                    self.sio.emit('relatar_progresso_coupa', {'mensagem': resumo})
+
+                    pedidos_novos_na_pagina = [p for p in pedidos_list if p['num'] not in pedidos_existentes]
+                
+                    if semente:
+                        agora = datetime.now().strftime('%d/%m/%Y %H:%M')
+                        registrar_lidos(self.ARQUIVO_PEDIDOS_LIDOS, [
+                            {'pedido': p['num'], 'avisado': True, 'semente': True, 'lido_em': agora,
+                             'cliente': cliente, 'pagina': pagina_atual}
+                            for p in pedidos_novos_na_pagina])
+                        pedidos_existentes.update(p['num'] for p in pedidos_novos_na_pagina)
+                        no_banco.update(p['num'] for p in pedidos_novos_na_pagina)
+                        pedidos_novos_na_pagina = []
+
+                    for p in pedidos_novos_na_pagina:
+                        if self.solicitacao_parada:
+                            break
+                            
+                        num = p['num']
+                        url = p['url']
+                        logger.info(f"\n--- EXTRAINDO DETALHES DO PEDIDO {num} ---")
+                        
+                        try:
+                            self.driver.execute_script(f"window.open('{url}', '_blank');")
+                            self.driver.switch_to.window(self.driver.window_handles[-1])
+                            time.sleep(4)
+                        
+                            try:
+                                iframe = self.driver.find_element(By.TAG_NAME, "iframe")
+                                self.driver.switch_to.frame(iframe)
+                            except: pass
+                        
+                            # 1. Cidade e Estado
+                            cidade_estado = "N/A"
+                            try:
+                                address_el = self.driver.find_elements(By.CSS_SELECTOR, "span.address")
+                                if address_el:
+                                    addr_text = address_el[0].text
+                                    m = re.search(r'\d{5}-\d{3}\s+(.+?)\s+([A-Z]{2})', addr_text)
+                                    if m:
+                                        cidade_estado = f"{m.group(1).strip()} {m.group(2).strip()}"
+                                    else:
+                                        cidade_estado = addr_text.replace('\n', ' | ')[:100]
+                            except: pass
+                            
+                            # 2. Frete
+                            frete = "N/A"
+                            try:
+                                frete_el = self.driver.find_elements(By.ID, "order_header_shipping_term")
+                                if frete_el: frete = frete_el[0].text.strip()
+                            except: pass
+                        
+                            # 3. Valor Total
+                            valor_total = "N/A"
+                            try:
+                                total_el = self.driver.find_elements(By.XPATH, "//div[contains(@class, 'shadow total')]//span[@title='BRL']")
+                                if total_el: valor_total = total_el[0].text.strip()
+                            except: pass
+                        
+                            # 4. Numero do Evento
+                            evento_num = "N/A"
+                            vendedor_encontrado = "N/A"
+                            try:
+                                evento_el = self.driver.find_elements(By.XPATH, "//div[contains(@class, 'form_element') and label[contains(text(), 'Nota Fornecedor')]]")
+                                if evento_el:
+                                    texto_nota = evento_el[0].text
+                                    numeros_possiveis = re.findall(r'\b\d{5,}\b', texto_nota)
+                                    if numeros_possiveis:
+                                        evento_num = " / ".join(numeros_possiveis)
+                                        vendedor_encontrado = self.buscar_vendedor_por_evento(numeros_possiveis)
+                            except: pass
+                        
+                            logger.info(f" [HEADER] Cidade: {cidade_estado} | Frete: {frete} | Total: {valor_total} | Evento: {evento_num}")
+                        
+                            # 5. ITENS
+                            itens = []
+                            linhas_itens = self.driver.find_elements(By.XPATH, "//tr[contains(@id, 'supplier_order_line_row')]")
+                            logger.info(f" Encontrados {len(linhas_itens)} itens no pedido.")
+                        
+                            for idx, linha in enumerate(linhas_itens, 1):
+                                prazo = "N/A"
+                                try:
+                                    prazo_el = linha.find_elements(By.CSS_SELECTOR, "span.s-local_need_by_date")
+                                    if prazo_el: prazo = prazo_el[0].text.strip()
+                                except: pass
+                            
+                                texto_item = "N/A"
+                                try:
+                                    texto_el = linha.find_elements(By.XPATH, ".//div[label[contains(text(), 'Texto do item') or contains(text(), 'Item')]]")
+                                    if texto_el:
+                                        t = texto_el[0].text.replace("Texto do Item", "").replace("Texto do item", "").strip()
+                                    
+                                        # Se estiver vazio ou for "Nenhum", tenta buscar no "Texto Pedido Material"
+                                        if not t or t.lower() == "nenhum" or "Nenhum" in t:
+                                            texto_mat_el = linha.find_elements(By.XPATH, ".//div[label[contains(text(), 'Texto Pedido Material') or contains(text(), 'Descrição da Compra do Material')]]")
+                                            if texto_mat_el:
+                                                t_mat = texto_mat_el[0].text.replace("Texto Pedido Material", "").replace("Descrição da Compra do Material", "").strip()
+                                                # Pega apenas a parte do PT || até os asteriscos ou próxima língua
+                                                m = re.search(r'PT\s*\|\|(.*?)(?:\*{3,}|[A-Z]{2}\s*\|\||$)', t_mat, re.IGNORECASE | re.DOTALL)
+                                                if m:
+                                                    t = m.group(1).strip()
+                                                else:
+                                                    t = t_mat # fallback se não tiver a marcação PT ||
+                                                
+                                        texto_item = t
+                                except: pass
+                            
+                                impostos = "N/A"
+                                try:
+                                    impostos_el = linha.find_elements(By.XPATH, ".//div[label[contains(text(), 'Informações Tributárias') or contains(text(), 'Informação de impostos')]]")
+                                    if impostos_el:
+                                        impostos = impostos_el[0].text.replace("Informações Tributárias", "").replace("Informação de impostos", "").strip().replace('\n', ' ')
+                                except: pass
+                            
+                                email_req = "N/A"
+                                try:
+                                    email_el = linha.find_elements(By.XPATH, ".//div[label[contains(text(), 'Informação Adicional') or contains(text(), 'Requisitante')]]")
+                                    if email_el:
+                                        t = email_el[0].text
+                                        m = re.search(r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', t)
+                                        if m: email_req = m.group(1)
+                                except: pass
+                                
+                                origem = "N/A"
+                                try:
+                                    origem_el = linha.find_elements(By.XPATH, ".//div[label[contains(text(), 'Origem do Material')]]")
+                                    if origem_el: origem = origem_el[0].text.replace("Origem do Material", "").strip()
+                                except: pass
+                            
+                                # Regras de ALERTA (Cores)
+                                alertas_chamado = []
+                                if "3 - IMPORTACAO" in origem.upper():
+                                    alertas_chamado.append(f"abrir chamado no {num} por ser importado.")
+                                if "IPI" in impostos.upper() and ("11%" in impostos or "15%" in impostos or "18%" in impostos or "20%" in impostos):
+                                    alertas_chamado.append(f"abrir chamado no {num} por conter IPI nos impostos")
+                            
+                                logger.info(f"   [ITEM {idx}] Prazo: {prazo} | Requisitante: {email_req}")
+                                logger.info(f"          Texto: {texto_item[:100]}...")
+                                logger.info(f"          Impostos: {impostos[:100]}...")
+                            
+                                for alerta in alertas_chamado:
+                                    logger.warning(f"   🚨 ALERTA: - {alerta}")
+                            
+                                itens.append({
+                                    'prazo': prazo,
+                                    'texto': texto_item,
+                                    'impostos': impostos,
+                                    'email': email_req,
+                                    'origem': origem,
+                                    'alertas': alertas_chamado
+                                })
+                        
+                            novo_pedido = {
+                                'pedido': num,
+                                'cidade_estado': cidade_estado,
+                                'frete': frete,
+                                'total': valor_total,
+                                'evento': evento_num,
+                                'vendedor': vendedor_encontrado,
+                                'itens': itens,
+                                'cliente': cliente,
+                                'pagina': pagina_atual,
+                                'lido_em': datetime.now().strftime('%d/%m/%Y %H:%M'),
+                                'avisado': False,
+                            }
+                            pedidos_detalhes.append(novo_pedido)
+                            pedidos_existentes.add(num)
+                            no_banco.add(num)
+                            # Só no arquivo do robô: a planilha (PEDIDOS.json) não é tocada
+                            registrar_lido(self.ARQUIVO_PEDIDOS_LIDOS, novo_pedido)
+                        
+                        except Exception as e:
+                            logger.error(f" Erro ao extrair detalhes do pedido {num}: {e}")
+                    
+                        finally:
+                            # Fecha aba e volta pra principal (garante não deixar abas perdidas)
+                            if len(self.driver.window_handles) > 1:
+                                self.driver.close()
+                                self.driver.switch_to.window(self.driver.window_handles[0])
+                                time.sleep(1)
+                
+                    # Mudar de pagina
+                    try:
+                        self.driver.switch_to.default_content()
+                        try:
+                            iframe = self.driver.find_element(By.TAG_NAME, 'iframe')
+                            self.driver.switch_to.frame(iframe)
+                        except: pass
+                        btn_next = self.driver.find_elements(By.CSS_SELECTOR, 'a.next_page')
+                        if btn_next and 'disabled' not in btn_next[0].get_attribute('class'):
+                            logger.info(' Clicando para avancar para a proxima pagina...')
+                            antigos = self.driver.find_elements(By.XPATH, "//a[contains(@href, 'supplier_order_headers')]")
+                            self.driver.execute_script('arguments[0].click();', btn_next[0])
+                            # Espera a tabela trocar antes de ler: lida cedo demais, a página velha pareceria repetida
+                            if antigos:
+                                try:
+                                    WebDriverWait(self.driver, 20).until(EC.staleness_of(antigos[0]))
+                                except Exception:
+                                    logger.warning(' A tabela não trocou em 20 s depois do clique em próxima página.')
+                            time.sleep(2)
+                            pagina_atual += 1
+                        else:
+                            logger.info(' Ultima pagina alcancada ou botao avancar indisponivel.')
+                            break
+                    except Exception as e:
+                        logger.warning(f' Nao foi possivel avancar a pagina: {e}')
+                        break
+
+            erro = None
+        except Exception as e:
+            logger.error(f" Erro Crítico na extração de pedidos: {e}")
+            erro = str(e)
+
+        # Também depois de parada ou erro: o que já foi lido está em PEDIDOS-LIDOS-COUPA.json e não seria
+        # visto de novo na próxima vez, então o aviso sai agora
+        # O aviso leva os novos desta vez e os de antes cujo e-mail falhou (avisado False), se ainda fora da planilha
+        try:
+            gravar_listagem(self.ARQUIVO_PEDIDOS_LISTAGEM, listagem)
+        except Exception as e:
+            logger.error(f" Falha ao gravar PEDIDOS-LISTAGEM-COUPA.json: {e}")
+        contagem = contar_listagem(listagem)
+        logger.info(" Pedidos vistos no portal: " + ", ".join(f"{v} {k}" for k, v in contagem.items()))
+        email_enviado = False
+        pendentes = []
+        try:
+            lidos, planilha = carregar_lidos(self.ARQUIVO_PEDIDOS_LIDOS), numeros_planilha(self.ARQUIVO_PLANILHA_PEDIDOS)
+            gravar_fora_planilha(self.ARQUIVO_PEDIDOS_FORA_PLANILHA, lidos, planilha)
+            pendentes = pendentes_aviso(lidos, planilha)
+        except Exception as e:
+            logger.error(f" Falha ao montar PEDIDOS-FORA-PLANILHA.json / pendentes de aviso: {e}")
+        try:
+            email_enviado = enviar_email_pedidos_novos(pendentes, self.config, logger)
+            if email_enviado:
+                marcar_avisados(self.ARQUIVO_PEDIDOS_LIDOS, {p['pedido'] for p in pendentes})
+        except Exception as e:
+            logger.error(f" Falha ao enviar e-mail dos pedidos novos: {e}")
+        logger.info(f" {len(pedidos_detalhes)} pedido(s) novo(s) lido(s); {len(pendentes)} no aviso por e-mail.")
+
+        conclusao = {'evento': 'Listagem de Pedidos', 'sucesso': erro is None, 'total': len(pendentes),
+                     'email_enviado': email_enviado, 'portal': 'coupa', 'semente': semente,
+                     'pedidos': [p['pedido'] for p in pendentes],
+                     'contagem': contagem,
+                     'novos_lidos': [{'pedido': l['pedido'], 'cliente': l['cliente'], 'pagina': l['pagina']}
+                                     for l in listagem if l['onde'] == 'novo']}
+        if erro:
+            conclusao['erro'] = erro
+        self.sio.emit('tarefa_concluida', conclusao)
+        return pedidos_detalhes

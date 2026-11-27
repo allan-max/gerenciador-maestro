@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 import unittest
 from unittest.mock import patch, MagicMock, call
-from bots.coupa.mixins.resposta import RespostaMixin
-from bots.relatorio_email import gerar_conteudo_email_erro_salvar_item, enviar_email_erro_salvar_item
+from bots.vale.mixins.resposta import RespostaMixin
+from bots.avisos.relatorio_email import gerar_conteudo_email_erro_salvar_item, enviar_email_erro_salvar_item
 
 
 class DummyRobot(RespostaMixin):
@@ -55,7 +55,7 @@ class TestErroSalvarItem(unittest.TestCase):
             'SMTP_PASSWORD': '123',
             'emails_relatorio': 'vendedor@teste.com'
         }
-        with patch('bots.relatorio_email._conectar_e_enviar_smtp', return_value=True) as mock_smtp:
+        with patch('bots.avisos.relatorio_email._conectar_e_enviar_smtp', return_value=True) as mock_smtp:
             resultado = enviar_email_erro_salvar_item(
                 nome_bot="Coupa Bot",
                 evento="301025",
@@ -120,8 +120,8 @@ class TestErroSalvarItem(unittest.TestCase):
         self.assertIn("Prazo", resultado)
         self.assertTrue(resultado["Prazo"]["vazio"])
 
-    @patch('bots.relatorio_email.enviar_email_erro_salvar_item')
-    @patch('eventos.registrar')
+    @patch('bots.avisos.relatorio_email.enviar_email_erro_salvar_item')
+    @patch('nucleo.eventos.registrar')
     def test_tratar_erro_validacao_item_quando_persiste_erro(self, mock_eventos, mock_email):
         """Se após a nova tentativa o erro persistir, deve disparar e-mail e registrar no evento."""
         bot = DummyRobot()

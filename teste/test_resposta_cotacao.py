@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-from resposta_cotacao import CAMPOS, marcar_respondida
+from nucleo.resposta_cotacao import CAMPOS, marcar_respondida
 
 
 class RespostaTest(unittest.TestCase):
@@ -39,7 +39,7 @@ class RespostaTest(unittest.TestCase):
 
     def test_erro_de_gravacao_preserva_json_e_remove_temporario(self):
         original = self.path.read_bytes()
-        with patch('resposta_cotacao.os.replace', side_effect=PermissionError('bloqueado')):
+        with patch('nucleo.resposta_cotacao.os.replace', side_effect=PermissionError('bloqueado')):
             with self.assertRaises(PermissionError):
                 marcar_respondida(self.manager, self.row)
         self.assertEqual(self.path.read_bytes(), original)
@@ -56,14 +56,10 @@ class RespostaTest(unittest.TestCase):
 
 class RespostaUnificadaCoupaValeTest(unittest.TestCase):
     def test_vale_herda_resposta_mixin_do_coupa(self):
-        import ast
-        raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
-        arvore_vale = ast.parse((raiz / 'bots/vale_bot.py').read_text(encoding='utf-8'))
-        classe_vale = next(n for n in arvore_vale.body if isinstance(n, ast.ClassDef) and n.name == 'ValeScraper')
-        bases = [getattr(b, 'id', None) for b in classe_vale.bases]
-        self.assertIn('RespostaMixin', bases)
-        metodos_proprios = [n.name for n in classe_vale.body if isinstance(n, ast.FunctionDef)]
-        self.assertNotIn('responder_evento', metodos_proprios)
+        from bots.vale.mixins.resposta import RespostaMixin
+        from bots.vale_base_metais import ValeScraper
+        self.assertIn(RespostaMixin, ValeScraper.__mro__)
+        self.assertIs(ValeScraper.responder_evento, RespostaMixin.responder_evento)   # resposta única: a do Coupa
 
     def test_seleciona_vale_primeiro_e_muda_para_vale_base_metals_se_nao_achar(self):
         import os
@@ -77,7 +73,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
 
         raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
         ns = carregar(
-            raiz / 'bots/coupa/mixins/resposta.py',
+            raiz / 'bots/vale/mixins/resposta.py',
             {'RespostaMixin'},
             os=os, re=re, time=Relogio(), tempfile=tempfile, shutil=shutil, base64=base64,
             By=By, Keys=Keys, NoSuchElementException=NoSuchElementException,
@@ -207,7 +203,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
 
         raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
         ns = carregar(
-            raiz / 'bots/coupa/mixins/resposta.py',
+            raiz / 'bots/vale/mixins/resposta.py',
             {'RespostaMixin'},
             os=os, re=re, time=Relogio(), tempfile=tempfile, shutil=shutil, base64=base64,
             By=By, Keys=Keys, NoSuchElementException=NoSuchElementException,
@@ -379,7 +375,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
         self.assertEqual(base64.b64decode(ev_prints['prints'][1]['imagem']), b'PNG_ITEM_3')
 
     def test_comando_responder_liga_robo_automaticamente_quando_desligado(self):
-        import bots.coupa as mod_coupa
+        import bots.vale as mod_coupa
         ordem_chamadas = []
 
         class FakeCoupaBot:
@@ -448,7 +444,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
 
         raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
         ns = carregar(
-            raiz / 'bots/coupa/mixins/resposta.py',
+            raiz / 'bots/vale/mixins/resposta.py',
             {'RespostaMixin'},
             os=os, re=re, time=Relogio(), tempfile=tempfile, shutil=shutil, base64=base64,
             By=By, Keys=Keys, NoSuchElementException=NoSuchElementException,
@@ -701,7 +697,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
 
         raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
         ns = carregar(
-            raiz / 'bots/coupa/mixins/resposta.py',
+            raiz / 'bots/vale/mixins/resposta.py',
             {'RespostaMixin'},
             os=os, re=re, time=Relogio(), tempfile=tempfile, shutil=shutil, base64=base64,
             By=By, Keys=Keys, NoSuchElementException=NoSuchElementException,
@@ -857,7 +853,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
 
         raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
         ns = carregar(
-            raiz / 'bots/coupa/mixins/resposta.py',
+            raiz / 'bots/vale/mixins/resposta.py',
             {'RespostaMixin'},
             os=os, re=re, time=Relogio(), tempfile=tempfile, shutil=shutil, base64=base64,
             By=By, Keys=Keys, NoSuchElementException=NoSuchElementException,
@@ -907,7 +903,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
 
         raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
         ns = carregar(
-            raiz / 'bots/coupa/mixins/resposta.py',
+            raiz / 'bots/vale/mixins/resposta.py',
             {'RespostaMixin'},
             os=os, re=re, time=Relogio(), tempfile=tempfile, shutil=shutil, base64=base64,
             By=By, Keys=Keys, NoSuchElementException=NoSuchElementException,
@@ -1012,7 +1008,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
         from test_fase0 import LOGGER, Relogio, carregar
 
         raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
-        ns = carregar(raiz / 'bots/coupa/mixins/resposta.py', {'RespostaMixin'}, re=re, time=Relogio(), By=By, Keys=Keys)
+        ns = carregar(raiz / 'bots/vale/mixins/resposta.py', {'RespostaMixin'}, re=re, time=Relogio(), By=By, Keys=Keys)
         clicadas = []
 
         class Opcao:
@@ -1078,7 +1074,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
         from test_fase0 import LOGGER, Relogio, carregar
 
         raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
-        ns = carregar(raiz / 'bots/coupa/mixins/resposta.py', {'RespostaMixin'}, os=os, re=re, time=Relogio(), By=By)
+        ns = carregar(raiz / 'bots/vale/mixins/resposta.py', {'RespostaMixin'}, os=os, re=re, time=Relogio(), By=By)
 
         class Bloco:
             def __init__(self):
@@ -1135,7 +1131,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
         from test_fase0 import LOGGER, Relogio, carregar
 
         raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
-        ns = carregar(raiz / 'bots/coupa/mixins/resposta.py', {'RespostaMixin'}, re=re, time=Relogio(), By=By)
+        ns = carregar(raiz / 'bots/vale/mixins/resposta.py', {'RespostaMixin'}, re=re, time=Relogio(), By=By)
 
         class DriverTitulos:
             def __init__(self, tipos):
@@ -1170,7 +1166,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
 
         raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
         ns = carregar(
-            raiz / 'bots/coupa/mixins/resposta.py',
+            raiz / 'bots/vale/mixins/resposta.py',
             {'RespostaMixin'},
             os=os, re=re, time=Relogio(), tempfile=tempfile, shutil=shutil, base64=base64,
             By=By, Keys=Keys, NoSuchElementException=NoSuchElementException,
@@ -1253,7 +1249,7 @@ class RespostaUnificadaCoupaValeTest(unittest.TestCase):
 
         raiz = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
         ns = carregar(
-            raiz / 'bots/coupa/mixins/resposta.py',
+            raiz / 'bots/vale/mixins/resposta.py',
             {'RespostaMixin'},
             os=os, re=re, time=Relogio(), tempfile=tempfile, shutil=shutil, base64=base64,
             By=By, Keys=Keys, NoSuchElementException=NoSuchElementException,

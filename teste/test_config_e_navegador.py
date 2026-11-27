@@ -7,9 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import ambiente
-import navegador
+from nucleo import ambiente
+from nucleo import navegador
 from test_fase0 import carregar
+from fonte_vale_base_metais import FONTE_VALE_BASE_METAIS
 
 RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
 
@@ -32,6 +33,9 @@ class PaginasVerificacaoTest(unittest.TestCase):
             self.assertEqual(ambiente.paginas_verificacao('coupa'), 80)
             Path(tmp, 'CONFIG.json').write_text('{quebrado', encoding='utf-8')
             self.assertEqual(ambiente.paginas_verificacao('coupa'), 60)
+            Path(tmp, 'dados').mkdir()                                                  # migrado: dados/ vale
+            Path(tmp, 'dados', 'CONFIG.json').write_text('{"coupa_verificacao_max_paginas": "90"}', encoding='utf-8')
+            self.assertEqual(ambiente.paginas_verificacao('coupa'), 90)
 
 
 class ConfigDoGerenciadorTest(unittest.TestCase):
@@ -43,22 +47,23 @@ class ConfigDoGerenciadorTest(unittest.TestCase):
         anterior = os.getcwd()
         os.chdir(self.tmp.name)
         self.addCleanup(os.chdir, anterior)
+        os.mkdir('dados')   # .env e JSON do servidor ficam em dados/
         self.sio = SimpleNamespace(emit=MagicMock(), on=lambda e: (lambda f: f))
         self.ns = carregar(RAIZ / 'gerenciador.py', self.NOMES, os=os, json=json, sio=self.sio,
                            CONFIG_GLOBAL={'SMTP_USER': 'x'}, SMTP_USER='', SMTP_PASSWORD='')
 
     def ler(self):
-        return json.loads(Path('CONFIG.json').read_text(encoding='utf-8'))
+        return json.loads(Path('dados', 'CONFIG.json').read_text(encoding='utf-8'))
 
     def test_chaves_novas_aparecem_com_60_sem_perder_o_resto(self):
-        Path('CONFIG.json').write_text(json.dumps({'SMTP_USER': 'x', 'coupa_verificacao_max_paginas': '200'}), encoding='utf-8')
+        Path('dados', 'CONFIG.json').write_text(json.dumps({'SMTP_USER': 'x', 'coupa_verificacao_max_paginas': '200'}), encoding='utf-8')
         cfg = self.ns['carregar_config']()
         self.assertEqual(cfg['coupa_verificacao_max_paginas'], '200')                  # valor salvo no painel fica
         self.assertEqual(cfg['vale_verificacao_max_paginas'], 60)
         self.assertEqual(self.ler(), cfg)                                              # gravado para o painel mostrar
 
     def test_salvar_pelo_painel_mantem_as_chaves_e_recusa_config_vazia(self):
-        Path('CONFIG.json').write_text(json.dumps({'SMTP_USER': 'x'}), encoding='utf-8')
+        Path('dados', 'CONFIG.json').write_text(json.dumps({'SMTP_USER': 'x'}), encoding='utf-8')
         self.ns['salvar_config_admin']({'clientId': 'c', 'config': {'SMTP_USER': 'y', 'vale_verificacao_max_paginas': '200'}})
         self.assertEqual(self.ler(), {'SMTP_USER': 'y', 'vale_verificacao_max_paginas': '200', 'coupa_verificacao_max_paginas': 60,
                                       'atualizacao_automatica': 'sim'})
@@ -69,7 +74,7 @@ class ConfigDoGerenciadorTest(unittest.TestCase):
     def test_painel_nao_troca_caminhos_executados(self):
         # caminho_bat_me vai para subprocess.Popen: pelo painel seria executar qualquer binário no servidor
         original = {'SMTP_USER': 'x', 'caminho_bat_me': r'C:\ok.bat', 'pasta_me': r'\\SERVIDOR2\ME'}
-        Path('CONFIG.json').write_text(json.dumps(original), encoding='utf-8')
+        Path('dados', 'CONFIG.json').write_text(json.dumps(original), encoding='utf-8')
         self.ns['salvar_config_admin']({'clientId': 'c', 'config': {
             'caminho_bat_me': r'\\atacante\x.exe', 'pasta_me': r'\\atacante\share', 'chave_nova': 'z',
             'emails_relatorio': 'a@b.com'}})
@@ -81,7 +86,7 @@ class ConfigDoGerenciadorTest(unittest.TestCase):
         self.assertNotIn('caminho_bat_me', self.ns['CONFIG_GLOBAL'])                   # memória também intacta
 
     def test_so_caminhos_e_recusado_sem_gravar(self):
-        Path('CONFIG.json').write_text(json.dumps({'caminho_ariba': r'C:\ok'}), encoding='utf-8')
+        Path('dados', 'CONFIG.json').write_text(json.dumps({'caminho_ariba': r'C:\ok'}), encoding='utf-8')
         self.ns['salvar_config_admin']({'clientId': 'c', 'config': {'caminho_ariba': r'\\atacante\x'}})
         self.assertEqual(self.ler(), {'caminho_ariba': r'C:\ok'})
         self.assertFalse(self.sio.emit.call_args[0][1]['sucesso'])
@@ -133,7 +138,7 @@ class NavegadorTest(unittest.TestCase):
             self.assertTrue(Path(navegador.preparar('vale', rodar=falha)).is_dir())
 
     def test_robos_usam_o_perfil_proprio(self):
-        for arquivo, nome in (('bots/coupa/mixins/autenticacao.py', 'coupa'), ('bots/vale_bot.py', 'vale')):
+        for arquivo, nome in (('bots/vale/mixins/autenticacao.py', 'coupa'), (str(FONTE_VALE_BASE_METAIS), 'vale')):
             fonte = (RAIZ / arquivo).read_text(encoding='utf-8')
             self.assertIn(f"--user-data-dir={{navegador.preparar('{nome}')}}", fonte)
             self.assertIn('anterior.quit()', fonte)

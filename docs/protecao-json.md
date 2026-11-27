@@ -21,7 +21,7 @@
 ## Instalação e teste
 
 1. Manter os processos que escrevem na base parados durante a atualização. Conferir a cópia de segurança e os JSONs recuperados.
-2. A instalação ativa identificada pelo diagnóstico é `C:\Users\Administrator\Desktop\gerenciador-maestro`. Atualizar `planilha_manager.py`, `gerenciador.py`, `bots/vale_bot.py` e `bots/coupa/mixins/planilhas.py` da mesma versão nessa instalação.
+2. A instalação ativa identificada pelo diagnóstico é `C:\Users\Administrator\Desktop\gerenciador-maestro`. Atualizar `planilha_manager.py`, `gerenciador.py`, `bots/vale_base_metais/` e `bots/vale/mixins/planilhas.py` da mesma versão nessa instalação.
 3. Executar `python -m unittest test_planilha_persistencia.py test_resposta_cotacao.py`.
 4. Iniciar uma única instância do gerenciador. Conferir `logs/gerenciador.log` e a quantidade de cotações no portal antes de religar os demais serviços.
 5. Se o gerenciador não iniciar por erro de JSON ou permissão, corrigir a base/permissão indicada no log; não criar JSON vazio para contornar o erro.

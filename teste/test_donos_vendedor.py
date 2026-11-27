@@ -2,7 +2,7 @@
 import unittest
 
 import test_fase0  # noqa: F401  (põe a pasta do gerenciador no caminho de import)
-import donos_vendedor as d
+from nucleo import donos_vendedor as d
 
 USUARIOS = {
     'cabral@x': {'nome': 'Gustavo Cabral Calvi', 'vendedor': 'GUSTAVO'},

@@ -108,10 +108,10 @@ if __name__ == '__main__':
     parser.add_argument('--ate', required=True, help='AAAA-MM-DD')
     parser.add_argument('--gravar', action='store_true', help='tira as abertas do JSONL (sem isto, só mostra)')
     args = parser.parse_args()
-    import ambiente
-    from planilha_manager import planilha_manager
+    from nucleo import ambiente
+    from nucleo.planilha_manager import planilha_manager
     if args.gravar and not ambiente.modo_teste():
-        from instancia_unica import JaRodando, instancia_unica
+        from nucleo.instancia_unica import JaRodando, instancia_unica
         try:
             _trava = instancia_unica(ambiente.pasta_banco())
         except JaRodando as e:

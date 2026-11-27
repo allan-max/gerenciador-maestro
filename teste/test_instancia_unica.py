@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from instancia_unica import JaRodando, instancia_unica
+from nucleo.instancia_unica import JaRodando, instancia_unica
 
 
 class InstanciaUnicaTest(unittest.TestCase):

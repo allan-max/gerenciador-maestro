@@ -10,7 +10,7 @@ Desde a #21, o **atualizador automático** (`scripts\atualizador.py`) roda a cad
 
 **Gerenciador:**
 1. Só age com **nenhum robô trabalhando**. Isso quer dizer nenhuma tarefa do Coupa ou da Vale, nem na fila, e nenhum ME, Ariba ou Findes aberto. Ele lê o `gerenciador.estado`, gravado pelo gerenciador a cada 20 s.
-2. Guarda uma cópia de `CONFIG.json`, `.env`, `banco_usuarios.json` e `banco_ips_bloqueados.json`. Faz `git merge --ff-only` com o `main` e devolve esses arquivos.
+2. Guarda uma cópia de `CONFIG.json`, `.env`, `banco_usuarios.json` e `banco_ips_bloqueados.json` (em `dados\` ou, em instalação antiga, na raiz). Faz `git merge --ff-only` com o `main` e devolve esses arquivos.
 3. Roda os testes. **Se falharem, volta para a versão anterior** e avisa na Atividade e por e-mail.
 4. Reinicia o gerenciador numa janela nova ("Maestro Gerenciador"). Se o gerenciador estiver fechado, ele não é aberto.
 
@@ -47,7 +47,7 @@ Vários merges dentro dos mesmos 5 minutos são aplicados juntos, numa única ro
 4. O pm2 precisa estar na mesma conta Windows da tarefa (Administrator).
 
 Avisos:
-- Não sobrescreva nem apague `CONFIG.json`, `.env`, `banco_usuarios.json`, `banco_ips_bloqueados.json`, a pasta `logs\` ou `gerenciador.instancia`.
+- Não sobrescreva nem apague a pasta `dados\` (`CONFIG.json`, `.env`, `banco_usuarios.json`, `banco_ips_bloqueados.json`), a pasta `logs\` ou `gerenciador.instancia`.
 - O `.env` de produção precisa ter `PORTAL_SENHA` (login dos robôs Coupa e Vale): a senha não fica mais no código. Ver `docs/env-e-contas.md`.
 - No `.env` de produção, o `URL_SERVIDOR` **não** pode apontar para `localhost` ou `127.0.0.1`, e o `MAESTRO_TESTE` **não** pode estar definido. Nesses casos o gerenciador entra em modo teste e grava em `base_teste\`.
 

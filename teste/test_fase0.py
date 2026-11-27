@@ -15,10 +15,11 @@ from unittest.mock import patch
 from selenium.webdriver.common.by import By
 
 from test_planilha_persistencia import Manager, namespace as ns_manager
+from fonte_vale_base_metais import FONTE_VALE_BASE_METAIS
 
 RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
-ARQ_COUPA_LOGIN = RAIZ / 'bots/coupa/mixins/autenticacao.py'
-ARQ_VALE = RAIZ / 'bots/vale_bot.py'
+ARQ_COUPA_LOGIN = RAIZ / 'bots/vale/mixins/autenticacao.py'
+ARQ_VALE = FONTE_VALE_BASE_METAIS
 LOGGER = logging.getLogger('teste-fase0')
 
 
@@ -132,7 +133,7 @@ class LoginTest(unittest.TestCase):
 class ImportReLocalTest(unittest.TestCase):
     def test_robos_nao_importam_re_dentro_de_funcao(self):
         # "import re" dentro de função torna re local à função inteira: abortou 34 ciclos da Vale
-        for caminho in [ARQ_VALE, *sorted((RAIZ / 'bots/coupa/mixins').glob('*.py'))]:
+        for caminho in [ARQ_VALE, *sorted((RAIZ / 'bots/vale/mixins').glob('*.py'))]:
             for func in (n for n in ast.walk(arvore(caminho)) if isinstance(n, ast.FunctionDef)):
                 locais = [n for n in ast.walk(func) if isinstance(n, ast.Import) and any(a.name == 're' for a in n.names)]
                 self.assertEqual(locais, [], f'{caminho.name}:{func.name}')
@@ -197,7 +198,7 @@ class ReabertosTest(unittest.TestCase):
 
     def test_encerrado_novo_ou_reaberto_e_gravado_nos_dois_robos(self):
         # Oops e 0 itens são passageiros e continuam devolvendo SKIPPED (tentam de novo); só "encerrado" é definitivo
-        for arquivo, classe in (('bots/coupa/mixins/extracao.py', 'ExtracaoMixin'), ('bots/vale_bot.py', 'ValeScraper')):
+        for arquivo, classe in (('bots/vale/mixins/extracao.py', 'ExtracaoMixin'), (str(FONTE_VALE_BASE_METAIS), 'ValeScraper')):
             with self.subTest(arquivo):
                 metodos = next(n for n in arvore(RAIZ / arquivo).body if isinstance(n, ast.ClassDef) and n.name == classe).body
                 extrair = next(n for n in metodos if getattr(n, 'name', '') == 'extrair_dados_do_evento')
@@ -214,11 +215,11 @@ class ReabertosTest(unittest.TestCase):
 
     def test_jsonl_com_a_data_nova_nao_e_mais_reaberto(self):
         # O que o guarda acima faz: acrescenta a linha nova e, ao recarregar, a última linha do evento vale
-        for caminho, classe in ((RAIZ / 'bots/coupa/mixins/banco_dados.py', 'Banco_dadosMixin'), (ARQ_VALE, 'ValeScraper')):
+        for caminho, classe in ((RAIZ / 'bots/vale/mixins/banco_dados.py', 'Banco_dadosMixin'), (ARQ_VALE, 'ValeScraper')):
             with self.subTest(caminho.name), tempfile.TemporaryDirectory() as tmp:
                 from datetime import datetime
                 m = carregar(caminho, {'salvar_evento_jsonl', 'carregar_banco_dados'}, classe,
-                             json=json, os=__import__('os'), datetime=datetime, ambiente=__import__('ambiente'))
+                             json=json, os=__import__('os'), datetime=datetime, ambiente=__import__('nucleo.ambiente', fromlist=['ambiente']))
                 arq = Path(tmp) / 'eventos.jsonl'
                 arq.write_text(json.dumps({'titulo': '287782', 'respondido': True, 'vencimento_tabela': '21/10/2026'}) + '\n', encoding='utf-8')
                 bot = SimpleNamespace(ARQUIVO_JSONL=str(arq), db_eventos={})

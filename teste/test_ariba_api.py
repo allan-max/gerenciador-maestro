@@ -7,7 +7,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-import ariba_api
+from nucleo import ariba_api
 
 
 class Falso(BaseHTTPRequestHandler):

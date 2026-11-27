@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from trava_arquivo import TravaOcupada, trava_arquivo
+from nucleo.trava_arquivo import TravaOcupada, trava_arquivo
 from test_planilha_persistencia import Manager, namespace as ns_manager
 
 RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == 'teste' else Path(__file__).resolve().parent
@@ -18,7 +18,7 @@ RAIZ = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent
 class OutroProcesso:
     """Segura a trava num processo à parte (como o serviço de NF do cotafrete) até ser encerrado."""
     def __init__(self, caminho):
-        codigo = ('import sys, time; sys.path.insert(0, sys.argv[1]); from trava_arquivo import trava_arquivo\n'
+        codigo = ('import sys, time; sys.path.insert(0, sys.argv[1]); from nucleo.trava_arquivo import trava_arquivo\n'
                   'with trava_arquivo(sys.argv[2]):\n    print("ok", flush=True); time.sleep(60)')
         self.proc = subprocess.Popen([sys.executable, '-c', codigo, str(RAIZ), str(caminho)],
                                      stdout=subprocess.PIPE, text=True)
@@ -65,7 +65,7 @@ class TravaArquivoTest(unittest.TestCase):
             m.pedidos['PEDIDOS'].append({'PEDIDO': '2'})
             outro = OutroProcesso(self.arq)
             try:
-                with patch('trava_arquivo.ESPERA_S', 0.4):
+                with patch('nucleo.trava_arquivo.ESPERA_S', 0.4):
                     self.assertFalse(m.salvar())
             finally:
                 outro.encerrar()
